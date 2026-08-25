@@ -27,6 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: actions/setup-go@v7
         with:
           go-version: stable
@@ -56,6 +58,8 @@ jobs:
           - { os: macos-latest,     goos: darwin,  goarch: arm64, cgo: '1' }
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: actions/setup-go@v7
         with:
           go-version: stable
@@ -69,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           out=azcp
-          [ "$GOOS" = windows ] && out=azcp.exe
+          if [ "$GOOS" = windows ]; then out=azcp.exe; fi
           go build -trimpath \
             -ldflags "-s -w -X 'github.com/JohanLindvall/azcp/internal/cli.Version=${VERSION}'" \
             -o "build/$out" ./cmd/azcp
@@ -81,8 +85,13 @@ jobs:
         run: |
           set -euo pipefail
           out=azcp
-          [ "${{ matrix.goos }}" = windows ] && out=azcp.exe
-          "./build/$out" --version | tee /dev/stderr | grep -q "${VERSION}"
+          if [ "${{ matrix.goos }}" = windows ]; then out=azcp.exe; fi
+          reported=$("./build/$out" --version | head -1)
+          echo "$reported"
+          case "$reported" in
+            *"${VERSION}"*) ;;
+            *) echo "::error::version was not stamped: $reported"; exit 1 ;;
+          esac
 
       - name: Stage the archive contents
         run: |
@@ -116,6 +125,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/download-artifact@v8
         with:
