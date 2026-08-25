@@ -76,7 +76,9 @@ docker run --rm -v "$PWD:/data" \
   ghcr.io/johanlindvall/azcp:latest -r /data/build azure://acct/releases/
 ```
 
-Published for `linux/amd64` and `linux/arm64`. Credentials reach it the usual
+Tagged `latest`, the exact version (`0.1.0`), the moving minor (`0.1`), and
+`edge` from the main branch. Published for `linux/amd64` and `linux/arm64`,
+with a build-provenance attestation and an SBOM. Credentials reach it the usual
 way — a SAS in the URL, the `AZURE_STORAGE_*` variables, or a managed identity
 where the container has one. Interactive sign-in is not useful in a container
 and the token cache has nowhere to live, so `azcp` says so and carries on.
