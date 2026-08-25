@@ -6,8 +6,11 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Tag to publish an image for (blank builds the branch)'
+      ref:
+        description: 'Git ref to build (blank builds this workflow''s ref)'
+        required: false
+      version:
+        description: 'Version to label the image with (blank derives it from the ref)'
         required: false
 
 permissions:
@@ -32,7 +35,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          # What to build and what to call it are separate, because they are
+          # not always the same thing: a tag cut before this workflow existed
+          # has no Dockerfile in it, and can only be imaged by building a tree
+          # that has one.
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 0
 
       - uses: docker/setup-buildx-action@v4
 
@@ -46,8 +54,8 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            version="${{ github.event.inputs.tag }}"
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            version="${{ github.event.inputs.version }}"
           elif [ "${GITHUB_REF_TYPE}" = tag ]; then
             version="${GITHUB_REF_NAME}"
           else
@@ -66,7 +74,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}},value=${{ steps.version.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }}
-            type=raw,value=latest,enable=${{ github.event.inputs.tag != '' || github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ github.event.inputs.version != '' || github.ref_type == 'tag' }}
             type=edge,branch=main
           labels: |
             org.opencontainers.image.title=azcp
