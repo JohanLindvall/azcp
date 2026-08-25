@@ -25,8 +25,12 @@ Or from a clone:
 
 ```
 make build     # ./bin/azcp
-make test
+make test      # go test ./...
+make race      # go test -race ./...
 ```
+
+The pattern matcher is differential-tested against real `bash` run with
+`globstar` and `extglob`, so `make test` needs no credentials and no network.
 
 ## Locations
 
@@ -84,8 +88,8 @@ azcp 'azure://acct/data/!(*.tmp)' ./out/             # everything but the scratc
 azcp './build/{linux,darwin}-*' azure://acct/rel/    # two branches at once
 ```
 
-Semantics follow bash with `globstar` and `extglob` enabled; the matcher is
-differential-tested against bash. By default a local path that exists exactly as
+Semantics follow bash with `globstar` and `extglob` enabled, and the test suite
+checks that by running bash and comparing its expansions with ours. By default a local path that exists exactly as
 written is never treated as a pattern, so a file genuinely called
 `report[final].pdf` still copies. `--glob=always|never` overrides that.
 
@@ -96,9 +100,23 @@ listing rather than a request per directory.
 
 Files move `--jobs` at a time (default 8), and each large file is split into
 `--part-size` blocks moved `--part-concurrency` at a time. Uploads stage blocks
-in parallel, downloads fetch ranges in parallel, and a blob-to-blob copy asks
-the storage service to move the bytes itself, falling back to streaming through
-this host when the service will not.
+in parallel and downloads fetch ranges in parallel.
+
+A copy between two blob URLs is done by the storage service, so the bytes never
+reach this host. Three server-side routes are tried in turn, because which one
+works depends on the endpoint and on how the source can be authorised:
+
+1. **Put Blob From URL** — one request, for blobs up to 256 MiB.
+2. **Put Block From URL** — the same, block by block, for larger blobs. Both of
+   these can present an OAuth token for the source, so they work across
+   accounts.
+3. **Copy Blob** — the asynchronous form. It carries no source credential, so
+   the source must be readable by the destination account (same account, or
+   carrying a SAS), but it is universally implemented and has no size limit.
+
+Streaming through this host happens only when none of those is available. An
+endpoint that answers "not implemented" is remembered, so the run does not keep
+asking. `--log-level=debug` reports the route each copy took.
 
 Every network request is retried `--retries` times with jittered backoff,
 honouring `Retry-After`. Retries are decided from the failure: a timeout, a
@@ -123,7 +141,7 @@ could not be preserved — and `--log-file` sends them to a file instead,
 
 ## Options
 
-`azcp --help` lists everything. All of `cp`'s options are accepted:
+`azcp --help` lists everything, and `cp`'s options mean what they mean in `cp`:
 `-a -b -d -f -i -H -l -L -n -P -p -R -r -s -S -t -T -u -v -x -Z`,
 `--attributes-only --backup --copy-contents --parents --preserve --no-preserve
 --reflink --remove-destination --sparse --strip-trailing-slashes --update`.
@@ -156,11 +174,15 @@ line was wrong — the same as `cp`.
 
 - Symbolic links cannot be stored in blob storage. Copying one to a container
   skips it with a warning; `-L` copies what it points at instead.
-- `--backup`, `--link` and `--symbolic-link` apply to local destinations only.
-- `-Z` and `--context` are accepted and ignored for blob destinations, which
-  have no security contexts.
+- `--backup`, `--link` and `--symbolic-link` apply to local destinations only,
+  and are refused before anything is transferred rather than partway through.
+- `-Z`, `--context` and `--preserve=context` are accepted but do nothing: this
+  tool does not set SELinux contexts. Using one logs a warning saying so.
+- `--copy-contents` is accepted and has no effect, since special files are
+  never recursed into.
 - A missing destination container is an error rather than being created
-  silently; `--create-container` opts in.
+  silently; `--create-container` opts in. Containers behave more like a mount
+  point than a directory, so creating one is not something to do by accident.
 
 ## Layout
 
@@ -179,3 +201,7 @@ internal/retryx      transient-failure classification and backoff
 internal/humanize    sizes, rates, durations
 internal/uri         location parsing
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

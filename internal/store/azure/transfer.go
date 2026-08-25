@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
@@ -235,42 +237,222 @@ func (s *Store) OpenRead(ctx context.Context, src *store.Node) (io.ReadCloser, e
 	}), nil
 }
 
-// Copy moves a blob to another blob. It first asks the service to fetch the
-// bytes itself, which keeps the data off this machine entirely; if that is not
-// permitted — typically because the source cannot be authorised for the
-// destination account — it falls back to streaming through.
+// Copy moves a blob to another blob, keeping the data off this host wherever
+// the service allows it.
+//
+// Three server-side routes are tried in turn, because which one works depends
+// on what the endpoint implements and on how the source can be authorised:
+//
+//  1. Put Blob From URL — one request, for blobs up to 256 MiB.
+//  2. Put Block From URL — the same idea block by block, for larger blobs.
+//     Both of these can present an OAuth token for the source, so they work
+//     across accounts.
+//  3. Copy Blob — the asynchronous form. It takes no source-authorisation
+//     header, so the source must be readable by the destination account
+//     (same account, or carrying a SAS), but it is widely implemented and has
+//     no size limit.
+//
+// Only when none of those works do the bytes pass through this process.
 func (s *Store) Copy(ctx context.Context, src *store.Node, dst *uri.URL, o TransferOptions) error {
-	if s.noServerCopy.Load() {
-		return s.streamCopy(ctx, src, dst, o)
-	}
-	srcURL, auth, err := s.copySource(ctx, src.URL, dst)
-	if err != nil {
-		s.log.Debug("server-side copy unavailable, streaming instead",
-			"source", src.URL.Display(), "reason", err)
-		return s.streamCopy(ctx, src, dst, o)
+	if !s.copyRouteDisabled(dst, routeSync) {
+		srcURL, auth, err := s.copySource(ctx, src.URL, dst)
+		if err != nil {
+			s.log.Debug("cannot authorise the source for a server-side copy",
+				"source", src.URL.Display(), "reason", err)
+		} else {
+			err := s.serverCopy(ctx, src, srcURL, auth, dst, o)
+			if err == nil {
+				s.log.Debug("copied server-side", "route", "put-from-url",
+					"source", src.URL.Display(), "destination", dst.Display())
+				return nil
+			}
+			if isCancellation(err) {
+				return err
+			}
+			s.noteCopyFailure(dst, routeSync, src.URL, err)
+		}
 	}
 
-	err = s.serverCopy(ctx, src, srcURL, auth, dst, o)
-	if err == nil {
-		return nil
+	if s.asyncCopyViable(src.URL, dst) && !s.copyRouteDisabled(dst, routeAsync) {
+		err := s.asyncCopy(ctx, src, dst, o)
+		if err == nil {
+			s.log.Debug("copied server-side", "route", "copy-blob",
+				"source", src.URL.Display(), "destination", dst.Display())
+			return nil
+		}
+		if isCancellation(err) {
+			return err
+		}
+		s.noteCopyFailure(dst, routeAsync, src.URL, err)
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+
+	return s.streamCopy(ctx, src, dst, o)
+}
+
+// copyRoute names one of the server-side copy mechanisms.
+type copyRoute string
+
+const (
+	routeSync  copyRoute = "put-from-url"
+	routeAsync copyRoute = "copy-blob"
+)
+
+// copyRouteDisabled reports whether a route has already been found missing on
+// this endpoint. The answer is remembered per endpoint rather than globally,
+// because a run can span accounts served by different implementations.
+func (s *Store) copyRouteDisabled(dst *uri.URL, route copyRoute) bool {
+	_, off := s.noCopyRoute.Load(dst.ServiceURL() + "|" + string(route))
+	return off
+}
+
+// noteCopyFailure records why a server-side route did not work. A service that
+// answers "not implemented" is stating a fact about itself, so that route is
+// not tried again against the same endpoint; anything else is treated as a
+// per-request problem and only reported.
+func (s *Store) noteCopyFailure(dst *uri.URL, route copyRoute, src *uri.URL, err error) {
+	if unsupportedByEndpoint(err) {
+		key := dst.ServiceURL() + "|" + string(route)
+		if _, loaded := s.noCopyRoute.LoadOrStore(key, true); !loaded {
+			s.log.Info("endpoint does not implement this server-side copy; "+
+				"trying another route",
+				"route", string(route), "endpoint", dst.ServiceURL(),
+				"cause", retryx.Describe(err))
+		}
+		return
+	}
+	s.log.Warn("server-side copy failed, trying another route",
+		"route", string(route), "source", src.Display(),
+		"destination", dst.Display(), "cause", retryx.Describe(err))
+	s.log.Debug("server-side copy failure detail", "route", string(route), "error", err)
+}
+
+func isCancellation(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// asyncCopyViable reports whether the destination account could read the source
+// on its own. Copy Blob carries no credential for the source, so anything
+// needing one has to take a different route.
+func (s *Store) asyncCopyViable(src, dst *uri.URL) bool {
+	if src.SAS != "" || lookupStatic(src.Account).sas != "" {
+		return true
+	}
+	return src.SameAccount(dst)
+}
+
+// asyncCopy asks the service to copy the blob and waits for it to finish.
+func (s *Store) asyncCopy(ctx context.Context, src *store.Node, dst *uri.URL, o TransferOptions) error {
+	c, err := s.client(ctx, dst)
+	if err != nil {
 		return err
 	}
-	if unsupportedByEndpoint(err) {
-		// A capability difference, not a fault: say so once and stop asking.
-		if s.noServerCopy.CompareAndSwap(false, true) {
-			s.log.Info("endpoint does not support server-side copy; "+
-				"blob-to-blob copies will stream through this host",
-				"endpoint", dst.ServiceURL(), "cause", retryx.Describe(err))
-		}
-	} else {
-		s.log.Warn("server-side copy failed, streaming through this host instead",
-			"source", src.URL.Display(), "destination", dst.Display(),
-			"cause", retryx.Describe(err))
-		s.log.Debug("server-side copy failure detail", "error", err)
+	srcURL := src.URL.ServiceURL() + "/" + src.URL.Container + "/" + src.URL.Key
+	if src.URL.SAS != "" {
+		srcURL += "?" + src.URL.SAS
+	} else if sas := lookupStatic(src.URL.Account).sas; sas != "" {
+		srcURL += "?" + sas
 	}
-	return s.streamCopy(ctx, src, dst, o)
+
+	dstBlob := c.ServiceClient().NewContainerClient(dst.Container).NewBlobClient(dst.Key)
+	started, err := dstBlob.StartCopyFromURL(ctx, srcURL, &blob.StartCopyFromURLOptions{
+		AccessConditions: o.accessConditions(),
+		Tier:             o.tier(),
+	})
+	if err != nil {
+		return err
+	}
+	if started.CopyStatus != nil && *started.CopyStatus == blob.CopyStatusTypeSuccess {
+		if o.Progress != nil {
+			o.Progress(src.Size)
+		}
+		return nil
+	}
+
+	copyID := ""
+	if started.CopyID != nil {
+		copyID = *started.CopyID
+	}
+	return s.awaitCopy(ctx, dstBlob, copyID, src, dst, o)
+}
+
+// awaitCopy polls until the service reports the copy finished. Polling starts
+// quickly, since most copies within a region complete almost at once, and backs
+// off so a large cross-region copy does not generate needless traffic.
+func (s *Store) awaitCopy(ctx context.Context, dstBlob *blob.Client, copyID string,
+	src *store.Node, dst *uri.URL, o TransferOptions) error {
+
+	const (
+		firstPoll = 100 * time.Millisecond
+		maxPoll   = 5 * time.Second
+	)
+	delay := firstPoll
+	for {
+		select {
+		case <-ctx.Done():
+			s.abandonCopy(dstBlob, copyID, dst)
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+
+		props, err := dstBlob.GetProperties(ctx, nil)
+		if err != nil {
+			return err
+		}
+		status := blob.CopyStatusTypePending
+		if props.CopyStatus != nil {
+			status = *props.CopyStatus
+		}
+		switch status {
+		case blob.CopyStatusTypeSuccess:
+			if o.Progress != nil {
+				o.Progress(src.Size)
+			}
+			return nil
+		case blob.CopyStatusTypeFailed:
+			detail := ""
+			if props.CopyStatusDescription != nil {
+				detail = ": " + *props.CopyStatusDescription
+			}
+			return fmt.Errorf("the service reported the copy failed%s", detail)
+		case blob.CopyStatusTypeAborted:
+			return errors.New("the service reported the copy was aborted")
+		}
+		if o.Progress != nil && props.CopyProgress != nil {
+			if done, ok := parseCopyProgress(*props.CopyProgress); ok {
+				o.Progress(done)
+			}
+		}
+		delay = min(delay*2, maxPoll)
+	}
+}
+
+// abandonCopy tells the service to stop a copy this process is no longer
+// waiting for. It runs on a fresh deadline because the caller's context is
+// already done, and a failure here is not worth reporting as an error: the
+// copy the user cancelled is going to be discarded either way.
+func (s *Store) abandonCopy(dstBlob *blob.Client, copyID string, dst *uri.URL) {
+	if copyID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 10*time.Second)
+	defer cancel()
+	if _, err := dstBlob.AbortCopyFromURL(ctx, copyID, nil); err != nil {
+		s.log.Debug("could not abort the server-side copy",
+			"destination", dst.Display(), "copy_id", copyID, "error", err)
+	}
+}
+
+// parseCopyProgress reads the "bytesCopied/totalBytes" form the service reports.
+func parseCopyProgress(s string) (int64, bool) {
+	slash := strings.IndexByte(s, '/')
+	if slash <= 0 {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(s[:slash], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // unsupportedByEndpoint reports whether the service said it cannot do this at
@@ -286,7 +468,7 @@ func unsupportedByEndpoint(err error) bool {
 	}
 	switch respErr.ErrorCode {
 	case "APINotImplemented", "UnsupportedHttpVerb", "FeatureVersionMismatch",
-		"UnsupportedHeader", "InvalidHeaderValue", "UnsupportedQueryParameter":
+		"UnsupportedHeader", "UnsupportedQueryParameter":
 		return true
 	}
 	return false
@@ -295,8 +477,8 @@ func unsupportedByEndpoint(err error) bool {
 // copySource builds a URL the storage service can read the source from, plus
 // the value for the copy-source authorisation header if one is needed.
 //
-// Which of these applies depends on how the source is authenticated, and
-// getting it wrong is not fatal: the caller streams the bytes through instead.
+// Which of these applies depends on how the source is authenticated. Failing
+// here is not fatal: the caller tries another route.
 func (s *Store) copySource(ctx context.Context, src, dst *uri.URL) (string, *string, error) {
 	base := src.ServiceURL() + "/" + src.Container + "/" + src.Key
 	if src.SAS != "" {

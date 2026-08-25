@@ -160,6 +160,14 @@ func ownerOf(fi fs.FileInfo) (uid, gid int, ok bool) {
 	return int(st.Uid), int(st.Gid), true
 }
 
+func deviceOfSys(sys any) (uint64, bool) {
+	st, ok := sys.(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return uint64(st.Dev), true
+}
+
 func fileIdentity(fi fs.FileInfo) (FileID, int, bool) {
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	if !ok {

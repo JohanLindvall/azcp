@@ -30,4 +30,6 @@ func accessTimeOf(fi fs.FileInfo) time.Time { return fi.ModTime() }
 
 func ownerOf(fs.FileInfo) (int, int, bool) { return 0, 0, false }
 
+func deviceOfSys(any) (uint64, bool) { return 0, false }
+
 func fileIdentity(fs.FileInfo) (FileID, int, bool) { return FileID{}, 0, false }

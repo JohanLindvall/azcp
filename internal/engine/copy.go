@@ -316,6 +316,15 @@ func (e *Engine) applyAttrs(t *task) {
 // checkUnsupported rejects combinations that cannot work against blob storage
 // before any data moves, rather than failing partway through.
 func (e *Engine) checkUnsupported(dest *uri.URL) error {
+	if e.opt.SELinux {
+		// Accepted so existing command lines keep working, but nothing here
+		// sets a security context, and silently doing less than asked would be
+		// worse than saying so.
+		e.log.Warn("ignoring -Z and --context: this tool does not set SELinux contexts")
+	}
+	if e.opt.Preserve.Context {
+		e.log.Warn("ignoring --preserve=context: this tool does not copy SELinux contexts")
+	}
 	remote := dest.IsRemote()
 	for _, s := range e.opt.Sources {
 		if uri.IsRemoteArg(s) {
@@ -332,9 +341,6 @@ func (e *Engine) checkUnsupported(dest *uri.URL) error {
 		return fmt.Errorf("--symbolic-link is not possible with blob storage")
 	case e.opt.Backup != cli.BackupNone && dest.IsRemote():
 		return fmt.Errorf("--backup is not supported for blob destinations")
-	}
-	if e.opt.SELinux {
-		e.log.Warn("ignoring SELinux context options; blob storage has no security contexts")
 	}
 	return nil
 }

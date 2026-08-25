@@ -296,3 +296,8 @@ type FileID struct{ Dev, Ino uint64 }
 // IDOf returns the file identity from a stat result, along with its link
 // count, so only multiply-linked files need tracking.
 func IDOf(fi fs.FileInfo) (FileID, int, bool) { return fileIdentity(fi) }
+
+// DeviceOf returns the filesystem a node lives on, taken from the raw stat
+// result carried on a Node. It is how --one-file-system recognises a mount
+// point.
+func DeviceOf(sys any) (uint64, bool) { return deviceOfSys(sys) }

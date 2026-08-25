@@ -60,6 +60,7 @@ func (e *Engine) scan(ctx context.Context, out chan<- *task) error {
 			e.fail("%v", err)
 			continue
 		}
+		e.rootDev, e.hasRootDev = local.DeviceOf(src.node.Sys)
 		if err := e.plan(ctx, src.node, target, out, src.node.URL.Base(), true); err != nil {
 			return err
 		}
@@ -366,6 +367,11 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 		}
 	}
 	for _, child := range entries {
+		if e.crossesFilesystem(child) {
+			e.log.Info("not descending into a directory on another file system",
+				"path", child.URL.Display())
+			continue
+		}
 		if err := e.plan(ctx, child, dst.Join(child.Name()), out,
 			display+"/"+child.Name(), false); err != nil {
 			return err
@@ -380,6 +386,17 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 		}
 	}
 	return nil
+}
+
+// crossesFilesystem reports whether --one-file-system should stop at this
+// entry. Like cp, only directories are considered: a mount point is a
+// directory, and the files beside it are on the filesystem being copied.
+func (e *Engine) crossesFilesystem(n *store.Node) bool {
+	if !e.opt.OneFileSystem || !e.hasRootDev || !n.IsDir() || n.URL.IsRemote() {
+		return false
+	}
+	dev, ok := local.DeviceOf(n.Sys)
+	return ok && dev != e.rootDev
 }
 
 func (e *Engine) planSymlink(ctx context.Context, src *store.Node, dst *uri.URL,

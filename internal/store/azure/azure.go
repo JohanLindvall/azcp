@@ -18,7 +18,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -61,9 +60,9 @@ type Store struct {
 	log   *slog.Logger
 	creds *Credentials
 
-	// noServerCopy records that this endpoint rejected a server-side copy as
-	// unimplemented, so the rest of the run streams without asking again.
-	noServerCopy atomic.Bool
+	// noCopyRoute remembers, per endpoint and route, that a server-side copy
+	// mechanism is not implemented there, so the rest of the run stops asking.
+	noCopyRoute sync.Map
 
 	mu      sync.Mutex
 	clients map[string]*azblob.Client

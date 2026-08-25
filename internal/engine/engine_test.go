@@ -12,6 +12,9 @@ import (
 
 	"github.com/JohanLindvall/azcp/internal/cli"
 	"github.com/JohanLindvall/azcp/internal/progress"
+	"github.com/JohanLindvall/azcp/internal/store"
+	"github.com/JohanLindvall/azcp/internal/store/local"
+	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
 // run drives a whole invocation the way main does, inside dir, and reports how
@@ -475,5 +478,66 @@ func TestDereferenceSymlinkLoopTerminates(t *testing.T) {
 	}
 	if !exists(filepath.Join(d, "dst/a.txt")) {
 		t.Error("the real file was not copied")
+	}
+}
+
+// TestOneFileSystemStopsAtMountPoints checks the -x decision directly. Creating
+// a real mount point inside a temporary directory needs privileges the test
+// suite does not have, so the device comparison is exercised with synthetic
+// stat results instead.
+func TestOneFileSystemStopsAtMountPoints(t *testing.T) {
+	d := t.TempDir()
+	fi, err := os.Stat(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, ok := local.DeviceOf(fi.Sys())
+	if !ok {
+		t.Skip("device identity unavailable on this platform")
+	}
+
+	e := &Engine{opt: &cli.Options{OneFileSystem: true}, rootDev: dev, hasRootDev: true}
+	sameFS := &store.Node{URL: mustURL(t, d), Kind: store.KindDir, Sys: fi.Sys()}
+	if e.crossesFilesystem(sameFS) {
+		t.Error("a directory on the root filesystem was treated as a mount point")
+	}
+
+	otherFS := &store.Node{URL: mustURL(t, d), Kind: store.KindDir, Sys: fi.Sys()}
+	e.rootDev = dev + 1
+	if !e.crossesFilesystem(otherFS) {
+		t.Error("a directory on another filesystem was not recognised")
+	}
+
+	// Plain files are never skipped: only a directory can be a mount point.
+	file := &store.Node{URL: mustURL(t, d), Kind: store.KindFile, Sys: fi.Sys()}
+	if e.crossesFilesystem(file) {
+		t.Error("-x skipped a file")
+	}
+
+	// Without the option nothing is skipped.
+	e.opt.OneFileSystem = false
+	if e.crossesFilesystem(otherFS) {
+		t.Error("-x applied when it was not requested")
+	}
+}
+
+func mustURL(t *testing.T, path string) *uri.URL {
+	t.Helper()
+	u, err := uri.Parse(path, uri.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// -x must not disturb an ordinary copy that stays on one filesystem.
+func TestOneFileSystemCopiesNormally(t *testing.T) {
+	d := t.TempDir()
+	write(t, filepath.Join(d, "src/a/b.txt"), "1")
+	if n := run(t, d, "-rx", "src", "dst"); n != 0 {
+		t.Fatalf("failed = %d", n)
+	}
+	if got := read(t, filepath.Join(d, "dst/a/b.txt")); got != "1" {
+		t.Errorf("content = %q", got)
 	}
 }

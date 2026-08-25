@@ -54,6 +54,11 @@ type Engine struct {
 	hardLinksMu sync.Mutex
 	hardLinks   map[local.FileID]string
 
+	// rootDev is the filesystem the top-level source being planned lives on.
+	// --one-file-system compares against it to recognise a mount point.
+	rootDev    uint64
+	hasRootDev bool
+
 	// visitedDirs guards against symlink loops when --dereference is in
 	// effect. Only the scanner touches it, and the scanner is one goroutine.
 	visitedDirs map[local.FileID]bool
