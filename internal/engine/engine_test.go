@@ -675,3 +675,108 @@ func TestExcludeAndInclude(t *testing.T) {
 		}
 	})
 }
+
+func TestTimeWindowFilters(t *testing.T) {
+	d := t.TempDir()
+	write(t, filepath.Join(d, "src/old.txt"), "old")
+	write(t, filepath.Join(d, "src/new.txt"), "new")
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(filepath.Join(d, "src/old.txt"), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := run(t, d, "-r", "--newer-than", "7d", "src", "recent"); n != 0 {
+		t.Fatalf("failed = %d", n)
+	}
+	if exists(filepath.Join(d, "recent/old.txt")) {
+		t.Error("--newer-than copied something older than the window")
+	}
+	if !exists(filepath.Join(d, "recent/new.txt")) {
+		t.Error("--newer-than skipped something inside the window")
+	}
+
+	if n := run(t, d, "-r", "--older-than", "7d", "src", "aged"); n != 0 {
+		t.Fatalf("failed = %d", n)
+	}
+	if !exists(filepath.Join(d, "aged/old.txt")) || exists(filepath.Join(d, "aged/new.txt")) {
+		t.Errorf("--older-than selected the wrong files: %v", tree(t, filepath.Join(d, "aged")))
+	}
+}
+
+func TestDeleteMakesTheDestinationMatch(t *testing.T) {
+	setup := func(t *testing.T) string {
+		d := t.TempDir()
+		write(t, filepath.Join(d, "src/keep.txt"), "keep")
+		write(t, filepath.Join(d, "src/sub/nested.txt"), "nested")
+		write(t, filepath.Join(d, "dst/keep.txt"), "stale")
+		write(t, filepath.Join(d, "dst/stray.txt"), "stray")
+		write(t, filepath.Join(d, "dst/sub/gone.txt"), "gone")
+		write(t, filepath.Join(d, "dst/junk.tmp"), "junk")
+		return d
+	}
+
+	t.Run("removes what the source does not have", func(t *testing.T) {
+		d := setup(t)
+		if n := run(t, d, "-rT", "--delete", "src", "dst"); n != 0 {
+			t.Fatalf("failed = %d", n)
+		}
+		for _, gone := range []string{"dst/stray.txt", "dst/sub/gone.txt", "dst/junk.tmp"} {
+			if exists(filepath.Join(d, gone)) {
+				t.Errorf("%s should have been removed", gone)
+			}
+		}
+		for _, kept := range []string{"dst/keep.txt", "dst/sub/nested.txt"} {
+			if !exists(filepath.Join(d, kept)) {
+				t.Errorf("%s should have survived", kept)
+			}
+		}
+	})
+
+	t.Run("an excluded entry is protected, not deleted", func(t *testing.T) {
+		d := setup(t)
+		if n := run(t, d, "-rT", "--delete", "--exclude", "*.tmp", "src", "dst"); n != 0 {
+			t.Fatalf("failed = %d", n)
+		}
+		if !exists(filepath.Join(d, "dst/junk.tmp")) {
+			t.Error("--exclude should protect an entry from --delete, not mark it for removal")
+		}
+		if exists(filepath.Join(d, "dst/stray.txt")) {
+			t.Error("stray.txt should still have been removed")
+		}
+	})
+
+	t.Run("dry run removes nothing", func(t *testing.T) {
+		d := setup(t)
+		if n := run(t, d, "-rT", "--delete", "--dry-run", "src", "dst"); n != 0 {
+			t.Fatalf("failed = %d", n)
+		}
+		if !exists(filepath.Join(d, "dst/stray.txt")) {
+			t.Error("--dry-run deleted something")
+		}
+	})
+
+	// A half-read source looks exactly like a source with fewer files in it,
+	// which is precisely when deleting would be catastrophic.
+	t.Run("refuses when the source could not be read in full", func(t *testing.T) {
+		d := setup(t)
+		locked := filepath.Join(d, "src/locked")
+		if err := os.Mkdir(locked, 0o000); err != nil {
+			t.Skipf("cannot create an unreadable directory: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+		n := run(t, d, "-rT", "--delete", "src", "dst")
+		if n == 0 {
+			t.Skip("the directory was readable anyway, most likely running as root")
+		}
+		if !exists(filepath.Join(d, "dst/stray.txt")) {
+			t.Error("deleted despite a failure during the copy")
+		}
+	})
+
+	t.Run("--delete needs -r", func(t *testing.T) {
+		if _, err := cli.Parse([]string{"--delete", "a", "b"}); err == nil {
+			t.Error("--delete was accepted without -r")
+		}
+	})
+}

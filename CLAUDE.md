@@ -202,6 +202,38 @@ The SDK's default of ten idle connections per host means a run with sixty-four
 jobs re-establishes a connection for most requests. It costs nothing against a
 local emulator, which is exactly why it went unnoticed.
 
+**Attributes ride in blob metadata.** `store/posixmeta.go` defines the keys and
+the encoding; `engine/attrs.go` writes them on upload and restores them on
+download. The order in `restoreAttrs` is not arbitrary: a successful chown
+clears the setuid and setgid bits, so ownership has to be applied before the
+mode or those bits are silently lost. The local path in `local.ApplyAttrs`
+already had this right; the blob path did not, and a test caught it.
+
+**Transparent decompression must stay off.** `transport.go` sets
+`DisableCompression`. Left on, Go advertises gzip and silently expands any
+encoded response — so a blob stored with `Content-Encoding: gzip` would arrive
+expanded, under its `.gz` name, and shorter than the length the service
+reported. For a copier that is data corruption, not a convenience.
+
+**Ranges are fetched by hand, not by `DownloadFile`.** Two reasons, in
+`store/azure/download.go`: the SDK dereferences a `Content-Length` the service
+does not send for an encoded blob and panics, and resuming needs to know which
+ranges landed, which only the code issuing them can know.
+
+**`--delete` is the one thing here that destroys data.** `engine/prune.go`
+refuses if anything failed to copy, protects whatever `--exclude` ruled out, and
+honours `--dry-run`. Do not relax any of those three without a very good
+reason: a half-read source looks exactly like a source with fewer files in it.
+
+**Resume is asymmetric on purpose.** An upload asks the service for its
+uncommitted block list, so it needs no local state and survives a reboot or a
+change of machine. A download cannot: ranges arrive out of order, so a partial
+file is indistinguishable from a whole one with holes, and a record beside the
+file is the only honest answer. A record describing a different blob is
+discarded rather than continued into. Note that `--resume` must not open the
+destination with `O_TRUNC`, which would destroy the very bytes the record
+vouches for.
+
 **Blob storage has no directories.** `store/azure` synthesises them: a prefix
 with children behaves as a directory, `WalkAll` emits ancestor prefixes so `**`
 sees a tree, and an empty directory is the zero-byte `name/` marker blob.
@@ -226,7 +258,7 @@ matching semantics must keep it passing — bash is the specification.
 is the closest thing to an end-to-end test that needs no credentials. Add cases
 there when changing `cp` semantics.
 
-`scripts/e2e.sh` covers the blob paths against the emulator — 23 checks; it is the only
+`scripts/e2e.sh` covers the blob paths against the emulator — 33 checks; it is the only
 test that exercises upload, download, blob-to-blob copy and remote wildcards
 together. Add to it when changing anything in `store/azure`.
 

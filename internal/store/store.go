@@ -49,10 +49,18 @@ type Node struct {
 	LinkTarget string
 
 	// Blob-only metadata.
-	ContentType string
-	ETag        string
-	MD5         []byte
-	AccessTier  string
+	ContentType        string
+	ContentEncoding    string
+	ContentDisposition string
+	ContentLanguage    string
+	CacheControl       string
+	ETag               string
+	MD5                []byte
+	AccessTier         string
+	// Metadata is the blob's user metadata. It carries the POSIX attributes
+	// when --preserve was used, which is how a filesystem tree survives a
+	// round trip through a store that has no notion of one.
+	Metadata map[string]string
 
 	// Sys carries the platform-specific stat result for local files, used for
 	// ownership, timestamps and hard-link detection.

@@ -242,6 +242,11 @@ func (r *Reporter) Plan(files, bytes int64) {
 // Skipped records a file that was deliberately not copied.
 func (r *Reporter) Skipped(n int64) { r.skippedFiles.Add(n) }
 
+// Failed records a problem that did not arise from a transfer in flight — a
+// source that could not be read, a destination that could not be made — so the
+// closing summary accounts for it alongside the transfers that failed.
+func (r *Reporter) Failed(n int64) { r.failedFiles.Add(n) }
+
 // Totals reports the current tallies for the closing summary.
 func (r *Reporter) Totals() (done, failed, skipped, retries int64, bytes int64, elapsed time.Duration) {
 	return r.doneFiles.Load(), r.failedFiles.Load(), r.skippedFiles.Load(),

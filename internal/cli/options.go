@@ -48,6 +48,14 @@ const (
 	BackupExisting
 )
 
+// Output selects how results are reported.
+type Output int
+
+const (
+	OutputText Output = iota
+	OutputJSON
+)
+
 // GlobMode controls wildcard expansion of arguments.
 type GlobMode int
 
@@ -87,8 +95,12 @@ type Options struct {
 	HasTargetDir         bool
 	NoTargetDirectory    bool
 	Verbose              bool
-	OneFileSystem        bool
-	SELinux              bool
+	// ContextExplicit records that SELinux context handling was asked for by
+	// name rather than swept in by --preserve=all, so that -a does not warn
+	// about something the user never mentioned.
+	ContextExplicit bool
+	OneFileSystem   bool
+	SELinux         bool
 
 	// Transfer behaviour
 	Jobs int
@@ -104,6 +116,8 @@ type Options struct {
 	BandwidthLimit  int64
 	MaxErrors       int
 	DryRun          bool
+	Resume          bool
+	Delete          bool
 	Glob            GlobMode
 	Exclude         []string
 	Include         []string
@@ -114,16 +128,31 @@ type Options struct {
 	LogLevel         string
 	LogFormat        string
 	LogFile          string
+	Output           Output
+
+	// Benchmark, when set, measures throughput to the destination instead of
+	// copying anything. BenchFiles and BenchSize say how much data to use.
+	Benchmark  bool
+	BenchFiles int
+	BenchSize  int64
 
 	// Azure
-	Auth            azure.AuthMode
-	TenantID        string
-	EndpointSuffix  string
-	CreateContainer bool
-	ContentType     string
-	AccessTier      string
-	PutMD5          bool
-	CheckMD5        azure.MD5Check
+	Auth               azure.AuthMode
+	TenantID           string
+	EndpointSuffix     string
+	CreateContainer    bool
+	ContentType        string
+	AccessTier         string
+	PutMD5             bool
+	CheckMD5           azure.MD5Check
+	ContentEncoding    string
+	ContentDisposition string
+	ContentLanguage    string
+	CacheControl       string
+	Metadata           map[string]string
+	Decompress         bool
+	NewerThan          time.Time
+	OlderThan          time.Time
 
 	Sources []string
 	Dest    string
@@ -140,10 +169,100 @@ func Defaults() *Options {
 		RetryDelay:       300 * time.Millisecond,
 		RetryMaxDelay:    30 * time.Second,
 		ProgressInterval: progress.DefaultInterval,
+		BenchFiles:       10,
+		BenchSize:        64 << 20,
 		LogLevel:         "warn",
 		LogFormat:        "text",
 		Auth:             azure.AuthAuto,
 	}
+}
+
+// parseBenchSpec reads "10x64MiB": how many files, and how big each one is.
+func parseBenchSpec(spec string) (int, int64, error) {
+	countText, sizeText, ok := strings.Cut(strings.ToLower(spec), "x")
+	if !ok {
+		return 0, 0, fmt.Errorf("invalid argument %q for '--benchmark' "+
+			"(want COUNTxSIZE, e.g. 10x64MiB)", spec)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(countText))
+	if err != nil || n < 1 {
+		return 0, 0, fmt.Errorf("invalid file count %q for '--benchmark'", countText)
+	}
+	size, err := humanize.ParseSize(sizeText)
+	if err != nil || size < 1 {
+		return 0, 0, fmt.Errorf("invalid size %q for '--benchmark'", sizeText)
+	}
+	return n, size, nil
+}
+
+// parseMetadata reads "k=v,k=v" into the map. Blob metadata names have to be
+// valid identifiers, so a name that could not be stored is refused here rather
+// than by the service halfway through a transfer.
+func parseMetadata(spec string, into map[string]string) error {
+	for _, pair := range strings.Split(spec, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(pair, "=")
+		k = strings.TrimSpace(k)
+		if !ok || k == "" {
+			return fmt.Errorf("invalid metadata %q (want NAME=VALUE)", pair)
+		}
+		if !validMetadataName(k) {
+			return fmt.Errorf("invalid metadata name %q: names must start with "+
+				"a letter or underscore and contain only letters, digits and "+
+				"underscores", k)
+		}
+		into[k] = v
+	}
+	return nil
+}
+
+func validMetadataName(k string) bool {
+	for i, r := range k {
+		switch {
+		case r == '_', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return k != ""
+}
+
+// ParseTimeSpec reads a point in time written as an RFC 3339 timestamp, a plain
+// date, or an age such as "7d" or "36h" meaning that long before now.
+func ParseTimeSpec(s string, now time.Time) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty time")
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	if d, err := parseAge(s); err == nil {
+		return now.Add(-d), nil
+	}
+	return time.Time{}, fmt.Errorf("unrecognised time %q "+
+		"(want 2006-01-02, an RFC 3339 timestamp, or an age such as 7d)", s)
+}
+
+// parseAge accepts Go durations plus a day suffix, which is what people
+// actually write for this.
+func parseAge(s string) (time.Duration, error) {
+	if rest, ok := strings.CutSuffix(s, "d"); ok {
+		days, err := strconv.ParseFloat(rest, 64)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(days * 24 * float64(time.Hour)), nil
+	}
+	return time.ParseDuration(s)
 }
 
 // defaultJobs picks how many files to move at once when the user has not said.
@@ -269,9 +388,12 @@ func (o *Options) apply(f cpflags.Flag) error {
 		if !f.HasValue {
 			list = "mode,ownership,timestamps"
 		}
-		return applyPreserve(&o.Preserve, list, true)
+		explicit, err := applyPreserve(&o.Preserve, list, true)
+		o.ContextExplicit = o.ContextExplicit || explicit
+		return err
 	case "no-preserve":
-		return applyPreserve(&o.Preserve, f.Value, false)
+		_, err := applyPreserve(&o.Preserve, f.Value, false)
+		return err
 	case "parents":
 		o.Parents = true
 	case "recursive", "R", "r":
@@ -336,7 +458,7 @@ func (o *Options) apply(f cpflags.Flag) error {
 	case "one-file-system", "x":
 		o.OneFileSystem = true
 	case "Z", "context":
-		o.SELinux = true
+		o.SELinux, o.ContextExplicit = true, true
 
 	// --- extensions ---------------------------------------------------------
 	case "jobs", "j":
@@ -411,6 +533,24 @@ func (o *Options) apply(f cpflags.Flag) error {
 			return fmt.Errorf("--progress-interval must be at least 20ms")
 		}
 		o.ProgressInterval = d
+	case "output":
+		switch strings.ToLower(f.Value) {
+		case "text":
+			o.Output = OutputText
+		case "json":
+			o.Output = OutputJSON
+		default:
+			return fmt.Errorf("invalid argument %q for '--output' (want text or json)", f.Value)
+		}
+	case "benchmark":
+		o.Benchmark = true
+		if f.HasValue && f.Value != "" {
+			n, size, err := parseBenchSpec(f.Value)
+			if err != nil {
+				return err
+			}
+			o.BenchFiles, o.BenchSize = n, size
+		}
 	case "log-level":
 		o.LogLevel = f.Value
 	case "log-format":
@@ -421,6 +561,10 @@ func (o *Options) apply(f cpflags.Flag) error {
 		o.Exclude = append(o.Exclude, f.Value)
 	case "include":
 		o.Include = append(o.Include, f.Value)
+	case "delete":
+		o.Delete = true
+	case "resume":
+		o.Resume = true
 	case "dry-run":
 		o.DryRun = true
 	case "glob":
@@ -457,6 +601,33 @@ func (o *Options) apply(f cpflags.Flag) error {
 			return err
 		}
 		o.CheckMD5 = m
+	case "content-encoding":
+		o.ContentEncoding = f.Value
+	case "content-disposition":
+		o.ContentDisposition = f.Value
+	case "content-language":
+		o.ContentLanguage = f.Value
+	case "cache-control":
+		o.CacheControl = f.Value
+	case "metadata":
+		if o.Metadata == nil {
+			o.Metadata = map[string]string{}
+		}
+		return parseMetadata(f.Value, o.Metadata)
+	case "decompress":
+		o.Decompress = true
+	case "newer-than":
+		t, err := ParseTimeSpec(f.Value, time.Now())
+		if err != nil {
+			return fmt.Errorf("invalid argument for '--newer-than': %w", err)
+		}
+		o.NewerThan = t
+	case "older-than":
+		t, err := ParseTimeSpec(f.Value, time.Now())
+		if err != nil {
+			return fmt.Errorf("invalid argument for '--older-than': %w", err)
+		}
+		o.OlderThan = t
 	case "access-tier":
 		o.AccessTier = f.Value
 
@@ -485,7 +656,7 @@ func positiveInt(s, what string) (int, error) {
 	return n, nil
 }
 
-func applyPreserve(p *local.Preserve, list string, on bool) error {
+func applyPreserve(p *local.Preserve, list string, on bool) (explicitContext bool, err error) {
 	for _, item := range strings.Split(list, ",") {
 		switch strings.TrimSpace(item) {
 		case "":
@@ -501,15 +672,16 @@ func applyPreserve(p *local.Preserve, list string, on bool) error {
 			p.XAttr = on
 		case "context":
 			p.Context = on
+			explicitContext = on
 		case "all":
 			*p = local.Preserve{Mode: on, Ownership: on, Timestamps: on,
 				Links: on, XAttr: on, Context: on}
 		default:
-			return fmt.Errorf("invalid attribute %q "+
+			return false, fmt.Errorf("invalid attribute %q "+
 				"(want mode, ownership, timestamps, links, xattr, context or all)", item)
 		}
 	}
-	return nil
+	return explicitContext, nil
 }
 
 func parseBackup(v string, has bool) (Backup, error) {
@@ -548,6 +720,13 @@ func (o *Options) resolveOperands(operands []string) error {
 		o.Dest = o.TargetDirectory
 		return nil
 	}
+	if o.Benchmark {
+		if len(operands) != 1 {
+			return usagef("--benchmark takes one destination and nothing else")
+		}
+		o.Dest = operands[0]
+		return nil
+	}
 	switch len(operands) {
 	case 0:
 		return usagef("missing file operand")
@@ -568,6 +747,9 @@ func (o *Options) validate() error {
 	}
 	if o.HardLink && o.SymbolicLink {
 		return usagef("cannot make both hard and symbolic links")
+	}
+	if o.Delete && !o.Recursive {
+		return usagef("--delete only makes sense with a recursive copy (-r)")
 	}
 	if o.Backup != BackupNone && o.NoClobber {
 		return usagef("options --backup and --no-clobber are mutually exclusive")

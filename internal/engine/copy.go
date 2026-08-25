@@ -36,6 +36,16 @@ func (e *Engine) transfer(ctx context.Context, t *task, pt *progress.Task) error
 		t.removeFirst = false
 	}
 
+	// A blob that records a symbolic link has no content to fetch; what it
+	// says is where the link should point.
+	if t.src.URL.IsRemote() && !t.dst.IsRemote() {
+		if p := store.DecodePosixMeta(t.src.Metadata); p.IsSymlink() {
+			return e.replace(t, func() error {
+				return os.Symlink(p.SymlinkDest, t.dst.Path)
+			})
+		}
+	}
+
 	srcRemote, dstRemote := t.src.URL.IsRemote(), t.dst.IsRemote()
 	switch {
 	case !srcRemote && !dstRemote:
@@ -56,8 +66,14 @@ func (e *Engine) transferOptions() azure.TransferOptions {
 		ContentType: e.opt.ContentType,
 		AccessTier:  e.opt.AccessTier,
 		NoClobber:   e.opt.NoClobber,
+		Resume:      e.opt.Resume,
 		PutMD5:      e.opt.PutMD5,
 		CheckMD5:    e.opt.CheckMD5,
+
+		ContentEncoding:    e.opt.ContentEncoding,
+		ContentDisposition: e.opt.ContentDisposition,
+		ContentLanguage:    e.opt.ContentLanguage,
+		CacheControl:       e.opt.CacheControl,
 	}
 }
 
@@ -75,14 +91,26 @@ func (e *Engine) upload(ctx context.Context, t *task, pt *progress.Task) error {
 	}
 	opts := e.transferOptions()
 	opts.Progress = pt.Set
+	opts.Metadata = e.uploadMetadata(t.src)
+
+	// A symbolic link has no content beyond where it points, so it is stored
+	// as an empty blob whose metadata says what it is.
+	if t.src.IsSymlink() {
+		return e.az.PutMarker(ctx, t.dst, opts)
+	}
 	return e.az.Upload(ctx, t.src.URL.Path, t.dst, opts)
 }
 
 // download fetches a blob into a local file.
 func (e *Engine) download(ctx context.Context, t *task, pt *progress.Task) error {
 	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
-	if e.opt.NoClobber {
+	switch {
+	case e.opt.NoClobber:
 		flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
+	case e.opt.Resume:
+		// Truncating would destroy the very bytes the resume record vouches
+		// for. The ranges still to come are written where they belong.
+		flags = os.O_WRONLY | os.O_CREATE
 	}
 	f, err := e.openDest(t, flags, 0o644)
 	if err != nil {
@@ -100,7 +128,22 @@ func (e *Engine) download(ctx context.Context, t *task, pt *progress.Task) error
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("cannot write %s: %w", quote(t.dst.Display()), err)
 	}
-	if e.opt.Preserve.Timestamps && !t.src.ModTime.IsZero() {
+	if e.opt.Decompress && decompressible(t.src.ContentEncoding) {
+		final, derr := decompressFile(t.dst.Path, t.src.ContentEncoding)
+		if derr != nil {
+			return derr
+		}
+		if final != t.dst.Path {
+			e.log.Debug("expanded on arrival",
+				"blob", t.src.URL.Display(), "path", final)
+			t.dst = t.dst.WithPathPart(final)
+		}
+	}
+	e.restoreAttrs(t)
+	if e.opt.Preserve.Timestamps && !t.src.ModTime.IsZero() &&
+		len(t.src.Metadata) == 0 {
+		// No preserved timestamp to restore; the service's own is the best
+		// available.
 		if err := os.Chtimes(t.dst.Path, t.src.ModTime, t.src.ModTime); err != nil {
 			e.log.Warn("cannot preserve timestamp",
 				"path", t.dst.Display(), "error", err)
@@ -324,7 +367,9 @@ func (e *Engine) checkUnsupported(dest *uri.URL) error {
 		// worse than saying so.
 		e.log.Warn("ignoring -Z and --context: this tool does not set SELinux contexts")
 	}
-	if e.opt.Preserve.Context {
+	if e.opt.Preserve.Context && e.opt.ContextExplicit {
+		// Only when asked for by name: --preserve=all sweeps it in, and
+		// warning on every -a would be noise about something never mentioned.
 		e.log.Warn("ignoring --preserve=context: this tool does not copy SELinux contexts")
 	}
 	remote := dest.IsRemote()

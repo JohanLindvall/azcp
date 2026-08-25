@@ -127,6 +127,12 @@ var specs = []cpflags.Spec{
 		Help: "same as --progress=never"},
 	{Long: "progress-interval", Arg: cpflags.RequiredArg, Meta: "DUR",
 		Help: "how often the live display repaints (default 1s)"},
+	{Long: "output", Arg: cpflags.RequiredArg, Meta: "FORMAT",
+		Help: "text (default) or json; json writes one object per line, " +
+			"ending with a summary"},
+	{Long: "benchmark", Arg: cpflags.OptionalArg, Meta: "NxSIZE",
+		Help: "measure throughput to a container with generated data, then " +
+			"remove it (default 10x64MiB)"},
 	{Long: "log-level", Arg: cpflags.RequiredArg, Meta: "LEVEL",
 		Help: "error, warn, info or debug (default warn)"},
 	{Long: "log-format", Arg: cpflags.RequiredArg, Meta: "FORMAT",
@@ -141,6 +147,12 @@ var specs = []cpflags.Spec{
 	{Long: "include", Arg: cpflags.RequiredArg, Meta: "PATTERN",
 		Help: "copy only entries matching PATTERN; repeatable. --exclude wins " +
 			"where both match"},
+	{Long: "delete", Arg: cpflags.NoArg,
+		Help: "remove destination entries the source does not have, making it " +
+			"match; refuses if anything failed to copy, and never removes " +
+			"what --exclude ruled out"},
+	{Long: "resume", Arg: cpflags.NoArg,
+		Help: "continue an interrupted transfer instead of starting it again"},
 	{Long: "dry-run", Arg: cpflags.NoArg,
 		Help: "report what would be copied without copying it"},
 	{Long: "glob", Arg: cpflags.RequiredArg, Meta: "WHEN",
@@ -160,6 +172,25 @@ var specs = []cpflags.Spec{
 	{Long: "check-md5", Arg: cpflags.RequiredArg, Meta: "WHEN",
 		Help: "verify a downloaded blob against its recorded checksum: " +
 			"off, warn, fail (default), require"},
+	{Long: "content-encoding", Arg: cpflags.RequiredArg, Meta: "ENC",
+		Help: "set the blob content encoding, e.g. gzip"},
+	{Long: "content-disposition", Arg: cpflags.RequiredArg, Meta: "VAL",
+		Help: "set the blob content disposition"},
+	{Long: "content-language", Arg: cpflags.RequiredArg, Meta: "LANG",
+		Help: "set the blob content language"},
+	{Long: "cache-control", Arg: cpflags.RequiredArg, Meta: "VAL",
+		Help: "set the blob cache-control header"},
+	{Long: "metadata", Arg: cpflags.RequiredArg, Meta: "K=V",
+		Help: "store metadata on each uploaded blob; repeatable, or " +
+			"comma-separated"},
+	{Long: "decompress", Arg: cpflags.NoArg,
+		Help: "on download, expand blobs whose content encoding says they are " +
+			"compressed, dropping a trailing .gz"},
+	{Long: "newer-than", Arg: cpflags.RequiredArg, Meta: "TIME",
+		Help: "copy only entries modified since TIME: a date, an RFC 3339 " +
+			"timestamp, or an age such as 7d"},
+	{Long: "older-than", Arg: cpflags.RequiredArg, Meta: "TIME",
+		Help: "copy only entries modified before TIME"},
 	{Long: "access-tier", Arg: cpflags.RequiredArg, Meta: "TIER",
 		Help: "set the blob access tier: Hot, Cool, Cold or Archive"},
 

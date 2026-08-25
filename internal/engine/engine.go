@@ -6,6 +6,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -46,8 +47,14 @@ type Engine struct {
 	az     *azure.Store
 	retry  retryx.Policy
 	filter *filter
-	uriOK  uri.Options
-	stdin  io.Reader
+	pruner *pruner
+
+	deleted int64
+
+	failuresMu sync.Mutex
+	failures   []Failure
+	uriOK      uri.Options
+	stdin      io.Reader
 
 	failed  atomic.Int64
 	skipped atomic.Int64
@@ -102,11 +109,14 @@ func New(cfg Config) (*Engine, error) {
 	}
 	e.local = local.New(cfg.Log, o.DerefWalk())
 	e.local.OneFileSystem = o.OneFileSystem
-	f, err := newFilter(o.Include, o.Exclude)
+	f, err := newFilter(o.Include, o.Exclude, o.NewerThan, o.OlderThan)
 	if err != nil {
 		return nil, cli.Usage(err)
 	}
 	e.filter = f
+	if o.Delete {
+		e.pruner = newPruner()
+	}
 	e.az = azure.New(azure.Config{
 		Auth:            o.Auth,
 		Log:             cfg.Log,
@@ -118,6 +128,7 @@ func New(cfg Config) (*Engine, error) {
 		UserAgent:       cli.Program + "/" + cli.VersionString(),
 		PeakRequests:    o.PeakRequests(),
 		BytesPerSecond:  o.BandwidthLimit,
+		IncludeMetadata: e.preservesToBlob() || o.Decompress,
 	})
 	return e, nil
 }
@@ -195,6 +206,7 @@ func (e *Engine) Run(ctx context.Context) (int64, error) {
 	wg.Wait()
 
 	e.applyDeferredDirs()
+	e.deleted = e.prune(ctx)
 
 	if scanErr != nil {
 		return e.failed.Load(), scanErr
@@ -207,6 +219,34 @@ func (e *Engine) Run(ctx context.Context) (int64, error) {
 
 // Skipped reports how many files were deliberately not copied.
 func (e *Engine) Skipped() int64 { return e.skipped.Load() }
+
+// Deleted reports how many destination entries --delete removed.
+func (e *Engine) Deleted() int64 { return e.deleted }
+
+// Failure is one file that could not be copied.
+type Failure struct {
+	Source      string `json:"source,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	Error       string `json:"error"`
+}
+
+// Failures lists what went wrong, for the machine-readable summary.
+func (e *Engine) Failures() []Failure {
+	e.failuresMu.Lock()
+	defer e.failuresMu.Unlock()
+	return append([]Failure(nil), e.failures...)
+}
+
+// recordFailure keeps a failure for the summary. The list is capped: a run that
+// fails on a hundred thousand files does not need all of them in memory to make
+// the point.
+func (e *Engine) recordFailure(f Failure) {
+	e.failuresMu.Lock()
+	defer e.failuresMu.Unlock()
+	if len(e.failures) < 1000 {
+		e.failures = append(e.failures, f)
+	}
+}
 
 // runTask moves one file, retrying failures that look transient.
 func (e *Engine) runTask(ctx context.Context, t *task) {
@@ -250,12 +290,34 @@ func (e *Engine) runTask(ctx context.Context, t *task) {
 		// The SDK's own error text is a multi-line dump of the whole exchange;
 		// it is worth keeping, but only for someone who asked for detail.
 		e.log.Debug("copy failure detail", "file", t.display, "error", err)
+		e.recordFailure(Failure{
+			Source:      t.src.URL.Display(),
+			Destination: t.dst.Display(),
+			Error:       brief(err),
+		})
+		if e.opt.Output == cli.OutputJSON {
+			// One line per failure; the summary follows at the end.
+			logx.Printf("%s\n", jsonLine(map[string]any{
+				"event": "error", "source": t.src.URL.Display(),
+				"destination": t.dst.Display(), "error": brief(err),
+			}))
+			return
+		}
 		var plain *plainError
 		if errors.As(err, &plain) {
 			logx.Errf("%s: %s\n", cli.Program, plain.msg)
 		} else {
 			logx.Errf("%s: cannot copy %s to %s: %s\n",
 				cli.Program, quote(t.src.URL.Display()), quote(t.dst.Display()), brief(err))
+		}
+		return
+	}
+	if e.opt.Output == cli.OutputJSON {
+		if e.opt.Verbose {
+			logx.Printf("%s\n", jsonLine(map[string]any{
+				"event": "copy", "source": t.src.URL.Display(),
+				"destination": t.dst.Display(), "bytes": t.src.Size,
+			}))
 		}
 		return
 	}
@@ -293,6 +355,16 @@ func (e *Engine) applyDeferredDirs() {
 }
 
 func quote(s string) string { return "'" + s + "'" }
+
+// jsonLine renders one event. A value that cannot be encoded is reported as
+// such rather than silently dropped, because a machine reading this cannot ask.
+func jsonLine(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return `{"event":"error","error":"could not encode this record"}`
+	}
+	return string(b)
+}
 
 // brief renders an error for a single-line report. Azure failures collapse to
 // their status and error code; everything else keeps its own wording.

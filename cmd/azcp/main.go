@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -91,6 +92,10 @@ func run(argv []string) int {
 		return exitUsage
 	}
 
+	if opt.Benchmark {
+		return runBenchmark(ctx, eng, opt, prog)
+	}
+
 	logger.Debug("starting", "version", cli.VersionString(),
 		"jobs", opt.Jobs, "part_size", opt.PartSize,
 		"part_concurrency", opt.PartConcurrency, "retries", opt.Retries)
@@ -110,7 +115,19 @@ func run(argv []string) int {
 		return exitFail
 	}
 
-	prog.Summary(os.Stderr, opt.DryRun)
+	if opt.Output == cli.OutputJSON {
+		writeJSONSummary(prog, eng, opt)
+	} else {
+		prog.Summary(os.Stderr, opt.DryRun)
+		if n := eng.Deleted(); n > 0 {
+			verb := "Removed"
+			if opt.DryRun {
+				verb = "Would remove"
+			}
+			fmt.Fprintf(os.Stderr, "  %s %d destination entrie(s) the source does not have\n",
+				verb, n)
+		}
+	}
 	reportLogged(opt)
 
 	if ctx.Err() != nil {
@@ -147,6 +164,55 @@ func hardStopOnSecondSignal(prog *progress.Reporter) {
 	prog.Stop()
 	fmt.Fprintf(os.Stderr, "\n%s: interrupted\n", cli.Program)
 	os.Exit(exitFail)
+}
+
+// runBenchmark measures throughput instead of copying anything.
+func runBenchmark(ctx context.Context, eng *engine.Engine, opt *cli.Options,
+	prog *progress.Reporter) int {
+
+	res, err := eng.Benchmark(ctx)
+	prog.Stop()
+	logx.SetGuard(nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: benchmark failed: %v\n", cli.Program, err)
+		return exitFail
+	}
+	if opt.Output == cli.OutputJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(res)
+		return exitOK
+	}
+	res.Report()
+	return exitOK
+}
+
+// writeJSONSummary closes a machine-readable run with one summary object.
+func writeJSONSummary(prog *progress.Reporter, eng *engine.Engine, opt *cli.Options) {
+	done, failed, skipped, retries, bytes, elapsed := prog.Totals()
+	warns, errs := logx.Counts()
+	summary := map[string]any{
+		"event":           "summary",
+		"version":         cli.VersionString(),
+		"copied":          done,
+		"failed":          failed,
+		"skipped":         skipped,
+		"deleted":         eng.Deleted(),
+		"bytes":           bytes,
+		"retries":         retries,
+		"elapsed_seconds": elapsed.Seconds(),
+		"dry_run":         opt.DryRun,
+		"warnings":        warns,
+		"errors":          errs,
+	}
+	if f := eng.Failures(); len(f) > 0 {
+		summary["failures"] = f
+	}
+	if elapsed.Seconds() > 0 {
+		summary["bytes_per_second"] = float64(bytes) / elapsed.Seconds()
+	}
+	enc := json.NewEncoder(os.Stdout)
+	_ = enc.Encode(summary)
 }
 
 func colorSupported() bool {

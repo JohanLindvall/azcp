@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/JohanLindvall/azcp/internal/glob"
 )
@@ -24,6 +25,12 @@ import (
 
 // filter decides which entries of a tree take part in the copy.
 type filter struct {
+	// newerThan and olderThan bound the modification time. They are a
+	// watermark for pipelines that track their own high-water mark rather
+	// than comparing against the destination.
+	newerThan time.Time
+	olderThan time.Time
+
 	includes []*glob.Pattern
 	excludes []*glob.Pattern
 	// nameOnly[i] records that the corresponding pattern has no separator and
@@ -34,8 +41,8 @@ type filter struct {
 
 // newFilter compiles the --include and --exclude patterns. Brace expansion is
 // applied first, so --exclude '*.{tmp,bak}' means what it looks like.
-func newFilter(includes, excludes []string) (*filter, error) {
-	f := &filter{}
+func newFilter(includes, excludes []string, newerThan, olderThan time.Time) (*filter, error) {
+	f := &filter{newerThan: newerThan, olderThan: olderThan}
 	var err error
 	if f.includes, f.includeNameOnly, err = compilePatterns(includes, "--include"); err != nil {
 		return nil, err
@@ -65,7 +72,24 @@ func compilePatterns(raw []string, flag string) ([]*glob.Pattern, []bool, error)
 // active reports whether any filtering was asked for at all, so the common case
 // costs nothing.
 func (f *filter) active() bool {
-	return f != nil && (len(f.includes) > 0 || len(f.excludes) > 0)
+	return f != nil && (len(f.includes) > 0 || len(f.excludes) > 0 ||
+		!f.newerThan.IsZero() || !f.olderThan.IsZero())
+}
+
+// withinWindow applies --newer-than and --older-than. A node with no usable
+// timestamp is kept: dropping data because its date could not be read would be
+// the wrong way round.
+func (f *filter) withinWindow(mtime time.Time) bool {
+	if f == nil || mtime.IsZero() {
+		return true
+	}
+	if !f.newerThan.IsZero() && !mtime.After(f.newerThan) {
+		return false
+	}
+	if !f.olderThan.IsZero() && !mtime.Before(f.olderThan) {
+		return false
+	}
+	return true
 }
 
 // excluded reports whether an entry is ruled out by --exclude. A directory that

@@ -53,6 +53,105 @@ Honest about the other side: AzCopy has resumable job plans, `azcopy sync`, and
 back ends beyond blob storage. If you need those, use it. [The detailed comparison](#compared-with-azcopy)
 below says more.
 
+## How to migrate
+
+AzCopy is verb-first (`azcopy copy SRC DST --recursive`); `azcp` is `cp`
+(`azcp -r SRC DST`). Everything else is a rename.
+
+### Commands
+
+| AzCopy | azcp |
+| --- | --- |
+| `azcopy copy SRC DST` | `azcp SRC DST` |
+| `azcopy copy SRC DST --recursive` | `azcp -r SRC DST` |
+| `azcopy sync SRC DST` | `azcp -r -u SRC DST` |
+| `azcopy sync SRC DST --delete-destination=true` | `azcp -r -u --delete SRC DST` |
+| `azcopy make URL` | `azcp --create-container …` (made when first written to) |
+| `azcopy bench URL` | `azcp --benchmark URL` |
+| `azcopy jobs resume ID` | `azcp --resume …` — re-run the same command |
+| `azcopy login` | nothing: credentials are found, and a sign-in is remembered |
+| `azcopy list`, `azcopy remove` | no equivalent; `azcp` copies |
+
+### Flags
+
+| AzCopy | azcp | |
+| --- | --- | --- |
+| `--recursive` | `-r` | |
+| `--overwrite=true` | *(default)* | |
+| `--overwrite=false` | `-n` | |
+| `--overwrite=prompt` | `-i` | |
+| `--overwrite=ifSourceNewer` | `-u` | |
+| `--as-subdir=false` | `-T` | |
+| `--dry-run` | `--dry-run` | |
+| `--include-pattern '*.jpg;*.pdf'` | `--include '*.{jpg,pdf}'` | or repeat `--include` |
+| `--exclude-pattern '*.tmp'` | `--exclude '*.tmp'` | |
+| `--include-path 'logs;etc/hosts'` | `--include 'logs/**' --include 'etc/hosts'` | patterns here match paths, so this is one mechanism rather than two |
+| `--exclude-path 'cache'` | `--exclude 'cache/**'` | |
+| `--include-regex`, `--exclude-regex` | *(no regex)* | `**`, `!(…)`, `@(a\|b)` and `[…]` cover most of it |
+| `--include-after=2024-01-01` | `--newer-than 2024-01-01` | also accepts `7d` |
+| `--include-before=2024-02-01` | `--older-than 2024-02-01` | |
+| `--block-size-mb=16` | `--part-size=16MiB` | |
+| `--cap-mbps=100` | `--bwlimit=12.5M` | **bytes** per second, not bits |
+| `AZCOPY_CONCURRENCY_VALUE=64` | `--jobs=64` | files at once; `--part-concurrency` for blocks within one file |
+| `--check-md5=FailIfDifferent` | `--check-md5=fail` | *(default in both)* |
+| `--check-md5=NoCheck` | `--check-md5=off` | |
+| `--check-md5=LogOnly` | `--check-md5=warn` | |
+| `--check-md5=FailIfDifferentOrMissing` | `--check-md5=require` | |
+| `--put-md5` | `--put-md5` | |
+| `--check-length` | *(always)* | a download is sized to the blob |
+| `--metadata 'a=b;c=d'` | `--metadata a=b,c=d` | |
+| `--content-type`, `--content-encoding`, `--content-language`, `--content-disposition`, `--cache-control` | same names | |
+| `--block-blob-tier=Cool` | `--access-tier=Cool` | |
+| `--decompress` | `--decompress` | |
+| `--preserve-posix-properties`, `--preserve-permissions`, `--preserve-owner` | `--preserve=mode,ownership,timestamps`, or `-a` | |
+| `--preserve-symlinks` | `-a` | included in what `-a` keeps |
+| `--follow-symlinks` | `-L` | |
+| `--from-to=LocalBlob` | *(inferred)* | from the arguments |
+| `--output-type=json` | `--output=json` | |
+| `--log-level=WARNING` | `--log-level=warn` | `error`, `warn`, `info`, `debug` |
+| `AZCOPY_LOG_LOCATION` | `--log-file` | |
+| `--list-of-files list.txt` | `xargs -a list.txt azcp -t DEST` | |
+| `AZCOPY_BUFFER_GB` | *(not needed)* | data is streamed, not buffered whole |
+| `AZCOPY_JOB_PLAN_LOCATION` | *(not needed)* | `--resume` asks the service what arrived |
+
+### URLs and credentials
+
+The `https://ACCOUNT.blob.core.windows.net/container/path?SAS` form AzCopy uses
+works unchanged. `azure://ACCOUNT/container/path` is shorter and fills in the
+endpoint for you.
+
+`azcopy login` has no counterpart because there is nothing to do: a SAS in the
+URL, the `AZURE_STORAGE_*` variables, a managed identity or an existing
+`az login` are all found automatically, and if the account rejects what was
+found, `azcp` offers a browser or device-code sign-in and remembers it. Where
+AzCopy takes `AZCOPY_AUTO_LOGIN_TYPE`, `azcp` takes `--auth`.
+
+### Worked examples
+
+```
+# azcopy copy 'C:\data' 'https://acct.blob.core.windows.net/backup?SAS' --recursive
+azcp -r C:\data 'https://acct.blob.core.windows.net/backup?SAS'
+
+# azcopy sync ./site 'https://acct.blob.core.windows.net/www' \
+#   --delete-destination=true --exclude-pattern '*.map'
+azcp -r -u --delete --exclude '*.map' ./site azure://acct/www/
+
+# azcopy copy 'https://acct.blob.core.windows.net/logs/*' ./logs --recursive \
+#   --include-pattern '*.gz' --include-after 2024-01-01
+azcp -r --include '*.gz' --newer-than 2024-01-01 'azure://acct/logs/**' ./logs/
+
+# azcopy copy ./big.iso 'https://acct.blob.core.windows.net/c/big.iso' \
+#   --block-size-mb 32 --put-md5 --cap-mbps 400
+azcp --part-size=32MiB --put-md5 --bwlimit=50M ./big.iso azure://acct/c/big.iso
+```
+
+### What has no counterpart
+
+Azure Files, ADLS Gen2, S3 and GCS: `azcp` does blobs and local files. Page and
+append blobs: block blobs only. And `azcopy jobs`, which is a durable record of
+every transfer ever run — `--resume` finishes an interrupted copy, but it does
+not give you an audit trail afterwards.
+
 ## Installing
 
 Download from [the latest release][releases] — Linux, macOS and Windows, on
@@ -192,6 +291,22 @@ being copied — not to how you spelled it, so `--exclude 'build/**'` prunes
 discarded. `--exclude` beats `--include` where both match, and both take the
 full pattern language, extended patterns and braces included.
 
+## Archiving a tree
+
+Blob storage has no file mode, no owner and no symbolic links, so a tree copied
+into it normally arrives stripped to its bytes and its names. `--preserve`
+carries the rest in blob metadata, which means `-a` round-trips:
+
+```
+azcp -a ./tree azure://acct/backup/     # modes, owners, timestamps, symlinks
+azcp -a azure://acct/backup/tree ./restored
+```
+
+Ownership is restored only where you have the privilege to set it, and is
+reported when you do not. Directory modes are not kept: a directory that is not
+empty has no object of its own to hang metadata on, and inventing one for every
+directory would litter the container.
+
 ## Verifying a copy
 
 `--put-md5` records a checksum of the whole file on each uploaded blob, and
@@ -217,6 +332,47 @@ counted in the HTTP transport so it covers uploads, downloads and listings
 alike. It cannot apply to a server-side blob-to-blob copy, where the bytes move
 between storage servers and never reach this host; `azcp` says so rather than
 appearing to work.
+
+## Keeping a destination in step
+
+`-u` copies only what is newer, and `--delete` removes what the source no longer
+has, which together make a copy into a replica:
+
+```
+azcp -r -u --delete ./site azure://acct/www/
+```
+
+`--delete` is deliberately timid, because it is the only thing here that
+destroys data. It refuses if any file failed to copy — a listing that stopped
+half way looks exactly like a source with fewer files in it. It never removes
+anything `--exclude` ruled out, since an exclusion says "not my business", not
+"remove it". And `--dry-run` reports every deletion without making one.
+
+`--newer-than` and `--older-than` bound by modification time, for pipelines that
+track their own watermark:
+
+```
+azcp -r --newer-than 7d azure://acct/logs/ ./recent/
+azcp -r --newer-than 2024-01-01 --older-than 2024-02-01 ./archive azure://acct/jan/
+```
+
+## Interrupted transfers
+
+`--resume` continues rather than starting again:
+
+```
+azcp --resume -r ./huge azure://acct/data/
+```
+
+Uploading, it needs nothing on this machine. Blocks staged by the earlier
+attempt are still held against the blob, so `azcp` asks the service what
+arrived and sends only the rest — which means a transfer can be resumed after a
+reboot, or from a different machine entirely.
+
+Downloading, only this process knows which ranges landed, because they arrive
+out of order and a half-written file is indistinguishable from a whole one with
+holes. A small record is kept beside the file and removed when it is complete. A
+record that describes a different blob is discarded rather than spliced in.
 
 ## Wildcards
 
@@ -301,6 +457,34 @@ sequence per character, which keeps a bar to a few hundred bytes instead of a
 few thousand — worth having when the terminal is at the far end of an SSH
 session. `--progress-interval` changes the rate.
 
+## Machine-readable output
+
+`--output=json` writes one object per line and ends with a summary, so a
+pipeline can read results rather than parse prose:
+
+```
+$ azcp --output=json -v -r ./build azure://acct/rel/ | tail -1
+{"bytes":41283,"copied":12,"deleted":0,"elapsed_seconds":1.83,"event":"summary",...}
+```
+
+Failures appear as they happen and again in the summary's `failures` array.
+
+## Measuring the link
+
+`--benchmark` answers the question you actually have when a copy is slow —
+whether the tool is misconfigured or the link is simply that fast. It moves
+generated data, so the local disk plays no part, and removes it afterwards:
+
+```
+$ azcp --benchmark=10x64MiB azure://acct/scratch/
+
+  10 files of 64.0 MiB — 640 MiB in each direction
+  upload       6.1s   105 MiB/s
+  download     3.4s   188 MiB/s
+
+  measured with --jobs=64 --part-size=8.00 MiB
+```
+
 ## Logging
 
 Problems go to stderr as one `cp`-style line each. `--log-level=info` or `debug`
@@ -333,6 +517,14 @@ Added by `azcp`:
 | `--put-md5` | record a checksum on each uploaded blob |
 | `--check-md5=WHEN` | `off`, `warn`, `fail` (default), `require` |
 | `--bwlimit=RATE` | cap throughput, in bytes per second |
+| `--delete` | remove destination entries the source does not have |
+| `--resume` | continue an interrupted transfer |
+| `--newer-than`, `--older-than` | bound by modification time |
+| `--decompress` | expand encoded blobs on download |
+| `--metadata=K=V` | store metadata on uploaded blobs |
+| `--content-encoding`, `--content-disposition`, `--content-language`, `--cache-control` | blob headers |
+| `--output=FORMAT` | `text` or `json` |
+| `--benchmark[=NxSIZE]` | measure throughput and clean up |
 | `--log-level`, `--log-format`, `--log-file` | |
 | `--dry-run` | report what would be copied |
 | `--glob=WHEN` | `auto`, `always`, `never` |
@@ -379,17 +571,25 @@ Where `azcp` is ahead:
 - **Sign-in that stays signed in**, with a browser or a device code, remembered
   in the platform's credential store.
 
-Where AzCopy is ahead, and deliberately not copied here:
+Things AzCopy once had that `azcp` did not, and now does: resuming an
+interrupted transfer (`--resume`), making a destination match a source
+(`-u --delete`), checksums (`--put-md5`, `--check-md5`), throttling
+(`--bwlimit`), filtering (`--include`, `--exclude`, `--newer-than`,
+`--older-than`), blob properties and metadata, `--decompress`, machine-readable
+output (`--output=json`) and a throughput benchmark (`--benchmark`).
 
-- **Resumable jobs.** AzCopy records a plan file per job and can resume an
-  interrupted transfer. `azcp` re-runs with `-n` or `-u`, which is cheaper to
-  reason about and needs no state on disk, but it is not the same thing for a
-  transfer measured in days.
-- **`azcopy sync`**, with deletion at the destination. `-u` covers the common
-  case; a real sync does not fit `cp`'s command line and has not been forced
-  into it.
-- **Other back ends**: Files, ADLS Gen2, S3 and GCS. `azcp` does blobs.
-- **`azcopy bench`**, a throughput benchmark that needs no data of your own.
+Resuming is the one where the difference is worth spelling out. AzCopy keeps a
+job plan on the machine that started the transfer, and resumes by reading it
+back. `azcp` asks the service which blocks arrived, so an upload resumes with
+no local state at all — after a reboot, or from a different machine.
+
+What remains AzCopy's, by choice:
+
+- **Other back ends**: Azure Files, ADLS Gen2, S3 and GCS. `azcp` does blobs and
+  local files.
+- **`azcopy jobs`**, a durable record of every transfer ever run, with a job id
+  to look up afterwards. `--resume` covers finishing an interrupted copy;
+  it does not give you an audit trail.
 
 ## Differences from cp
 

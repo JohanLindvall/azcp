@@ -52,6 +52,9 @@ type Config struct {
 	CreateContainer bool
 	// UserAgent is appended to the SDK's telemetry string.
 	UserAgent string
+	// IncludeMetadata asks listings to return each blob's metadata. It costs
+	// a larger response, so it is only worth it when something will read it.
+	IncludeMetadata bool
 	// PeakRequests is how many requests this run can have outstanding at once.
 	// It sizes the connection pool; see transport.go for why that matters.
 	PeakRequests int
@@ -386,7 +389,10 @@ func (s *Store) readDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) 
 		prefix = strings.TrimSuffix(u.Key, "/") + "/"
 	}
 	var out []*store.Node
-	pager := cc.NewListBlobsHierarchyPager("/", &container.ListBlobsHierarchyOptions{Prefix: &prefix})
+	pager := cc.NewListBlobsHierarchyPager("/", &container.ListBlobsHierarchyOptions{
+		Prefix:  &prefix,
+		Include: container.ListBlobsInclude{Metadata: s.cfg.IncludeMetadata},
+	})
 	for pager.More() {
 		page, err := pager.NextPage(ctx)
 		if err != nil {
@@ -507,7 +513,10 @@ func (s *Store) walkContainer(ctx context.Context, u *uri.URL, fn func(*store.No
 		prefix = strings.TrimSuffix(u.Key, "/") + "/"
 	}
 	seenDirs := map[string]bool{}
-	pager := cc.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{Prefix: &prefix})
+	pager := cc.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{
+		Prefix:  &prefix,
+		Include: container.ListBlobsInclude{Metadata: s.cfg.IncludeMetadata},
+	})
 	for pager.More() {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -659,6 +668,11 @@ func (s *Store) Remove(ctx context.Context, u *uri.URL) error {
 
 func blobNode(u *uri.URL, props *blob.GetPropertiesResponse) *store.Node {
 	n := &store.Node{URL: u, Kind: store.KindFile, Mode: 0o644}
+	n.Metadata = flatten(props.Metadata)
+	n.ContentEncoding = deref(props.ContentEncoding)
+	n.ContentDisposition = deref(props.ContentDisposition)
+	n.ContentLanguage = deref(props.ContentLanguage)
+	n.CacheControl = deref(props.CacheControl)
 	if props.ContentLength != nil {
 		n.Size = *props.ContentLength
 	}
@@ -687,7 +701,12 @@ func blobNode(u *uri.URL, props *blob.GetPropertiesResponse) *store.Node {
 func itemNode(base *uri.URL, b *container.BlobItem) *store.Node {
 	u := base.WithPathPart(base.Container + "/" + *b.Name)
 	n := &store.Node{URL: u, Kind: store.KindFile, Mode: 0o644}
+	n.Metadata = flatten(b.Metadata)
 	if p := b.Properties; p != nil {
+		n.ContentEncoding = deref(p.ContentEncoding)
+		n.ContentDisposition = deref(p.ContentDisposition)
+		n.ContentLanguage = deref(p.ContentLanguage)
+		n.CacheControl = deref(p.CacheControl)
 		if p.ContentLength != nil {
 			n.Size = *p.ContentLength
 		}
@@ -710,6 +729,28 @@ func itemNode(base *uri.URL, b *container.BlobItem) *store.Node {
 		n.Mode = fs.ModeDir | 0o755
 	}
 	return n
+}
+
+// flatten turns the SDK's map of pointers into a plain one; a nil value and an
+// absent key mean the same thing here.
+func flatten(m map[string]*string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		if v != nil {
+			out[k] = *v
+		}
+	}
+	return out
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func dedupeByName(in []*store.Node) []*store.Node {

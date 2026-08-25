@@ -2,7 +2,6 @@ package azure
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -50,6 +49,14 @@ type TransferOptions struct {
 	Progress func(transferred int64)
 	// ContentType overrides the type guessed from the file extension.
 	ContentType string
+	// The remaining content headers are set only when given.
+	ContentEncoding    string
+	ContentDisposition string
+	ContentLanguage    string
+	CacheControl       string
+	// Metadata is stored on the blob. The engine merges the user's --metadata
+	// with the POSIX attributes when --preserve asks for them.
+	Metadata map[string]string
 	// AccessTier sets the blob tier on write.
 	AccessTier string
 	// NoClobber makes the write fail if the destination blob already exists,
@@ -62,6 +69,8 @@ type TransferOptions struct {
 	PutMD5 bool
 	// CheckMD5 says what to do when a downloaded blob carries a checksum.
 	CheckMD5 MD5Check
+	// Resume continues an interrupted transfer instead of starting again.
+	Resume bool
 }
 
 func (o TransferOptions) blockSize(size int64) int64 {
@@ -95,17 +104,42 @@ func (o TransferOptions) httpHeadersWithMD5(name string, sum []byte) *blob.HTTPH
 	if ct == "" {
 		ct = guessContentType(name)
 	}
-	if ct == "" && len(sum) == 0 {
-		return nil
-	}
 	h := &blob.HTTPHeaders{}
+	set := false
 	if ct != "" {
-		h.BlobContentType = &ct
+		h.BlobContentType, set = &ct, true
 	}
 	if len(sum) > 0 {
-		h.BlobContentMD5 = sum
+		h.BlobContentMD5, set = sum, true
+	}
+	for value, field := range map[string]**string{
+		o.ContentEncoding:    &h.BlobContentEncoding,
+		o.ContentDisposition: &h.BlobContentDisposition,
+		o.ContentLanguage:    &h.BlobContentLanguage,
+		o.CacheControl:       &h.BlobCacheControl,
+	} {
+		if value != "" {
+			v := value
+			*field, set = &v, true
+		}
+	}
+	if !set {
+		return nil
 	}
 	return h
+}
+
+// metadata renders the metadata map the way the SDK wants it.
+func (o TransferOptions) metadata() map[string]*string {
+	if len(o.Metadata) == 0 {
+		return nil
+	}
+	m := make(map[string]*string, len(o.Metadata))
+	for k, v := range o.Metadata {
+		val := v
+		m[k] = &val
+	}
+	return m
 }
 
 func (o TransferOptions) accessConditions() *blob.AccessConditions {
@@ -180,6 +214,7 @@ func (s *Store) upload(ctx context.Context, srcPath string, dst *uri.URL, o Tran
 			Concurrency:      uint16(o.concurrency()),
 			Progress:         o.Progress,
 			HTTPHeaders:      o.httpHeadersWithMD5(srcPath, sum),
+			Metadata:         o.metadata(),
 			AccessConditions: o.accessConditions(),
 			AccessTier:       o.tier(),
 		})
@@ -197,7 +232,7 @@ func (s *Store) upload(ctx context.Context, srcPath string, dst *uri.URL, o Tran
 // and --part-concurrency are supposed to mean, which matters most on exactly
 // the link where it hurts: high bandwidth and high latency, where one stream
 // cannot fill the pipe.
-func (s *Store) uploadBlocks(ctx context.Context, f *os.File, size int64,
+func (s *Store) uploadBlocks(ctx context.Context, f io.ReaderAt, size int64,
 	srcPath string, dst *uri.URL, sum []byte, o TransferOptions) error {
 
 	c, err := s.client(ctx, dst)
@@ -210,6 +245,21 @@ func (s *Store) uploadBlocks(ctx context.Context, f *os.File, size int64,
 	count := int((size + blockSize - 1) / blockSize)
 	ids := make([]string, count)
 
+	// Blocks an earlier attempt staged are still held against the blob, so a
+	// resumed upload sends only what is missing. The service is the record;
+	// nothing is kept on this machine.
+	var staged map[string]bool
+	if o.Resume {
+		var err error
+		if staged, err = s.stagedBlocks(ctx, bb); err != nil {
+			s.log.Debug("cannot list staged blocks, uploading all of them",
+				"blob", dst.Display(), "error", err)
+		} else if len(staged) > 0 {
+			s.log.Info("resuming an interrupted upload",
+				"blob", dst.Display(), "blocks_already_staged", len(staged))
+		}
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -217,7 +267,7 @@ func (s *Store) uploadBlocks(ctx context.Context, f *os.File, size int64,
 		wg        sync.WaitGroup
 		mu        sync.Mutex
 		firstErr  error
-		staged    atomic.Int64
+		staged_   atomic.Int64
 		semaphore = make(chan struct{}, o.concurrency())
 	)
 	fail := func(err error) {
@@ -232,6 +282,14 @@ func (s *Store) uploadBlocks(ctx context.Context, f *os.File, size int64,
 	}
 
 	for i := range count {
+		if id := blockID(i); staged[id] {
+			ids[i] = id
+			offset := int64(i) * blockSize
+			if o.Progress != nil {
+				o.Progress(staged_.Add(min(blockSize, size-offset)))
+			}
+			continue
+		}
 		select {
 		case semaphore <- struct{}{}:
 		case <-ctx.Done():
@@ -261,7 +319,7 @@ func (s *Store) uploadBlocks(ctx context.Context, f *os.File, size int64,
 			// Counted on completion rather than as bytes are read, so a
 			// retried block cannot make the total go backwards.
 			if o.Progress != nil {
-				o.Progress(staged.Add(n))
+				o.Progress(staged_.Add(n))
 			}
 		}(i)
 	}
@@ -271,6 +329,7 @@ func (s *Store) uploadBlocks(ctx context.Context, f *os.File, size int64,
 	}
 
 	_, err = bb.CommitBlockList(ctx, ids, &blockblob.CommitBlockListOptions{
+		Metadata:         o.metadata(),
 		HTTPHeaders:      o.httpHeadersWithMD5(srcPath, sum),
 		AccessConditions: o.accessConditions(),
 		Tier:             o.tier(),
@@ -279,6 +338,17 @@ func (s *Store) uploadBlocks(ctx context.Context, f *os.File, size int64,
 		return fmt.Errorf("committing %d blocks: %w", count, err)
 	}
 	return nil
+}
+
+// UploadAt writes size bytes read from src to a blob, staging blocks in
+// parallel. It is what the benchmark uses, since the bytes come from memory
+// rather than from a file.
+func (s *Store) UploadAt(ctx context.Context, src io.ReaderAt, size int64,
+	name string, dst *uri.URL, o TransferOptions) error {
+
+	return s.withSignIn(ctx, func() error {
+		return s.uploadBlocks(ctx, src, size, name, dst, nil, o)
+	})
 }
 
 // UploadStream writes an arbitrary reader to a blob. It is used when the source
@@ -291,6 +361,7 @@ func (s *Store) UploadStream(ctx context.Context, r io.Reader, dst *uri.URL, o T
 	_, err = c.UploadStream(ctx, dst.Container, dst.Key, r, &blockblob.UploadStreamOptions{
 		BlockSize:        o.blockSize(0),
 		Concurrency:      o.concurrency(),
+		Metadata:         o.metadata(),
 		HTTPHeaders:      o.httpHeaders(dst.Key),
 		AccessConditions: o.accessConditions(),
 		AccessTier:       o.tier(),
@@ -299,6 +370,24 @@ func (s *Store) UploadStream(ctx context.Context, r io.Reader, dst *uri.URL, o T
 		return err
 	}
 	return nil
+}
+
+// PutMarker writes a zero-length blob carrying only metadata. It is how a
+// symbolic link, which has no content beyond its target, is represented.
+func (s *Store) PutMarker(ctx context.Context, dst *uri.URL, o TransferOptions) error {
+	return s.withSignIn(ctx, func() error {
+		c, err := s.client(ctx, dst)
+		if err != nil {
+			return err
+		}
+		bb := c.ServiceClient().NewContainerClient(dst.Container).NewBlockBlobClient(dst.Key)
+		_, err = bb.Upload(ctx, streaming.NopCloser(strings.NewReader("")),
+			&blockblob.UploadOptions{
+				Metadata:         o.metadata(),
+				AccessConditions: o.accessConditions(),
+			})
+		return err
+	})
 }
 
 // Download writes a blob to an already-open local file, fetching ranges in
@@ -319,13 +408,9 @@ func (s *Store) Download(ctx context.Context, src *store.Node, f *os.File, o Tra
 }
 
 func (s *Store) download(ctx context.Context, src *store.Node, f *os.File, o TransferOptions) error {
-	c, err := s.client(ctx, src.URL)
-	if err != nil {
-		return err
-	}
 	if src.Size == 0 {
 		// A zero-length range means "to the end", so an empty blob has to be
-		// handled here rather than being asked for.
+		// handled here rather than asked for.
 		if err := f.Truncate(0); err != nil {
 			return err
 		}
@@ -334,24 +419,24 @@ func (s *Store) download(ctx context.Context, src *store.Node, f *os.File, o Tra
 		}
 		return nil
 	}
-	_, err = c.DownloadFile(ctx, src.URL.Container, src.URL.Key, f, &blob.DownloadFileOptions{
-		// Passing the known length skips the extra properties request the SDK
-		// would otherwise make to discover it.
-		Range:       blob.HTTPRange{Offset: 0, Count: src.Size},
-		BlockSize:   o.blockSize(src.Size),
-		Concurrency: uint16(o.concurrency()),
-		Progress:    o.Progress,
-		RetryReaderOptionsPerBlock: blob.RetryReaderOptions{
-			MaxRetries: s.cfg.MaxRetries,
-			OnFailedRead: func(failures int32, lastErr error, rnge blob.HTTPRange, willRetry bool) {
-				s.log.Warn("range read failed",
-					"blob", src.URL.Display(), "offset", rnge.Offset, "count", rnge.Count,
-					"failures", failures, "will_retry", willRetry, "error", lastErr)
-			},
-		},
-	})
-	if err != nil {
+
+	var resume *resumeFile
+	if o.Resume {
+		r, err := openResumeFile(f.Name(), src, o.blockSize(src.Size))
+		if err != nil {
+			s.log.Warn("cannot use the resume record, starting again",
+				"blob", src.URL.Display(), "error", err)
+		} else {
+			resume = r
+			defer resume.close()
+		}
+	}
+
+	if err := s.downloadRanges(ctx, src, f, o, resume); err != nil {
 		return err
+	}
+	if resume != nil {
+		resume.done()
 	}
 	return nil
 }
@@ -764,10 +849,4 @@ func (c *countingReader) Read(p []byte) (int, error) {
 		c.report(*c.total)
 	}
 	return n, err
-}
-
-// blockID renders a block index as the fixed-width, base64 identifier the
-// service requires. Every block in one blob must encode to the same length.
-func blockID(i int) string {
-	return base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("azcp-blk-%08d", i)))
 }

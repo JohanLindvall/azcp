@@ -285,7 +285,8 @@ func (e *Engine) plan(ctx context.Context, src *store.Node, dst *uri.URL,
 	}
 	// A named source is filtered too, so --exclude means the same thing
 	// whether a file was reached by recursion or spelled out.
-	if e.filter.active() && !src.IsDir() && !e.filter.allow(rel) {
+	if e.filter.active() && !src.IsDir() &&
+		(!e.filter.allow(rel) || !e.filter.withinWindow(blobMTime(src))) {
 		e.log.Debug("filtered out", "path", src.URL.Display(), "relative", rel)
 		e.markSkipped()
 		return nil
@@ -366,6 +367,10 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 		}
 	}
 
+	if e.pruner != nil && rel == "" {
+		// The top of a recursive copy is the only place a deletion may reach.
+		e.pruner.root(dst)
+	}
 	mode := fs.FileMode(0o755)
 	if e.opt.Preserve.Mode {
 		mode = src.Mode.Perm()
@@ -403,6 +408,7 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 			continue
 		}
 		childRel := joinRel(rel, child.Name())
+		e.recordKept(dst.Join(child.Name()), childRel)
 		// An excluded directory is pruned rather than walked and discarded.
 		if child.IsDir() && !e.filter.descend(childRel) {
 			e.log.Debug("pruning excluded directory", "path", child.URL.Display())
@@ -427,6 +433,23 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 // maxCopyDepth bounds how deep a recursive copy will go. Real trees are
 // nowhere near this; a loop reaches it quickly.
 const maxCopyDepth = 512
+
+// recordKept notes that the source provides this destination path, so --delete
+// leaves it alone. The path is recorded whether or not the entry is ultimately
+// copied: a file skipped because it was already up to date is still a file the
+// source has.
+func (e *Engine) recordKept(dst *uri.URL, rel string) {
+	if e.pruner == nil {
+		return
+	}
+	for _, root := range e.pruner.roots {
+		if r, ok := store.RelUnder(root.PathPart(), dst.PathPart()); ok && r != "" {
+			e.pruner.wrote(root, r)
+			return
+		}
+	}
+	_ = rel
+}
 
 // joinRel appends an element to a copy-root-relative path.
 func joinRel(base, name string) string {
@@ -478,11 +501,12 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 			return nil
 		}
 		filterRel := joinRel(rootRel, rel)
+		e.recordKept(dst.Join(strings.Split(rel, "/")...), rel)
 		if n.IsDir() {
 			if !e.filter.descend(filterRel) {
 				return nil
 			}
-		} else if !e.filter.allow(filterRel) {
+		} else if !e.filter.allow(filterRel) || !e.filter.withinWindow(blobMTime(n)) {
 			e.markSkipped()
 			return nil
 		}
@@ -543,9 +567,10 @@ func (e *Engine) ensureDir(ctx context.Context, u *uri.URL, made map[string]bool
 func (e *Engine) planSymlink(ctx context.Context, src *store.Node, dst *uri.URL,
 	out chan<- *task, display string) error {
 
-	if dst.IsRemote() {
-		e.note("skipping symbolic link %s: blob storage cannot store links "+
-			"(use -L to copy what it points at)", quote(src.URL.Display()))
+	if dst.IsRemote() && !e.preservesToBlob() {
+		e.note("skipping symbolic link %s: blob storage has no links "+
+			"(use -L to copy what it points at, or -a to record it)",
+			quote(src.URL.Display()))
 		e.markSkipped()
 		return nil
 	}
@@ -583,7 +608,14 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 
 	e.prog.Plan(1, src.Size)
 	if e.opt.DryRun {
-		logx.Printf("%s -> %s\n", quote(src.URL.Display()), quote(dst.Display()))
+		if e.opt.Output == cli.OutputJSON {
+			logx.Printf("%s\n", jsonLine(map[string]any{
+				"event": "would-copy", "source": src.URL.Display(),
+				"destination": dst.Display(), "bytes": src.Size,
+			}))
+		} else {
+			logx.Printf("%s -> %s\n", quote(src.URL.Display()), quote(dst.Display()))
+		}
 		pt := e.prog.Begin(display, src.Size, direction(src.URL, dst))
 		pt.Done(nil)
 		return nil
@@ -680,6 +712,14 @@ func (e *Engine) markSkipped() {
 func (e *Engine) fail(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	e.failed.Add(1)
+	// Counted where the transfers are counted, so the closing summary and the
+	// exit status cannot disagree about whether anything went wrong.
+	e.prog.Failed(1)
+	e.recordFailure(Failure{Error: msg})
+	if e.opt.Output == cli.OutputJSON {
+		logx.Printf("%s\n", jsonLine(map[string]any{"event": "error", "error": msg}))
+		return
+	}
 	// The cp-style line below is the user-facing report. Emitting a log record
 	// at error level as well would print the same problem twice whenever the
 	// log is going to this very terminal.

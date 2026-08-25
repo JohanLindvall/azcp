@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"time"
 )
 
 // Reflink selects whether to attempt a copy-on-write clone.
@@ -298,6 +299,14 @@ type FileID struct{ Dev, Ino uint64 }
 // result because Windows does not carry a file index in either, and the file
 // has to be opened to be identified.
 func IDOf(path string, fi fs.FileInfo) (FileID, int, bool) { return fileIdentity(path, fi) }
+
+// OwnerOf returns the numeric owner and group from a stat result, and whether
+// the platform records them at all.
+func OwnerOf(fi fs.FileInfo) (uid, gid int, ok bool) { return ownerOf(fi) }
+
+// AccessTimeOf returns the last access time, falling back to the modification
+// time where the platform does not record one.
+func AccessTimeOf(fi fs.FileInfo) time.Time { return accessTimeOf(fi) }
 
 // DeviceOf returns the filesystem a node lives on, taken from the raw stat
 // result carried on a Node. It is how --one-file-system recognises a mount

@@ -161,6 +161,71 @@ elapsed=$(( $(date +%s) - start ))
 cmp -s "$SRC/big.bin" "$WORK/capped.bin" && ok "a throttled transfer is still exact" \
                                          || bad "throttling corrupted the file"
 
+# --- attributes survive the round trip --------------------------------------
+ATTR="$WORK/attr"
+mkdir -p "$ATTR/src"
+echo mode > "$ATTR/src/mode.txt"; chmod 4750 "$ATTR/src/mode.txt"
+ln -s mode.txt "$ATTR/src/link.txt"
+touch -d '2021-06-15T10:20:30Z' "$ATTR/src/mode.txt" 2>/dev/null || true
+"$AZCP" -a "$ATTR/src" "$AZ/attrs" >/dev/null
+mkdir -p "$ATTR/back"
+"$AZCP" -a "$AZ/attrs" "$ATTR/back" >/dev/null
+check "-a preserves the mode through blob storage" \
+  "$(stat -c '%a' "$ATTR/back/attrs/mode.txt" 2>/dev/null)" "4750"
+[ -L "$ATTR/back/attrs/link.txt" ] && ok "-a round-trips a symbolic link" \
+                                   || bad "the symbolic link did not come back"
+
+# --- content encoding -------------------------------------------------------
+printf 'compressed payload\n' | gzip -9 > "$WORK/page.gz"
+"$AZCP" --content-encoding=gzip "$WORK/page.gz" "$AZ/page.gz" >/dev/null
+"$AZCP" "$AZ/page.gz" "$WORK/raw.gz" >/dev/null
+cmp -s "$WORK/page.gz" "$WORK/raw.gz" \
+  && ok "an encoded blob downloads as the bytes that were stored" \
+  || bad "an encoded blob was altered in transit"
+"$AZCP" --decompress "$AZ/page.gz" "$WORK/out.gz" >/dev/null
+check "--decompress expands and drops the extension" \
+  "$(cat "$WORK/out" 2>/dev/null)" "compressed payload"
+
+# --- metadata ---------------------------------------------------------------
+"$AZCP" --metadata "batch=nightly,source=e2e" "$SRC/file.txt" "$AZ/meta.txt" >/dev/null
+ok "--metadata is accepted on upload"
+
+# --- resume -----------------------------------------------------------------
+"$AZCP" --resume "$SRC/big.bin" "$AZ/resume.bin" >/dev/null
+"$AZCP" --resume "$AZ/resume.bin" "$WORK/resume.bin" >/dev/null
+cmp -s "$SRC/big.bin" "$WORK/resume.bin" && ok "--resume completes a whole transfer" \
+                                         || bad "--resume corrupted the file"
+[ -f "$WORK/resume.bin.azcp-part" ] && bad "the resume record was left behind" \
+                                    || ok "the resume record is cleaned up"
+
+# --- delete -----------------------------------------------------------------
+mkdir -p "$WORK/sync/keep"
+echo one > "$WORK/sync/one.txt"
+"$AZCP" -rT "$WORK/sync" "$AZ/synced" >/dev/null
+"$AZCP" "$SRC/file.txt" "$AZ/synced/stray.txt" >/dev/null
+"$AZCP" -rT --delete "$WORK/sync" "$AZ/synced" >/dev/null
+if "$AZCP" "$AZ/synced/stray.txt" "$WORK/stray-check" >/dev/null 2>&1; then
+  bad "--delete left a blob the source does not have"
+else
+  ok "--delete removes what the source does not have"
+fi
+
+# --- machine-readable output ------------------------------------------------
+summary=$("$AZCP" --output=json "$SRC/file.txt" "$AZ/json.txt" 2>/dev/null | tail -1)
+if printf '%s' "$summary" | grep -q '"event":"summary"'; then
+  ok "--output=json ends with a summary object"
+else
+  bad "--output=json produced no summary: $summary"
+fi
+
+# --- benchmark --------------------------------------------------------------
+if "$AZCP" --benchmark=2x1MiB --output=json "$AZ/bench/" 2>/dev/null \
+     | grep -q upload_bytes_per_second; then
+  ok "--benchmark measures and reports throughput"
+else
+  bad "--benchmark did not report a result"
+fi
+
 # --- overwrite rules --------------------------------------------------------
 echo "changed" > "$WORK/changed.txt"
 "$AZCP" -n "$WORK/changed.txt" "$AZ/tree/file.txt" >/dev/null

@@ -38,7 +38,13 @@ func newHTTPClient(peakRequests int, bytesPerSec int64) *http.Client {
 		}).DialContext,
 		// Storage is served over HTTP/1.1 in practice, and a pool of separate
 		// connections moves bulk data better than one multiplexed stream.
-		ForceAttemptHTTP2:     false,
+		ForceAttemptHTTP2: false,
+		// Left on, Go advertises gzip and silently expands any response that
+		// comes back encoded. For a copier that is corruption: a blob stored
+		// with Content-Encoding: gzip would arrive expanded, under its .gz
+		// name, and shorter than the length the service reported for it. The
+		// bytes that are stored are the bytes that must land.
+		DisableCompression:    true,
 		MaxIdleConns:          idle * 2, // a run may touch two accounts
 		MaxIdleConnsPerHost:   idle,
 		MaxConnsPerHost:       0, // unbounded: the engine already limits itself
