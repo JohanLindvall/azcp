@@ -146,7 +146,7 @@ func (s *Store) Upload(ctx context.Context, srcPath string, dst *uri.URL, o Tran
 		AccessTier:       o.tier(),
 	})
 	if err != nil {
-		return fmt.Errorf("upload to %s: %w", dst.Display(), err)
+		return err
 	}
 	return nil
 }
@@ -166,7 +166,7 @@ func (s *Store) UploadStream(ctx context.Context, r io.Reader, dst *uri.URL, o T
 		AccessTier:       o.tier(),
 	})
 	if err != nil {
-		return fmt.Errorf("upload to %s: %w", dst.Display(), err)
+		return err
 	}
 	return nil
 }
@@ -206,7 +206,7 @@ func (s *Store) Download(ctx context.Context, src *store.Node, f *os.File, o Tra
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("download %s: %w", src.URL.Display(), err)
+		return err
 	}
 	return nil
 }
@@ -409,7 +409,7 @@ func (s *Store) streamCopy(ctx context.Context, src *store.Node, dst *uri.URL, o
 		AccessTier:       o.tier(),
 	})
 	if err != nil {
-		return fmt.Errorf("copy to %s: %w", dst.Display(), err)
+		return err
 	}
 	return nil
 }

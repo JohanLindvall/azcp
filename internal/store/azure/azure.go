@@ -274,7 +274,7 @@ func (s *Store) Stat(ctx context.Context, u *uri.URL, _ bool) (*store.Node, erro
 			if isNotFound(err) {
 				return nil, notExist(u, err)
 			}
-			return nil, fmt.Errorf("stat %s: %w", u.Display(), err)
+			return nil, err
 		}
 		n := &store.Node{URL: u, Kind: store.KindDir, Mode: fs.ModeDir | 0o755}
 		if props.LastModified != nil {
@@ -294,7 +294,7 @@ func (s *Store) Stat(ctx context.Context, u *uri.URL, _ bool) (*store.Node, erro
 			return blobNode(u, &props), nil
 		}
 		if !isNotFound(err) {
-			return nil, fmt.Errorf("stat %s: %w", u.Display(), err)
+			return nil, err
 		}
 	}
 
@@ -328,7 +328,7 @@ func (s *Store) prefixEmpty(ctx context.Context, u *uri.URL) (bool, error) {
 		if isNotFound(err) {
 			return true, nil
 		}
-		return false, fmt.Errorf("list %s: %w", u.Display(), err)
+		return false, err
 	}
 	return len(page.Segment.BlobItems) == 0, nil
 }
@@ -355,7 +355,7 @@ func (s *Store) ReadDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) 
 			if isNotFound(err) {
 				return nil, notExist(u, err)
 			}
-			return nil, fmt.Errorf("list %s: %w", u.Display(), err)
+			return nil, err
 		}
 		if page.Segment == nil {
 			continue
@@ -462,7 +462,7 @@ func (s *Store) walkContainer(ctx context.Context, u *uri.URL, fn func(*store.No
 			if isNotFound(err) {
 				return notExist(u, err)
 			}
-			return fmt.Errorf("list %s: %w", u.Display(), err)
+			return err
 		}
 		if page.Segment == nil {
 			continue
@@ -589,7 +589,7 @@ func (s *Store) Remove(ctx context.Context, u *uri.URL) error {
 		if isNotFound(err) {
 			return notExist(u, err)
 		}
-		return fmt.Errorf("delete %s: %w", u.Display(), err)
+		return err
 	}
 	return nil
 }
