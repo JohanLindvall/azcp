@@ -68,6 +68,19 @@ Linux and Windows binaries are static and need no runtime. macOS binaries are
 built on macOS so they can reach the keychain and remember a sign-in between
 runs.
 
+Or as a container — the image is a static binary on `scratch`, about 4 MB
+compressed, and runs as a non-root user:
+
+```
+docker run --rm -v "$PWD:/data" \
+  ghcr.io/johanlindvall/azcp:latest -r /data/build azure://acct/releases/
+```
+
+Published for `linux/amd64` and `linux/arm64`. Credentials reach it the usual
+way — a SAS in the URL, the `AZURE_STORAGE_*` variables, or a managed identity
+where the container has one. Interactive sign-in is not useful in a container
+and the token cache has nowhere to live, so `azcp` says so and carries on.
+
 Or from a clone — `make` on its own lists every target:
 
 ```

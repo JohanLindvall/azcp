@@ -60,6 +60,19 @@ Version comes from the tag via `-X internal/cli.Version`. A binary built
 without that stamp falls back to the module version in its build info, so a
 `go install module@v1.2.3` still reports the right thing.
 
+### Container image
+
+`packages.yml` publishes `ghcr.io/johanlindvall/azcp` for amd64 and arm64 on
+every tag, and `:edge` from main. The Dockerfile cross-compiles from
+`$BUILDPLATFORM` rather than emulating the target, so the arm64 image costs no
+more to build than the amd64 one.
+
+The final stage is `FROM scratch` with exactly two things in it: the static
+binary and the CA roots it needs to verify a TLS connection to storage. There
+is no shell, no libc and no package manager, so there is nothing in the image to
+keep patched. If you add a runtime dependency, that property is what you are
+spending.
+
 ## Layout
 
 ```
