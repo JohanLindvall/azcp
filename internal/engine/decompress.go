@@ -1,13 +1,19 @@
 package engine
 
 import (
-	"compress/flate"
-	"compress/gzip"
-	"compress/zlib"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+
+	// klauspost's decoders are drop-in replacements for the standard
+	// library's and measurably quicker, which matters here because a
+	// download of any size is expanded in one pass. They also bring zstd,
+	// which the standard library has no answer for at all.
+	"github.com/klauspost/compress/flate"
+	"github.com/klauspost/compress/gzip"
+	"github.com/klauspost/compress/zlib"
+	"github.com/klauspost/compress/zstd"
 )
 
 // A blob written by a web pipeline is often stored already compressed, with
@@ -18,7 +24,7 @@ import (
 // decompressed reports the encodings this understands.
 func decompressible(encoding string) bool {
 	switch strings.ToLower(strings.TrimSpace(encoding)) {
-	case "gzip", "x-gzip", "deflate":
+	case "gzip", "x-gzip", "deflate", "zstd":
 		return true
 	}
 	return false
@@ -56,8 +62,13 @@ func decompressFile(path, encoding string) (string, error) {
 		return path, err
 	}
 
-	final := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(path,
-		".gz"), ".gzip"), ".zz")
+	final := path
+	for _, ext := range []string{".gz", ".gzip", ".zz", ".zst", ".zstd"} {
+		if trimmed, ok := strings.CutSuffix(final, ext); ok {
+			final = trimmed
+			break
+		}
+	}
 	if err := os.Rename(tmpName, final); err != nil {
 		return path, err
 	}
@@ -86,6 +97,12 @@ func decoder(r io.Reader, encoding string) (io.ReadCloser, error) {
 			}
 		}
 		return flate.NewReader(r), nil
+	case "zstd":
+		d, err := zstd.NewReader(r)
+		if err != nil {
+			return nil, err
+		}
+		return d.IOReadCloser(), nil
 	}
 	return nil, fmt.Errorf("unknown content encoding %q", encoding)
 }

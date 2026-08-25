@@ -7,6 +7,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity/cache v0.4.0
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.8.0
+	github.com/klauspost/compress v1.19.2
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 )

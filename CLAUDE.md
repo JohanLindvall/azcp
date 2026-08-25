@@ -73,6 +73,20 @@ is no shell, no libc and no package manager, so there is nothing in the image to
 keep patched. If you add a runtime dependency, that property is what you are
 spending.
 
+### Dependencies
+
+Six direct ones, and each earns its place. `klauspost/compress` replaces the
+standard library's gzip, flate and zlib decoders — measured at 3.1 GB/s against
+2.2 GB/s on the benchmark in `decompress_test.go`, over a whole file in one pass
+— and brings zstd, which the standard library has no answer for. It pulls in
+nothing else.
+
+Dependabot watches the Go modules weekly. The Azure SDK and `golang.org/x`
+families are grouped, because those modules move together and separate pull
+requests would each conflict with the others in `go.sum`. GitHub Actions and the
+Docker base image are not watched; add them to `.github/dependabot.yml` if that
+changes.
+
 ## Layout
 
 ```

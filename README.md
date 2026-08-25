@@ -102,7 +102,7 @@ AzCopy is verb-first (`azcopy copy SRC DST --recursive`); `azcp` is `cp`
 | `--metadata 'a=b;c=d'` | `--metadata a=b,c=d` | |
 | `--content-type`, `--content-encoding`, `--content-language`, `--content-disposition`, `--cache-control` | same names | |
 | `--block-blob-tier=Cool` | `--access-tier=Cool` | |
-| `--decompress` | `--decompress` | |
+| `--decompress` | `--decompress` | also handles zstd |
 | `--preserve-posix-properties`, `--preserve-permissions`, `--preserve-owner` | `--preserve=mode,ownership,timestamps`, or `-a` | |
 | `--preserve-symlinks` | `-a` | included in what `-a` keeps |
 | `--follow-symlinks` | `-L` | |
@@ -520,7 +520,7 @@ Added by `azcp`:
 | `--delete` | remove destination entries the source does not have |
 | `--resume` | continue an interrupted transfer |
 | `--newer-than`, `--older-than` | bound by modification time |
-| `--decompress` | expand encoded blobs on download |
+| `--decompress` | expand gzip, deflate or zstd blobs on download |
 | `--metadata=K=V` | store metadata on uploaded blobs |
 | `--content-encoding`, `--content-disposition`, `--content-language`, `--cache-control` | blob headers |
 | `--output=FORMAT` | `text` or `json` |

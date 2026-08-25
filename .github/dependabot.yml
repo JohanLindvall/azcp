@@ -1,0 +1,26 @@
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+    labels:
+      - dependencies
+
+    # The Azure SDK is published as several modules that move together, and
+    # golang.org/x likewise. Updating them one pull request at a time would
+    # mean every one of them conflicting with the others in go.sum, so each
+    # family arrives as a single change.
+    groups:
+      azure-sdk:
+        patterns:
+          - "github.com/Azure/*"
+          - "github.com/AzureAD/*"
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
