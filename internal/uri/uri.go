@@ -235,9 +235,16 @@ func (u *URL) Join(elems ...string) *URL {
 
 // Base returns the last path element, which is what cp appends to a directory
 // destination.
+//
+// The root of a storage account has no path element at all, so the account
+// name stands in for one: copying a whole account into a directory has to put
+// it somewhere, and the account is the thing being copied.
 func (u *URL) Base() string {
 	p := strings.TrimRight(u.PathPart(), "/")
 	if p == "" {
+		if u.IsRemote() {
+			return u.Account
+		}
 		return ""
 	}
 	if i := strings.LastIndexByte(p, '/'); i >= 0 {

@@ -96,6 +96,28 @@ routes=$("$AZCP" --log-level=debug "$AZ/tree/file.txt" "$AZ/route-probe.txt" 2>&
          | grep -c 'copied server-side' || true)
 check "copy happens server-side" "$routes" "1"
 
+# --- the account root -------------------------------------------------------
+# It has no path element of its own, so the account name stands in for one.
+mkdir -p "$WORK/acct"
+"$AZCP" -r "$ACCOUNT/" "$WORK/acct" >/dev/null
+if [ -d "$WORK/acct/devstoreaccount1/$CONTAINER/tree" ]; then
+  ok "the whole account copies under its own name"
+else
+  bad "copying the account root did not produce devstoreaccount1/$CONTAINER/tree"
+fi
+
+# -T asks for the contents rather than the account as a directory.
+mkdir -p "$WORK/acctT"
+"$AZCP" -rT "$ACCOUNT/" "$WORK/acctT" >/dev/null
+[ -d "$WORK/acctT/$CONTAINER" ] && ok "-T copies the account's containers directly" \
+                                || bad "-T at the account root put things in the wrong place"
+
+# A pattern that spans containers.
+mkdir -p "$WORK/across"
+"$AZCP" -r "$ACCOUNT/*/tree/logs" "$WORK/across" >/dev/null
+[ -d "$WORK/across/logs/2024" ] && ok "a wildcard matches across containers" \
+                               || bad "a container wildcard matched nothing"
+
 # --- overwrite rules --------------------------------------------------------
 echo "changed" > "$WORK/changed.txt"
 "$AZCP" -n "$WORK/changed.txt" "$AZ/tree/file.txt" >/dev/null

@@ -106,3 +106,31 @@ func contains(h, n string) bool {
 	}
 	return false
 }
+
+// The root of an account has no path element; the account name stands in for
+// one so that "copy the whole account into this directory" has a name to use.
+func TestBaseOfAccountRoot(t *testing.T) {
+	for _, in := range []string{
+		"azure://foo.blob.core.windows.net/",
+		"azure://foo.blob.core.windows.net",
+		"azure://foo/",
+	} {
+		u, err := Parse(in, Options{})
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", in, err)
+		}
+		if got := u.Base(); got != "foo" {
+			t.Errorf("Parse(%q).Base() = %q, want %q", in, got, "foo")
+		}
+	}
+	// A container still names itself, not the account.
+	u, _ := Parse("azure://foo/mycontainer", Options{})
+	if got := u.Base(); got != "mycontainer" {
+		t.Errorf("container Base = %q", got)
+	}
+	// Local paths are unaffected.
+	l, _ := Parse("/", Options{})
+	if got := l.Base(); got != "" {
+		t.Errorf("local root Base = %q, want empty", got)
+	}
+}
