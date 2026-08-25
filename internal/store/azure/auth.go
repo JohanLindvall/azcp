@@ -81,7 +81,23 @@ type Credentials struct {
 	err       error
 	kind      string
 	escalated bool
+	// prompts counts interactive sign-ins started, which must never exceed one.
+	prompts int
+
+	cacheOnce sync.Once
+	cache     azidentity.Cache
+	// persistent records that the cache above survives the process, so the
+	// user can be told when a sign-in will have to be repeated next time.
+	persistent bool
+
+	// signInFn stands in for the interactive flow in tests, which cannot open
+	// a browser. It is nil everywhere else.
+	signInFn func(context.Context, AuthMode) (azcore.TokenCredential, string, error)
 }
+
+// kindResumed marks a credential rebuilt from a previous run's sign-in, which
+// must not be offered as the answer to that same credential being rejected.
+const kindResumed = "saved sign-in"
 
 func (c *Credentials) logger() *slog.Logger {
 	if c.Log != nil {
@@ -152,6 +168,16 @@ func (c *Credentials) Escalate(ctx context.Context) (azcore.TokenCredential, err
 		return c.cred, c.err
 	}
 	c.escalated = true
+
+	// A previous run may have signed in as somebody the account does accept —
+	// worth trying before asking, but pointless if that is already what was
+	// just rejected.
+	if c.kind != kindResumed {
+		if cred, ok := c.resume(ctx); ok {
+			c.cred, c.kind, c.err, c.resolved = cred, kindResumed, nil, true
+			return cred, nil
+		}
+	}
 	if !c.Interactive {
 		return nil, errors.New("no terminal is attached, so there is nobody to sign in")
 	}
@@ -168,26 +194,42 @@ func (c *Credentials) Escalate(ctx context.Context) (azcore.TokenCredential, err
 // desktop to show one on, and falling back to a device code, which also works
 // over SSH and inside a container.
 func (c *Credentials) signIn(ctx context.Context) (azcore.TokenCredential, string, error) {
+	if c.signInFn != nil {
+		c.prompts++
+		return c.signInFn(ctx, c.Mode)
+	}
 	return c.signInAs(ctx, AuthAuto)
 }
 
 // signInAs runs a sign-in by a particular method, or picks one when mode is
 // AuthAuto.
 func (c *Credentials) signInAs(ctx context.Context, mode AuthMode) (azcore.TokenCredential, string, error) {
+	// Opening the cache here rather than at the first use tells us, before
+	// anyone is troubled, whether this sign-in will have to be repeated.
+	c.tokenCache()
+	if !c.persistent {
+		c.logger().Warn("this system has no secure store for tokens, " +
+			"so this sign-in will have to be repeated next time")
+	}
+
 	if mode == AuthBrowser || (mode != AuthDevice && browserAvailable()) {
 		cred, err := azidentity.NewInteractiveBrowserCredential(
-			&azidentity.InteractiveBrowserCredentialOptions{TenantID: c.TenantID})
+			&azidentity.InteractiveBrowserCredentialOptions{
+				TenantID: c.TenantID,
+				Cache:    c.tokenCache(),
+			})
 		if err == nil {
 			// A browser opening by itself is alarming without a word of
 			// explanation, so this is announced rather than logged.
 			logx.Errf("azcp: opening a browser to sign in to Azure…\n")
-			if perr := probeWithin(ctx, cred, interactiveTimeout); perr == nil {
+			if rec, aerr := c.authenticate(ctx, cred); aerr == nil {
+				c.saveRecord(rec)
 				return cred, "browser", nil
 			} else if mode == AuthBrowser {
-				return nil, "", perr
+				return nil, "", aerr
 			} else {
 				c.logger().Warn("browser sign-in did not complete, asking for a device code instead",
-					"error", perr)
+					"error", aerr)
 			}
 		} else if mode == AuthBrowser {
 			return nil, "", err
@@ -199,9 +241,11 @@ func (c *Credentials) signInAs(ctx context.Context, mode AuthMode) (azcore.Token
 	if err != nil {
 		return nil, "", err
 	}
-	if perr := probeWithin(ctx, cred, interactiveTimeout); perr != nil {
-		return nil, "", perr
+	rec, aerr := c.authenticate(ctx, cred)
+	if aerr != nil {
+		return nil, "", aerr
 	}
+	c.saveRecord(rec)
 	return cred, "device code", nil
 }
 
@@ -260,8 +304,13 @@ func (c *Credentials) resolve(ctx context.Context) (azcore.TokenCredential, stri
 			"or pass a SAS token in the URL", err)
 	}
 
-	// Nothing ambient. If someone is watching, offer to sign in now rather than
-	// letting the first request fail.
+	// A sign-in from an earlier run, if the tokens are still good.
+	if cred, ok := c.resume(ctx); ok {
+		return cred, kindResumed, nil
+	}
+
+	// Nothing ambient and nothing saved. If someone is watching, offer to sign
+	// in now rather than letting the first request fail.
 	if c.Interactive {
 		log.Info("no ambient Azure credential found, signing in")
 		c.escalated = true
@@ -279,9 +328,10 @@ func (c *Credentials) resolve(ctx context.Context) (azcore.TokenCredential, stri
 	return nil, "anonymous", nil
 }
 
-func (c *Credentials) deviceCode() (azcore.TokenCredential, error) {
+func (c *Credentials) deviceCode() (*azidentity.DeviceCodeCredential, error) {
 	return azidentity.NewDeviceCodeCredential(&azidentity.DeviceCodeCredentialOptions{
 		TenantID: c.TenantID,
+		Cache:    c.tokenCache(),
 		UserPrompt: func(_ context.Context, m azidentity.DeviceCodeMessage) error {
 			// A prompt, not a log record: it has to appear whatever the log
 			// level, and it has to stand the progress display down first or it

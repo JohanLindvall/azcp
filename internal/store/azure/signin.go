@@ -77,8 +77,14 @@ func (s *Store) escalate(ctx context.Context, cause error) bool {
 	logx.Errf("azcp: the storage account rejected the current credential (%s); signing in…\n",
 		retryx.Describe(cause))
 	s.log.Debug("escalating to an interactive sign-in", "cause", cause)
-	if _, err := s.creds.Escalate(ctx); err != nil {
+	cred, err := s.creds.Escalate(ctx)
+	if err != nil {
 		s.log.Warn("could not sign in", "error", err)
+		return false
+	}
+	if cred == nil {
+		// Nothing was gained — a sign-in was already declined or was not
+		// possible — so retrying would fail the same way.
 		return false
 	}
 	s.signIn.done = true

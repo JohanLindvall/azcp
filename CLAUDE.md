@@ -109,6 +109,19 @@ run and only when stderr is a terminal. A 403 with an identity in hand is a
 missing role and is *not* escalated, because signing in as the same person again
 changes nothing.
 
+**A sign-in must survive the process.** Tokens go into the platform's secure
+store via `azidentity/cache`, and a non-secret `AuthenticationRecord` under the
+user's config directory names the account to look for. Without both, every
+command opens a browser again — which is the whole failure this was built to
+avoid. `resume` reconstructs the session and is wired to *never* prompt
+(`DisableAutomaticAuthentication` plus a prompt that refuses), so it is safe to
+call anywhere.
+
+**One prompt per run, and the tests say so.** `Credentials.escalated`,
+`Store.signIn.done` and the counter behind `Credentials.Prompts` all exist to
+pin that. `signin_test.go` fires twenty concurrent rejections and asserts a
+single sign-in; keep it passing.
+
 **Prompts are not log records.** The device code, the "opening a browser" notice
 and the "account rejected the credential" line go through `logx.Errf` so they
 appear whatever `--log-level` says. Anything the user must act on belongs there,
@@ -144,9 +157,11 @@ together. Add to it when changing anything in `store/azure`.
 
 Run `make check` before proposing changes to the progress display, the worker
 pool or anything sharing state between them — it includes the race detector.
-Run `make cross` after touching anything platform-specific; Windows has no
+Run `make cross` after touching anything platform-specific. Windows has no
 `syscall.Stat_t` and no `SIGWINCH`, which is why the local store goes through
-the accessors in `plat_*.go` and the display polls its width.
+the accessors in `plat_*.go` and the display polls its width; and the macOS
+token cache needs cgo, which is why the `azidentity/cache` import sits behind a
+build tag in `tokencache_persist.go` with an in-memory stand-in beside it.
 
 ## Conventions
 

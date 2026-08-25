@@ -37,7 +37,10 @@ Docker, and starts and stops the emulator around itself.
 
 Builds for Linux, macOS, Windows and FreeBSD. On Windows the `cp` semantics
 that have no counterpart — ownership, extended attributes, hard links — are
-reported rather than silently skipped.
+reported rather than silently skipped. A macOS binary reaches the keychain
+through cgo, so one cross-compiled from another platform by `make release`
+signs in once per run instead of remembering it; `make build` on the Mac itself
+does not have that limitation.
 
 ## Locations
 
@@ -72,6 +75,12 @@ Nothing has to be configured. Credentials are looked for in this order:
 6. an interactive device-code sign-in, if a terminal is attached,
 7. anonymous, for containers that allow public read.
 
+An interactive sign-in is remembered. The tokens go into the platform's secure
+store — a keyring on Linux, the keychain on macOS, DPAPI on Windows — so later
+runs pick the session up silently and never open a browser again until it
+expires. Where no such store exists, `azcp` says so before asking, since the
+sign-in will have to be repeated.
+
 If the storage account then *rejects* whatever was found — an `az login`
 session for the wrong tenant produces a perfectly good token that the account
 still refuses — `azcp` says so and signs you in: a browser window where there
@@ -80,9 +89,12 @@ elsewhere. It asks once per run, and only when stderr is a terminal, so a
 scripted run fails with a message instead of waiting for an answer nobody can
 see.
 
+It asks at most once per run, however many transfers are rejected at the same
+moment.
+
 `--auth` pins the choice to `identity`, `browser`, `device` or `anonymous` when
 the automatic one is not what you want, and `--tenant` selects the directory to
-authenticate against. Credential material is never written to the terminal or
+authenticate against; each tenant is remembered separately. Credential material is never written to the terminal or
 to a log: SAS signatures, account keys and bearer tokens are redacted on the
 way out.
 
