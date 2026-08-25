@@ -21,16 +21,23 @@ azcp -r 'azure://a/data/2024/**' 'azure://b/backup/2024/'
 go install github.com/JohanLindvall/azcp/cmd/azcp@latest
 ```
 
-Or from a clone:
+Or from a clone — `make` on its own lists every target:
 
 ```
-make build     # ./bin/azcp
-make test      # go test ./...
-make race      # go test -race ./...
+make build     # ./bin/azcp, with the version stamped from git describe
+make check     # formatting, vet, tests, race detector
+make e2e       # the blob paths, against the Azurite emulator in Docker
+make release   # stripped binaries for every platform into ./dist
 ```
 
-The pattern matcher is differential-tested against real `bash` run with
-`globstar` and `extglob`, so `make test` needs no credentials and no network.
+`make check` needs no credentials and no network: the pattern matcher is
+differential-tested against real `bash` run with `globstar` and `extglob`, and
+the copy semantics are tested against temporary directories. `make e2e` needs
+Docker, and starts and stops the emulator around itself.
+
+Builds for Linux, macOS, Windows and FreeBSD. On Windows the `cp` semantics
+that have no counterpart — ownership, extended attributes, hard links — are
+reported rather than silently skipped.
 
 ## Locations
 
@@ -65,10 +72,19 @@ Nothing has to be configured. Credentials are looked for in this order:
 6. an interactive device-code sign-in, if a terminal is attached,
 7. anonymous, for containers that allow public read.
 
-`--auth` pins this to `identity`, `device` or `anonymous` when the automatic
-choice is not the one you want. Credential material is never written to the
-terminal or to a log: SAS signatures, account keys and bearer tokens are
-redacted on the way out.
+If the storage account then *rejects* whatever was found — an `az login`
+session for the wrong tenant produces a perfectly good token that the account
+still refuses — `azcp` says so and signs you in: a browser window where there
+is a desktop to show one on, otherwise a device code you can complete
+elsewhere. It asks once per run, and only when stderr is a terminal, so a
+scripted run fails with a message instead of waiting for an answer nobody can
+see.
+
+`--auth` pins the choice to `identity`, `browser`, `device` or `anonymous` when
+the automatic one is not what you want, and `--tenant` selects the directory to
+authenticate against. Credential material is never written to the terminal or
+to a log: SAS signatures, account keys and bearer tokens are redacted on the
+way out.
 
 ## Wildcards
 
@@ -161,7 +177,7 @@ Added by `azcp`:
 | `--log-level`, `--log-format`, `--log-file` | |
 | `--dry-run` | report what would be copied |
 | `--glob=WHEN` | `auto`, `always`, `never` |
-| `--auth=MODE` | `auto`, `identity`, `device`, `anonymous` |
+| `--auth=MODE` | `auto`, `identity`, `browser`, `device`, `anonymous` |
 | `--tenant=ID` | Entra tenant to authenticate against |
 | `--endpoint-suffix=SUFFIX` | for sovereign clouds |
 | `--create-container` | create a missing destination container |
@@ -188,6 +204,7 @@ line was wrong — the same as `cp`.
 
 ```
 cmd/azcp             entry point, signals, exit status
+scripts/e2e.sh       the emulator-backed end-to-end check
 internal/cli         option table, help, resolved configuration
 internal/cpflags     getopt_long-compatible parser
 internal/engine      planning, the worker pool, cp's file semantics

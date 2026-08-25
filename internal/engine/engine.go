@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/JohanLindvall/azcp/internal/cli"
 	"github.com/JohanLindvall/azcp/internal/logx"
 	"github.com/JohanLindvall/azcp/internal/progress"
@@ -122,9 +124,12 @@ func maxWholeFileAttempts(retries int) int {
 	return min(3, retries)
 }
 
+// isInteractive reports whether a sign-in prompt would actually reach somebody.
+// The prompt is written to stderr, so that is the stream that has to be a
+// terminal; a run with stderr redirected to a file must fail with a message
+// rather than wait for an answer nobody can see.
 func isInteractive() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stderr.Fd()))
 }
 
 // storeFor picks the namespace a location belongs to.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+
+	"github.com/JohanLindvall/azcp/internal/logx"
 )
 
 // storageScope is the OAuth scope for the Blob service.
@@ -30,8 +33,11 @@ const (
 	AuthAuto AuthMode = "auto"
 	// AuthIdentity restricts the chain to DefaultAzureCredential.
 	AuthIdentity AuthMode = "identity"
-	// AuthDevice forces an interactive device-code sign-in.
+	// AuthDevice forces a device-code sign-in, which works anywhere the code
+	// can be read and typed elsewhere.
 	AuthDevice AuthMode = "device"
+	// AuthBrowser forces a browser sign-in.
+	AuthBrowser AuthMode = "browser"
 	// AuthAnonymous makes unauthenticated requests, for public containers.
 	AuthAnonymous AuthMode = "anonymous"
 )
@@ -45,26 +51,43 @@ func ParseAuthMode(s string) (AuthMode, error) {
 		return AuthIdentity, nil
 	case AuthDevice:
 		return AuthDevice, nil
+	case AuthBrowser:
+		return AuthBrowser, nil
 	case AuthAnonymous:
 		return AuthAnonymous, nil
 	}
-	return "", fmt.Errorf("unknown auth mode %q (want auto, identity, device or anonymous)", s)
+	return "", fmt.Errorf("unknown auth mode %q "+
+		"(want auto, identity, browser, device or anonymous)", s)
 }
 
 // Credentials discovers and caches the credential for the process. Discovery is
 // deliberately silent when it succeeds: the point of transparent login is that
 // a user with `az login` already done, a managed identity, or the standard
 // AZURE_* environment variables never has to think about it.
+//
+// Discovery alone cannot tell whether a credential will be accepted — an
+// `az login` session for the wrong tenant produces a perfectly good token that
+// the storage account then refuses. Escalate exists for that case, and is
+// driven by the service's answer rather than by guesswork here.
 type Credentials struct {
 	Mode        AuthMode
 	Log         *slog.Logger
-	Interactive bool // a terminal is attached, so a device-code prompt can work
+	Interactive bool // a terminal is attached, so a sign-in prompt can be answered
 	TenantID    string
 
-	once sync.Once
-	cred azcore.TokenCredential
-	err  error
-	kind string
+	mu        sync.Mutex
+	resolved  bool
+	cred      azcore.TokenCredential
+	err       error
+	kind      string
+	escalated bool
+}
+
+func (c *Credentials) logger() *slog.Logger {
+	if c.Log != nil {
+		return c.Log
+	}
+	return slog.New(slog.DiscardHandler)
 }
 
 // Token returns a bearer token for the Blob service, used to authorise
@@ -88,8 +111,113 @@ func (c *Credentials) Token(ctx context.Context) (string, error) {
 // of where it came from. A nil credential with a nil error means anonymous
 // access: no identity was found, and the caller should proceed unauthenticated.
 func (c *Credentials) Resolve(ctx context.Context) (azcore.TokenCredential, string, error) {
-	c.once.Do(func() { c.cred, c.kind, c.err = c.resolve(ctx) })
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.resolved {
+		c.cred, c.kind, c.err = c.resolve(ctx)
+		c.resolved = true
+	}
 	return c.cred, c.kind, c.err
+}
+
+// Consulted reports whether credential discovery ran at all. It does not when
+// a SAS token or an account key was supplied, since those bypass the identity
+// chain entirely — which changes what a rejection means.
+func (c *Credentials) Consulted() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.resolved
+}
+
+// IsAnonymous reports whether the resolved credential is no credential at all.
+// A rejection then means sign-in was needed, rather than that the signed-in
+// identity lacks a role.
+func (c *Credentials) IsAnonymous() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.resolved && c.cred == nil
+}
+
+// Escalate discards whatever was discovered and signs in interactively,
+// replacing the cached credential. It is called when the storage service
+// rejects what discovery found — the one thing the credential chain cannot
+// work out for itself.
+//
+// A run prompts at most once, whether the sign-in succeeds or not: a person who
+// declined once should not be asked again for every remaining file.
+func (c *Credentials) Escalate(ctx context.Context) (azcore.TokenCredential, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.escalated {
+		return c.cred, c.err
+	}
+	c.escalated = true
+	if !c.Interactive {
+		return nil, errors.New("no terminal is attached, so there is nobody to sign in")
+	}
+	cred, kind, err := c.signIn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c.cred, c.kind, c.err, c.resolved = cred, kind, nil, true
+	c.logger().Info("signed in to Azure", "method", kind)
+	return cred, nil
+}
+
+// signIn runs an interactive sign-in, preferring a browser where there is a
+// desktop to show one on, and falling back to a device code, which also works
+// over SSH and inside a container.
+func (c *Credentials) signIn(ctx context.Context) (azcore.TokenCredential, string, error) {
+	return c.signInAs(ctx, AuthAuto)
+}
+
+// signInAs runs a sign-in by a particular method, or picks one when mode is
+// AuthAuto.
+func (c *Credentials) signInAs(ctx context.Context, mode AuthMode) (azcore.TokenCredential, string, error) {
+	if mode == AuthBrowser || (mode != AuthDevice && browserAvailable()) {
+		cred, err := azidentity.NewInteractiveBrowserCredential(
+			&azidentity.InteractiveBrowserCredentialOptions{TenantID: c.TenantID})
+		if err == nil {
+			// A browser opening by itself is alarming without a word of
+			// explanation, so this is announced rather than logged.
+			logx.Errf("azcp: opening a browser to sign in to Azure…\n")
+			if perr := probeWithin(ctx, cred, interactiveTimeout); perr == nil {
+				return cred, "browser", nil
+			} else if mode == AuthBrowser {
+				return nil, "", perr
+			} else {
+				c.logger().Warn("browser sign-in did not complete, asking for a device code instead",
+					"error", perr)
+			}
+		} else if mode == AuthBrowser {
+			return nil, "", err
+		} else {
+			c.logger().Debug("browser sign-in unavailable", "error", err)
+		}
+	}
+	cred, err := c.deviceCode()
+	if err != nil {
+		return nil, "", err
+	}
+	if perr := probeWithin(ctx, cred, interactiveTimeout); perr != nil {
+		return nil, "", perr
+	}
+	return cred, "device code", nil
+}
+
+// browserAvailable reports whether a browser sign-in has any chance of being
+// seen. On a Unix desktop the display-server variables are the reliable
+// signal; over SSH or in a container they are absent and only a device code
+// can work.
+func browserAvailable() bool {
+	if v := os.Getenv("AZCP_NO_BROWSER"); v != "" && v != "0" {
+		return false
+	}
+	switch runtime.GOOS {
+	case "darwin", "windows":
+		return true
+	}
+	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
 }
 
 func (c *Credentials) resolve(ctx context.Context) (azcore.TokenCredential, string, error) {
@@ -102,15 +230,13 @@ func (c *Credentials) resolve(ctx context.Context) (azcore.TokenCredential, stri
 	case AuthAnonymous:
 		log.Debug("using anonymous access", "reason", "requested with --auth=anonymous")
 		return nil, "anonymous", nil
-	case AuthDevice:
-		cred, err := c.deviceCode()
+	case AuthDevice, AuthBrowser:
+		c.escalated = true // already as interactive as it gets
+		cred, kind, err := c.signInAs(ctx, c.Mode)
 		if err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("%s sign-in failed: %w", c.Mode, err)
 		}
-		if err := probe(ctx, cred); err != nil {
-			return nil, "", fmt.Errorf("device-code sign-in failed: %w", err)
-		}
-		return cred, "device code", nil
+		return cred, kind, nil
 	}
 
 	// The ambient identity: environment variables, workload identity, managed
@@ -134,18 +260,16 @@ func (c *Credentials) resolve(ctx context.Context) (azcore.TokenCredential, stri
 			"or pass a SAS token in the URL", err)
 	}
 
-	// Nothing ambient. If someone is watching, offer to sign in; the token is
-	// cached in memory for the life of the process.
+	// Nothing ambient. If someone is watching, offer to sign in now rather than
+	// letting the first request fail.
 	if c.Interactive {
-		log.Info("no ambient Azure credential found, starting interactive sign-in")
-		if cred, derr := c.deviceCode(); derr == nil {
-			if perr := probe(ctx, cred); perr == nil {
-				return cred, "device code", nil
-			} else {
-				log.Warn("interactive sign-in failed, continuing anonymously", "error", perr)
-			}
+		log.Info("no ambient Azure credential found, signing in")
+		c.escalated = true
+		if cred, kind, serr := c.signIn(ctx); serr == nil {
+			log.Info("signed in to Azure", "method", kind)
+			return cred, kind, nil
 		} else {
-			log.Warn("could not start interactive sign-in", "error", derr)
+			log.Warn("sign-in did not succeed, continuing anonymously", "error", serr)
 		}
 	}
 
@@ -159,18 +283,32 @@ func (c *Credentials) deviceCode() (azcore.TokenCredential, error) {
 	return azidentity.NewDeviceCodeCredential(&azidentity.DeviceCodeCredentialOptions{
 		TenantID: c.TenantID,
 		UserPrompt: func(_ context.Context, m azidentity.DeviceCodeMessage) error {
-			// Written straight to stderr: this is a prompt, not a log record,
-			// and it must be visible whatever the log level.
-			fmt.Fprintf(os.Stderr, "\n%s\n\n", m.Message)
+			// A prompt, not a log record: it has to appear whatever the log
+			// level, and it has to stand the progress display down first or it
+			// will be drawn over.
+			logx.WithTerminal(func() {
+				fmt.Fprintf(os.Stderr, "\n%s\n\n", m.Message)
+			})
 			return nil
 		},
 	})
 }
 
+// Timeouts for the token request that validates a credential. Discovery should
+// be quick; a person completing a sign-in needs far longer.
+const (
+	discoveryTimeout   = 90 * time.Second
+	interactiveTimeout = 10 * time.Minute
+)
+
 // probe forces a token request so that an unusable credential is reported now,
 // with a clear message, instead of surfacing as a puzzling 401 mid-transfer.
 func probe(ctx context.Context, cred azcore.TokenCredential) error {
-	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	return probeWithin(ctx, cred, discoveryTimeout)
+}
+
+func probeWithin(ctx context.Context, cred azcore.TokenCredential, d time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()
 	_, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{storageScope}})
 	return err

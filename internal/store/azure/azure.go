@@ -60,6 +60,9 @@ type Store struct {
 	log   *slog.Logger
 	creds *Credentials
 
+	// signIn guards the single interactive escalation a run is allowed.
+	signIn signInState
+
 	// noCopyRoute remembers, per endpoint and route, that a server-side copy
 	// mechanism is not implemented there, so the rest of the run stops asking.
 	noCopyRoute sync.Map
@@ -257,6 +260,16 @@ func (s *Store) serviceClient(ctx context.Context, u *uri.URL) (*service.Client,
 // that is not a blob is probed once more as a prefix before being reported
 // missing.
 func (s *Store) Stat(ctx context.Context, u *uri.URL, _ bool) (*store.Node, error) {
+	var n *store.Node
+	err := s.withSignIn(ctx, func() error {
+		var e error
+		n, e = s.stat(ctx, u)
+		return e
+	})
+	return n, err
+}
+
+func (s *Store) stat(ctx context.Context, u *uri.URL) (*store.Node, error) {
 	switch {
 	case u.Container == "":
 		// The account root always exists as far as the tool is concerned; it
@@ -335,6 +348,16 @@ func (s *Store) prefixEmpty(ctx context.Context, u *uri.URL) (bool, error) {
 // ReadDir lists the immediate children of a container or prefix. Containers are
 // listed when u addresses the account root.
 func (s *Store) ReadDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) {
+	var out []*store.Node
+	err := s.withSignIn(ctx, func() error {
+		var e error
+		out, e = s.readDir(ctx, u)
+		return e
+	})
+	return out, err
+}
+
+func (s *Store) readDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) {
 	if u.Container == "" {
 		return s.listContainers(ctx, u)
 	}
@@ -419,6 +442,23 @@ func (s *Store) listContainers(ctx context.Context, u *uri.URL) ([]*store.Node, 
 // synthesising the intermediate prefixes so a "**" pattern sees the same tree
 // shape it would on a filesystem.
 func (s *Store) WalkAll(ctx context.Context, u *uri.URL,
+	onError func(*uri.URL, error) error, fn func(*store.Node) error) error {
+
+	// A walk streams results to fn, so it cannot simply be run twice. The
+	// sign-in retry covers the first listing request, which is where a
+	// rejected credential shows up; anything failing later has already
+	// produced output and is reported as it is.
+	first := true
+	return s.withSignIn(ctx, func() error {
+		if !first {
+			s.log.Debug("restarting the listing after signing in", "path", u.Display())
+		}
+		first = false
+		return s.walkAll(ctx, u, onError, fn)
+	})
+}
+
+func (s *Store) walkAll(ctx context.Context, u *uri.URL,
 	onError func(*uri.URL, error) error, fn func(*store.Node) error) error {
 
 	if u.Container == "" {
@@ -517,7 +557,11 @@ func ancestors(base, name string) []string {
 // blob namespace that must really exist, so this verifies (and optionally
 // creates) the container and does nothing else: prefixes spring into being when
 // the first blob is written.
-func (s *Store) MkdirAll(ctx context.Context, u *uri.URL, _ fs.FileMode) error {
+func (s *Store) MkdirAll(ctx context.Context, u *uri.URL, mode fs.FileMode) error {
+	return s.withSignIn(ctx, func() error { return s.mkdirAll(ctx, u, mode) })
+}
+
+func (s *Store) mkdirAll(ctx context.Context, u *uri.URL, _ fs.FileMode) error {
 	if u.Container == "" {
 		return nil
 	}

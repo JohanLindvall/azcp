@@ -6,20 +6,18 @@ on:
   pull_request:
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # so `git describe` can stamp a version
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      - name: Check formatting
-        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
-      - name: Vet
-        run: go vet ./...
-      - name: Test
-        run: go test ./...
-      - name: Test with the race detector
-        run: go test -race ./...
-      - name: Build
-        run: go build ./...
+      # Formatting, vet, tests and the race detector.
+      - run: make check
+      # Every platform a release is built for must compile.
+      - run: make cross
+      # The blob paths, against the storage emulator.
+      - run: make e2e

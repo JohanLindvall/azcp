@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"syscall"
 
 	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/uri"
@@ -115,15 +114,10 @@ func (s *Store) WalkAll(ctx context.Context, u *uri.URL,
 	if err != nil {
 		return err
 	}
-	var rootDev uint64
-	if st, ok := root.Sys.(*syscall.Stat_t); ok {
-		rootDev = uint64(st.Dev)
-	}
-	visited := map[fileID]bool{}
+	rootDev, _ := deviceOfSys(root.Sys)
+	visited := map[FileID]bool{}
 	return s.walk(ctx, u, onError, fn, visited, rootDev, 0)
 }
-
-type fileID struct{ dev, ino uint64 }
 
 // maxWalkDepth is a backstop against a symlink cycle that inode tracking
 // somehow fails to catch (for example across filesystems that reuse inodes).
@@ -131,7 +125,7 @@ const maxWalkDepth = 256
 
 func (s *Store) walk(ctx context.Context, dir *uri.URL,
 	onError func(*uri.URL, error) error, fn func(*store.Node) error,
-	visited map[fileID]bool, rootDev uint64, depth int) error {
+	visited map[FileID]bool, rootDev uint64, depth int) error {
 
 	if err := ctx.Err(); err != nil {
 		return err
@@ -163,8 +157,7 @@ func (s *Store) walk(ctx context.Context, dir *uri.URL,
 				}
 				continue
 			}
-			if st, ok := target.Sys().(*syscall.Stat_t); ok {
-				id := fileID{uint64(st.Dev), st.Ino}
+			if id, _, ok := fileIdentity(target); ok {
 				if visited[id] {
 					s.log.Warn("skipping symlink loop", "path", e.URL.Display())
 					continue
@@ -173,7 +166,7 @@ func (s *Store) walk(ctx context.Context, dir *uri.URL,
 			}
 		}
 		if s.OneFileSystem {
-			if st, ok := e.Sys.(*syscall.Stat_t); ok && uint64(st.Dev) != rootDev {
+			if dev, ok := deviceOfSys(e.Sys); ok && dev != rootDev {
 				s.log.Debug("skipping other filesystem", "path", e.URL.Display())
 				continue
 			}

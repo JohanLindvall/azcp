@@ -125,6 +125,10 @@ func guessContentType(name string) string {
 
 // Upload writes a local file to a blob, staging blocks in parallel.
 func (s *Store) Upload(ctx context.Context, srcPath string, dst *uri.URL, o TransferOptions) error {
+	return s.withSignIn(ctx, func() error { return s.upload(ctx, srcPath, dst, o) })
+}
+
+func (s *Store) upload(ctx context.Context, srcPath string, dst *uri.URL, o TransferOptions) error {
 	f, err := os.Open(srcPath)
 	if err != nil {
 		return err
@@ -176,6 +180,10 @@ func (s *Store) UploadStream(ctx context.Context, r io.Reader, dst *uri.URL, o T
 // Download writes a blob to an already-open local file, fetching ranges in
 // parallel. The file is truncated to the blob's length.
 func (s *Store) Download(ctx context.Context, src *store.Node, f *os.File, o TransferOptions) error {
+	return s.withSignIn(ctx, func() error { return s.download(ctx, src, f, o) })
+}
+
+func (s *Store) download(ctx context.Context, src *store.Node, f *os.File, o TransferOptions) error {
 	c, err := s.client(ctx, src.URL)
 	if err != nil {
 		return err
@@ -216,6 +224,16 @@ func (s *Store) Download(ctx context.Context, src *store.Node, f *os.File, o Tra
 // OpenRead returns a reader over a blob that transparently re-issues the range
 // request if the connection drops mid-stream.
 func (s *Store) OpenRead(ctx context.Context, src *store.Node) (io.ReadCloser, error) {
+	var r io.ReadCloser
+	err := s.withSignIn(ctx, func() error {
+		var e error
+		r, e = s.openRead(ctx, src)
+		return e
+	})
+	return r, err
+}
+
+func (s *Store) openRead(ctx context.Context, src *store.Node) (io.ReadCloser, error) {
 	c, err := s.client(ctx, src.URL)
 	if err != nil {
 		return nil, err

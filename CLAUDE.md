@@ -101,6 +101,19 @@ Azure SDK reports cumulative bytes and can report *less* after retrying a
 block. `Task.Add` takes a delta and is for local copies. Mixing them
 double-counts.
 
+**Discovery cannot validate a credential; only the service can.** The chain in
+`store/azure/auth.go` finds *a* credential, which the account may still refuse —
+an `az login` for the wrong tenant is the common case. `store/azure/signin.go`
+turns that rejection into an interactive sign-in and one retry, at most once per
+run and only when stderr is a terminal. A 403 with an identity in hand is a
+missing role and is *not* escalated, because signing in as the same person again
+changes nothing.
+
+**Prompts are not log records.** The device code, the "opening a browser" notice
+and the "account rejected the credential" line go through `logx.Errf` so they
+appear whatever `--log-level` says. Anything the user must act on belongs there,
+not in the logger.
+
 **Blob storage has no directories.** `store/azure` synthesises them: a prefix
 with children behaves as a directory, `WalkAll` emits ancestor prefixes so `**`
 sees a tree, and an empty directory is the zero-byte `name/` marker blob.
@@ -125,8 +138,15 @@ matching semantics must keep it passing — bash is the specification.
 is the closest thing to an end-to-end test that needs no credentials. Add cases
 there when changing `cp` semantics.
 
-Run `make race` before proposing changes to the progress display, the worker
-pool or anything sharing state between them.
+`scripts/e2e.sh` covers the blob paths against the emulator; it is the only
+test that exercises upload, download, blob-to-blob copy and remote wildcards
+together. Add to it when changing anything in `store/azure`.
+
+Run `make check` before proposing changes to the progress display, the worker
+pool or anything sharing state between them — it includes the race detector.
+Run `make cross` after touching anything platform-specific; Windows has no
+`syscall.Stat_t` and no `SIGWINCH`, which is why the local store goes through
+the accessors in `plat_*.go` and the display polls its width.
 
 ## Conventions
 

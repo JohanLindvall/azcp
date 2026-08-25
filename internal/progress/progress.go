@@ -9,11 +9,9 @@ package progress
 import (
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -150,7 +148,6 @@ func (r *Reporter) Start() {
 		return
 	}
 	r.write(hideCursor)
-	r.watchResize()
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
@@ -163,6 +160,7 @@ func (r *Reporter) Start() {
 			case <-t.C:
 				r.mu.Lock()
 				r.spinner++
+				r.refreshWidth()
 				r.render()
 				r.mu.Unlock()
 			}
@@ -333,27 +331,18 @@ func (r *Reporter) write(s string) {
 	_, _ = r.out.WriteString(s)
 }
 
-func (r *Reporter) watchResize() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGWINCH)
-	r.wg.Add(1)
-	go func() {
-		defer r.wg.Done()
-		defer signal.Stop(ch)
-		for {
-			select {
-			case <-r.done:
-				return
-			case <-ch:
-				if w, _, err := term.GetSize(int(r.out.Fd())); err == nil && w > 0 {
-					r.mu.Lock()
-					// The old frame was laid out for the old width; forget it
-					// rather than trying to erase lines that have reflowed.
-					r.width = w
-					r.drawn = 0
-					r.mu.Unlock()
-				}
-			}
-		}
-	}()
+// refreshWidth re-reads the terminal width. It is polled on every frame rather
+// than driven by SIGWINCH, so resize handling is identical on platforms that
+// have no such signal, at the cost of one cheap query per frame.
+//
+// The caller must hold r.mu.
+func (r *Reporter) refreshWidth() {
+	w, _, err := term.GetSize(int(r.out.Fd()))
+	if err != nil || w <= 0 || w == r.width {
+		return
+	}
+	// The frame on screen was laid out for the old width; forget it rather
+	// than trying to erase lines that have since reflowed.
+	r.width = w
+	r.drawn = 0
 }

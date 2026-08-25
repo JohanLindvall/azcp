@@ -11,10 +11,11 @@ import (
 )
 
 // Program identity, used in messages and in the SDK's user-agent string.
-const (
-	Program = "azcp"
-	Version = "1.0.0"
-)
+const Program = "azcp"
+
+// Version is stamped at build time by the Makefile from `git describe`. The
+// fallback is what `go install` and a plain `go build` produce.
+var Version = "dev"
 
 // N.B. the short options here are exactly GNU cp's, and no extension is given a
 // short form that cp uses. -j is the one extension with a short form, because
@@ -115,7 +116,7 @@ var specs = []cpflags.Spec{
 	{Long: "glob", Arg: cpflags.RequiredArg, Meta: "WHEN",
 		Help: "expand wildcards in arguments: auto, always, never"},
 	{Long: "auth", Arg: cpflags.RequiredArg, Meta: "MODE",
-		Help: "credential discovery: auto, identity, device, anonymous"},
+		Help: "credential discovery: auto, identity, browser, device, anonymous"},
 	{Long: "tenant", Arg: cpflags.RequiredArg, Meta: "ID",
 		Help: "Microsoft Entra tenant to authenticate against"},
 	{Long: "endpoint-suffix", Arg: cpflags.RequiredArg, Meta: "SUFFIX",
