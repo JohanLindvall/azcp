@@ -31,35 +31,45 @@ func decompressible(encoding string) bool {
 }
 
 // decompressFile expands the file in place and returns its final path, which
-// loses a trailing .gz, .gzip or .zz if it had one.
+// loses a trailing .gz, .gzip, .zz, .zst or .zstd if it had one.
 func decompressFile(path, encoding string) (string, error) {
 	in, err := os.Open(path)
 	if err != nil {
 		return path, err
 	}
-	defer in.Close()
-
 	r, err := decoder(in, encoding)
 	if err != nil {
+		in.Close()
 		return path, fmt.Errorf("cannot decompress %s: %w", path, err)
 	}
-	defer r.Close()
 
 	// Written beside the destination and renamed over it, so an interrupted
 	// expansion cannot leave a half-expanded file in place of the real one.
 	tmp, err := os.CreateTemp(dirOf(path), ".azcp-decompress-*")
 	if err != nil {
+		r.Close()
+		in.Close()
 		return path, err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
 
-	if _, err := io.Copy(tmp, r); err != nil {
-		tmp.Close()
-		return path, fmt.Errorf("cannot decompress %s: %w", path, err)
+	_, copyErr := io.Copy(tmp, r)
+	r.Close()
+	tmpErr := tmp.Close()
+
+	// Everything is closed before anything is renamed or removed. Unix does
+	// not care, but Windows refuses to move over or delete a file that is
+	// still open, and the compressed original would be left sitting beside its
+	// own expansion.
+	in.Close()
+
+	if copyErr != nil {
+		os.Remove(tmpName)
+		return path, fmt.Errorf("cannot decompress %s: %w", path, copyErr)
 	}
-	if err := tmp.Close(); err != nil {
-		return path, err
+	if tmpErr != nil {
+		os.Remove(tmpName)
+		return path, tmpErr
 	}
 
 	final := path
@@ -70,12 +80,15 @@ func decompressFile(path, encoding string) (string, error) {
 		}
 	}
 	if err := os.Rename(tmpName, final); err != nil {
+		os.Remove(tmpName)
 		return path, err
 	}
 	if final != path {
 		// The compressed original is gone: it has become the expanded file
 		// under a different name.
-		_ = os.Remove(path)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return final, fmt.Errorf("expanded %s but could not remove it: %w", path, err)
+		}
 	}
 	return final, nil
 }
