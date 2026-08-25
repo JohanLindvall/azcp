@@ -111,10 +111,33 @@ jobs:
         if: matrix.goos != 'windows'
         run: tar -C dist -czf "dist/${PKG}.tar.gz" "${PKG}"
 
+      # The archives above carry the documentation with them, which is what a
+      # person downloading by hand wants. A script wants the binary and nothing
+      # else, so it is also published on its own: one file, compressed, that
+      # decompresses straight to an executable.
+      - name: Compressed binary on its own (gzip)
+        if: matrix.goos != 'windows'
+        run: |
+          set -euo pipefail
+          gzip -9 -c build/azcp > "dist/${PKG}.bin.gz"
+          ls -l "dist/${PKG}.bin.gz"
+
+      - name: Compressed binary on its own (zip)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: Compress-Archive -Path build/azcp.exe -DestinationPath "dist/$env:PKG.exe.zip"
+
+      - name: Remove the staging directory
+        run: rm -rf "dist/${PKG}"
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.PKG }}
-          path: dist/${{ env.PKG }}.*
+          path: |
+            dist/${{ env.PKG }}.tar.gz
+            dist/${{ env.PKG }}.zip
+            dist/${{ env.PKG }}.bin.gz
+            dist/${{ env.PKG }}.exe.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -137,8 +160,8 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          # Only the archives; the staged directories are an artefact of packing.
-          sha256sum *.tar.gz *.zip > SHA256SUMS
+          # Everything that is actually published, in one file.
+          sha256sum azcp_* > SHA256SUMS
           cat SHA256SUMS
 
       - name: Release notes
@@ -155,16 +178,32 @@ jobs:
           go install github.com/JohanLindvall/azcp/cmd/azcp@VERSION_PLACEHOLDER
           ```
 
+          Or as a container:
+
+          ```
+          docker run --rm -v "$PWD:/data" ghcr.io/johanlindvall/azcp:VERSION_PLACEHOLDER --help
+          ```
+
           ### Binaries
 
-          | platform | archive |
-          | --- | --- |
-          | Linux x86-64 | `azcp_VERSION_PLACEHOLDER_linux_amd64.tar.gz` |
-          | Linux arm64 | `azcp_VERSION_PLACEHOLDER_linux_arm64.tar.gz` |
-          | macOS Apple silicon | `azcp_VERSION_PLACEHOLDER_darwin_arm64.tar.gz` |
-          | macOS Intel | `azcp_VERSION_PLACEHOLDER_darwin_amd64.tar.gz` |
-          | Windows x86-64 | `azcp_VERSION_PLACEHOLDER_windows_amd64.zip` |
-          | Windows arm64 | `azcp_VERSION_PLACEHOLDER_windows_arm64.zip` |
+          Each platform has two downloads: an archive with the README and the
+          licence, and the binary on its own, compressed, for scripts.
+
+          | platform | archive | binary only |
+          | --- | --- | --- |
+          | Linux x86-64 | `azcp_VERSION_PLACEHOLDER_linux_amd64.tar.gz` | `azcp_VERSION_PLACEHOLDER_linux_amd64.bin.gz` |
+          | Linux arm64 | `azcp_VERSION_PLACEHOLDER_linux_arm64.tar.gz` | `azcp_VERSION_PLACEHOLDER_linux_arm64.bin.gz` |
+          | macOS Apple silicon | `azcp_VERSION_PLACEHOLDER_darwin_arm64.tar.gz` | `azcp_VERSION_PLACEHOLDER_darwin_arm64.bin.gz` |
+          | macOS Intel | `azcp_VERSION_PLACEHOLDER_darwin_amd64.tar.gz` | `azcp_VERSION_PLACEHOLDER_darwin_amd64.bin.gz` |
+          | Windows x86-64 | `azcp_VERSION_PLACEHOLDER_windows_amd64.zip` | `azcp_VERSION_PLACEHOLDER_windows_amd64.exe.zip` |
+          | Windows arm64 | `azcp_VERSION_PLACEHOLDER_windows_arm64.zip` | `azcp_VERSION_PLACEHOLDER_windows_arm64.exe.zip` |
+
+          One line, no archive to unpack:
+
+          ```
+          curl -fsSL https://github.com/JohanLindvall/azcp/releases/download/VERSION_PLACEHOLDER/azcp_VERSION_PLACEHOLDER_linux_amd64.bin.gz \
+            | gunzip > azcp && chmod +x azcp
+          ```
 
           Verify with `sha256sum -c SHA256SUMS`.
 
@@ -179,8 +218,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "${VERSION}" \
-            --title "azcp ${VERSION}" \
-            --notes-file NOTES.md \
-            --verify-tag \
-            dist/*.tar.gz dist/*.zip dist/SHA256SUMS
+          files=(dist/azcp_* dist/SHA256SUMS)
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "release exists; refreshing its assets"
+            gh release upload "${VERSION}" "${files[@]}" --clobber
+          else
+            gh release create "${VERSION}" \
+              --title "azcp ${VERSION}" \
+              --notes-file NOTES.md \
+              --verify-tag \
+              "${files[@]}"
+          fi

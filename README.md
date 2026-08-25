@@ -55,8 +55,16 @@ below says more.
 
 ## Installing
 
-Download a binary from [the latest release][releases] — Linux, macOS and
-Windows, on x86-64 and arm64 — or:
+Download from [the latest release][releases] — Linux, macOS and Windows, on
+x86-64 and arm64. Each platform has an archive with the documentation, and the
+binary on its own, compressed, for scripts:
+
+```
+curl -fsSL https://github.com/JohanLindvall/azcp/releases/latest/download/azcp_v0.1.0_linux_amd64.bin.gz \
+  | gunzip > azcp && chmod +x azcp
+```
+
+Or:
 
 ```
 go install github.com/JohanLindvall/azcp/cmd/azcp@latest
