@@ -101,10 +101,11 @@ type Options struct {
 	Glob            GlobMode
 
 	// Presentation
-	Progress  progress.Mode
-	LogLevel  string
-	LogFormat string
-	LogFile   string
+	Progress         progress.Mode
+	ProgressInterval time.Duration
+	LogLevel         string
+	LogFormat        string
+	LogFile          string
 
 	// Azure
 	Auth            azure.AuthMode
@@ -121,16 +122,17 @@ type Options struct {
 // Defaults returns the configuration used when no options are given.
 func Defaults() *Options {
 	return &Options{
-		Suffix:          backupSuffixDefault(),
-		Jobs:            8,
-		PartSize:        8 << 20,
-		PartConcurrency: 4,
-		Retries:         6,
-		RetryDelay:      300 * time.Millisecond,
-		RetryMaxDelay:   30 * time.Second,
-		LogLevel:        "warn",
-		LogFormat:       "text",
-		Auth:            azure.AuthAuto,
+		Suffix:           backupSuffixDefault(),
+		Jobs:             8,
+		PartSize:         8 << 20,
+		PartConcurrency:  4,
+		Retries:          6,
+		RetryDelay:       300 * time.Millisecond,
+		RetryMaxDelay:    30 * time.Second,
+		ProgressInterval: progress.DefaultInterval,
+		LogLevel:         "warn",
+		LogFormat:        "text",
+		Auth:             azure.AuthAuto,
 	}
 }
 
@@ -350,6 +352,15 @@ func (o *Options) apply(f cpflags.Flag) error {
 		o.Progress = m
 	case "no-progress":
 		o.Progress = progress.ModeNever
+	case "progress-interval":
+		d, err := time.ParseDuration(f.Value)
+		if err != nil {
+			return fmt.Errorf("invalid argument for '--progress-interval': %w", err)
+		}
+		if d < 20*time.Millisecond {
+			return fmt.Errorf("--progress-interval must be at least 20ms")
+		}
+		o.ProgressInterval = d
 	case "log-level":
 		o.LogLevel = f.Value
 	case "log-format":

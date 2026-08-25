@@ -71,7 +71,15 @@ type Config struct {
 	Out  *os.File
 	// MaxRows caps how many in-flight transfers are listed individually.
 	MaxRows int
+	// Interval is how often the display repaints. Zero means DefaultInterval.
+	Interval time.Duration
 }
+
+// DefaultInterval is how often the live display repaints. A progress bar is
+// read, not watched: once a second conveys everything useful while keeping the
+// terminal quiet, which matters over a slow link where every frame is bytes on
+// the wire.
+const DefaultInterval = time.Second
 
 // Reporter renders progress. The zero value is not usable; call New.
 type Reporter struct {
@@ -80,13 +88,21 @@ type Reporter struct {
 	pal     palette
 	maxRows int
 
-	mu      sync.Mutex
+	// mu guards the mutable state below. It is held only long enough to read
+	// or update it — never across a write to the terminal.
+	mu       sync.Mutex
+	phase    string
+	scanning bool
+
+	// paint guards the screen: the frame currently on it, the width it was
+	// laid out for, and the writes themselves. Workers never take it, so a
+	// slow or blocked terminal cannot hold up a transfer.
+	paint   sync.Mutex
 	width   int
 	drawn   int // lines currently occupying the live region
 	stopped bool
-
-	phase    string
-	scanning bool
+	spinner int
+	samples []sample
 
 	plannedFiles atomic.Int64
 	plannedBytes atomic.Int64
@@ -97,12 +113,13 @@ type Reporter struct {
 	retries      atomic.Int64
 
 	active   []*Task
-	spinner  int
-	samples  []sample
 	started  time.Time
 	stopOnce sync.Once
 	done     chan struct{}
 	wg       sync.WaitGroup
+
+	// interval is how often the display repaints.
+	interval time.Duration
 }
 
 type sample struct {
@@ -123,15 +140,20 @@ func New(cfg Config) *Reporter {
 	isTTY := term.IsTerminal(int(out.Fd()))
 	enabled := cfg.Mode == ModeAlways || (cfg.Mode == ModeAuto && isTTY)
 
+	interval := cfg.Interval
+	if interval <= 0 {
+		interval = DefaultInterval
+	}
 	r := &Reporter{
-		out:     out,
-		enabled: enabled,
-		pal:     detectPalette(isTTY),
-		maxRows: rows,
-		width:   80,
-		phase:   "Copying",
-		done:    make(chan struct{}),
-		started: time.Now(),
+		out:      out,
+		enabled:  enabled,
+		pal:      detectPalette(isTTY),
+		maxRows:  rows,
+		width:    80,
+		phase:    "Copying",
+		done:     make(chan struct{}),
+		started:  time.Now(),
+		interval: interval,
 	}
 	if w, _, err := term.GetSize(int(out.Fd())); err == nil && w > 0 {
 		r.width = w
@@ -151,18 +173,18 @@ func (r *Reporter) Start() {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
-		t := time.NewTicker(80 * time.Millisecond)
+		t := time.NewTicker(r.interval)
 		defer t.Stop()
 		for {
 			select {
 			case <-r.done:
 				return
 			case <-t.C:
-				r.mu.Lock()
+				r.paint.Lock()
 				r.spinner++
 				r.refreshWidth()
 				r.render()
-				r.mu.Unlock()
+				r.paint.Unlock()
 			}
 		}
 	}()
@@ -178,10 +200,10 @@ func (r *Reporter) Stop() {
 		}
 		close(r.done)
 		r.wg.Wait()
-		r.mu.Lock()
+		r.paint.Lock()
 		r.clear()
 		r.stopped = true
-		r.mu.Unlock()
+		r.paint.Unlock()
 		r.write(showCursor)
 	})
 }
@@ -189,8 +211,8 @@ func (r *Reporter) Stop() {
 // Guard runs fn with the live region erased, then redraws. Every write to the
 // terminal from elsewhere in the program goes through here.
 func (r *Reporter) Guard(fn func()) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.paint.Lock()
+	defer r.paint.Unlock()
 	r.clear()
 	fn()
 	r.render()

@@ -202,8 +202,11 @@ func (w *walker) walkDeep(ctx context.Context, cur *uri.URL, i int) error {
 	return ctx.Err()
 }
 
-// relUnder returns child's path relative to base, comparing element by element
-// so that ".", "//" and absolute paths all behave.
+// RelUnder returns child's path relative to base, comparing element by element
+// so that ".", "//" and absolute paths all behave. The second result is false
+// when child does not lie under base.
+func RelUnder(base, child string) (string, bool) { return relUnder(base, child) }
+
 func relUnder(base, child string) (string, bool) {
 	b := glob.SplitPath(base)
 	c := glob.SplitPath(child)

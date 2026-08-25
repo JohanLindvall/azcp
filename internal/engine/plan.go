@@ -353,6 +353,12 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 		}
 	}
 
+	// A remote subtree is enumerated in one go rather than a request per
+	// prefix: see planRemoteTree.
+	if src.URL.IsRemote() {
+		return e.planRemoteTree(ctx, src, dst, out, display)
+	}
+
 	entries, err := e.storeFor(src.URL).ReadDir(ctx, src.URL)
 	if err != nil {
 		e.fail("cannot read directory %s: %s", quote(src.URL.Display()), brief(err))
@@ -397,6 +403,90 @@ func (e *Engine) crossesFilesystem(n *store.Node) bool {
 	}
 	dev, ok := local.DeviceOf(n.Sys)
 	return ok && dev != e.rootDev
+}
+
+// planRemoteTree queues a whole remote subtree from a single flat listing.
+//
+// Descending prefix by prefix costs one request per directory and holds the
+// first transfer up until the last directory has been listed. Against a real
+// endpoint, where a round trip is tens of milliseconds, a few hundred
+// directories is several seconds of doing nothing. One flat listing returns up
+// to five thousand blobs per request, so the same tree is a couple of round
+// trips and transfers begin immediately.
+func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.URL,
+	out chan<- *task, display string) error {
+
+	base := src.URL.PathPart()
+	made := map[string]bool{}
+	// Directories still thought to be empty, kept only when the destination is
+	// blob storage, which needs a marker blob to represent one.
+	empty := map[string]*uri.URL{}
+
+	onError := func(u *uri.URL, err error) error {
+		e.fail("cannot read %s: %s", quote(u.Display()), brief(err))
+		return nil
+	}
+
+	err := e.storeFor(src.URL).WalkAll(ctx, src.URL, onError, func(n *store.Node) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rel, ok := store.RelUnder(base, n.URL.PathPart())
+		if !ok || rel == "" {
+			return nil
+		}
+		target := dst.Join(strings.Split(rel, "/")...)
+
+		if n.IsDir() {
+			e.ensureDir(ctx, target, made)
+			if dst.IsRemote() {
+				empty[target.PathPart()] = target
+			}
+			return nil
+		}
+		e.ensureDir(ctx, target.Dir(), made)
+		if dst.IsRemote() {
+			// Every directory on the way to a blob demonstrably has content.
+			for d := target.Dir(); d.PathPart() != ""; d = d.Dir() {
+				if _, ok := empty[d.PathPart()]; !ok {
+					break
+				}
+				delete(empty, d.PathPart())
+			}
+		}
+		return e.emit(ctx, n, target, out, display+"/"+rel)
+	})
+	if err != nil {
+		return err
+	}
+
+	// Blob storage has no empty directories; give the ones that stayed empty
+	// the marker every Azure tool uses so the shape survives the copy.
+	if dst.IsRemote() && !e.opt.DryRun {
+		for _, u := range empty {
+			if merr := e.az.MkdirMarker(ctx, u); merr != nil {
+				e.log.Warn("cannot record empty directory",
+					"path", u.Display(), "error", merr)
+			}
+		}
+	}
+	return nil
+}
+
+// ensureDir creates a destination directory once. A large tree would otherwise
+// re-issue the same request for every file in it.
+func (e *Engine) ensureDir(ctx context.Context, u *uri.URL, made map[string]bool) {
+	key := u.PathPart()
+	if made[key] {
+		return
+	}
+	made[key] = true
+	if e.opt.DryRun {
+		return
+	}
+	if err := e.storeFor(u).MkdirAll(ctx, u, 0o755); err != nil {
+		e.fail("cannot create directory %s: %s", quote(u.Display()), brief(err))
+	}
 }
 
 func (e *Engine) planSymlink(ctx context.Context, src *store.Node, dst *uri.URL,

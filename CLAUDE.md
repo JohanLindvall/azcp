@@ -72,6 +72,18 @@ via `logx.SetGuard` so it can erase its live region first. Writing straight to
 exception is the device-code sign-in prompt in `store/azure/auth.go`, which
 must appear whatever the log level.
 
+**The display has two locks, and the distinction matters.** `Reporter.mu`
+guards the mutable state and is held only long enough to read or update it;
+`Reporter.paint` guards the screen and is held across the write. Workers take
+only `mu`, via `Begin` and `Done`, so a slow terminal can never stall a
+transfer. Holding one lock across both — as an earlier version did — makes
+every file start and finish wait on terminal I/O.
+
+**Frames are written in runs, not per character.** Colouring each cell
+individually costs an escape sequence per character: about 1.7 kB for one bar,
+repainted every frame. `gradientBar` quantises into `gradientBands` colour
+steps so a band shares one escape. Keep any new bar or meter to the same rule.
+
 **Secrets are redacted at the output chokepoint,** in `logx`. SAS signatures,
 account keys and bearer tokens are stripped from everything this package
 writes, so an SDK error quoting a signed URL cannot leak. Do not add a code
@@ -126,6 +138,13 @@ single sign-in; keep it passing.
 and the "account rejected the credential" line go through `logx.Errf` so they
 appear whatever `--log-level` says. Anything the user must act on belongs there,
 not in the logger.
+
+**A recursive remote copy takes one flat listing, not one per prefix.**
+`planRemoteTree` exists because descending prefix by prefix costs a round trip
+per directory and delays the first transfer until the last directory has been
+listed. It also has to synthesise what the walk gives it: destination
+directories created once each, and marker blobs for the directories that turn
+out to be empty.
 
 **Blob storage has no directories.** `store/azure` synthesises them: a prefix
 with children behaves as a directory, `WalkAll` emits ancestor prefixes so `**`

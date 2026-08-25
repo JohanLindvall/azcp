@@ -105,6 +105,8 @@ var specs = []cpflags.Spec{
 		Help: "show the live display: auto, always, never"},
 	{Long: "no-progress", Arg: cpflags.NoArg,
 		Help: "same as --progress=never"},
+	{Long: "progress-interval", Arg: cpflags.RequiredArg, Meta: "DUR",
+		Help: "how often the live display repaints (default 1s)"},
 	{Long: "log-level", Arg: cpflags.RequiredArg, Meta: "LEVEL",
 		Help: "error, warn, info or debug (default warn)"},
 	{Long: "log-format", Arg: cpflags.RequiredArg, Meta: "FORMAT",

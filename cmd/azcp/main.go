@@ -49,7 +49,11 @@ func run(argv []string) int {
 		return exitOK
 	}
 
-	prog := progress.New(progress.Config{Mode: opt.Progress, Out: os.Stderr})
+	prog := progress.New(progress.Config{
+		Mode:     opt.Progress,
+		Out:      os.Stderr,
+		Interval: opt.ProgressInterval,
+	})
 
 	logger, closer, err := logx.Init(logx.Config{
 		Level:  opt.LogLevel,

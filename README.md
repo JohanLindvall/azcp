@@ -130,6 +130,11 @@ Files move `--jobs` at a time (default 8), and each large file is split into
 `--part-size` blocks moved `--part-concurrency` at a time. Uploads stage blocks
 in parallel and downloads fetch ranges in parallel.
 
+A recursive copy *from* blob storage enumerates the whole subtree with one flat
+listing rather than a request per prefix. A tree of a few hundred directories
+would otherwise spend several seconds issuing listings before the last transfer
+could start; this way transfers begin at once.
+
 A copy between two blob URLs is done by the storage service, so the bytes never
 reach this host. Three server-side routes are tried in turn, because which one
 works depends on the endpoint and on how the source can be authorised:
@@ -160,6 +165,13 @@ records and `-v` output are interleaved without tearing the display. It stands
 down entirely when the output is not a terminal, so in a script `azcp` is as
 quiet as `cp`. `--progress=always|never` overrides that.
 
+It repaints once a second, and never holds a transfer up to do it: the display
+is drawn from a snapshot, so a slow or blocked terminal cannot stall a worker.
+Frames are written as runs of like-coloured cells rather than an escape
+sequence per character, which keeps a bar to a few hundred bytes instead of a
+few thousand — worth having when the terminal is at the far end of an SSH
+session. `--progress-interval` changes the rate.
+
 ## Logging
 
 Problems go to stderr as one `cp`-style line each. `--log-level=info` or `debug`
@@ -186,6 +198,7 @@ Added by `azcp`:
 | `--timeout=DUR` | bound on a single request |
 | `--max-errors=N` | stop after N failures (default: never) |
 | `--progress=WHEN` | `auto`, `always`, `never` |
+| `--progress-interval=DUR` | how often the display repaints (default 1s) |
 | `--log-level`, `--log-format`, `--log-file` | |
 | `--dry-run` | report what would be copied |
 | `--glob=WHEN` | `auto`, `always`, `never` |

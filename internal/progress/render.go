@@ -69,8 +69,15 @@ func (r *Reporter) render() {
 	_, _ = r.out.Write(b.Bytes())
 }
 
-// frame builds the lines of the live region.
+// frame builds the lines of the live region. The caller holds r.paint; the
+// mutable state is snapshotted under r.mu so that a worker starting or
+// finishing a file never waits on the terminal.
 func (r *Reporter) frame() []string {
+	r.mu.Lock()
+	active := append([]*Task(nil), r.active...)
+	phase, scanning := r.phase, r.scanning
+	r.mu.Unlock()
+
 	width := r.width
 	if width < 24 {
 		// Too narrow for a layout; a single terse line is better than wrapping.
@@ -85,13 +92,13 @@ func (r *Reporter) frame() []string {
 	rate := r.rate(doneB)
 
 	var lines []string
-	lines = append(lines, r.headerLine(width, doneF, totalF, doneB, totalB))
+	lines = append(lines, r.headerLine(width, phase, scanning, doneF, totalF, doneB, totalB))
 	lines = append(lines, r.barLine(width, doneB, totalB, rate))
 
-	if n := len(r.active); n > 0 {
+	if n := len(active); n > 0 {
 		lines = append(lines, "")
 		shown := min(n, r.maxRows)
-		for _, t := range r.active[:shown] {
+		for _, t := range active[:shown] {
 			lines = append(lines, r.taskLine(width, t))
 		}
 		if n > shown {
@@ -101,7 +108,8 @@ func (r *Reporter) frame() []string {
 	return lines
 }
 
-func (r *Reporter) headerLine(width int, doneF, totalF, doneB, totalB int64) string {
+func (r *Reporter) headerLine(width int, phase string, scanning bool,
+	doneF, totalF, doneB, totalB int64) string {
 	var parts []string
 	if totalF > 0 {
 		parts = append(parts, fmt.Sprintf("%s/%s files",
@@ -120,8 +128,7 @@ func (r *Reporter) headerLine(width int, doneF, totalF, doneB, totalB int64) str
 	if s := r.skippedFiles.Load(); s > 0 {
 		parts = append(parts, r.pal.warn(fmt.Sprintf("%s skipped", humanize.Count(s))))
 	}
-	phase := r.phase
-	if r.scanning {
+	if scanning {
 		phase += " (scanning)"
 	}
 	head := fmt.Sprintf("%s %s  %s", r.spin(), r.pal.bold(phase),
@@ -205,36 +212,62 @@ func barCells(width int, frac float64) (full int, partial rune) {
 	return full, blocks[idx]
 }
 
+// gradientBands is how many colour steps the shaded bar is quantised into.
+// Colouring every cell individually would be smoother, but it costs one escape
+// sequence per character — about 1.7 kB for a single 70-cell bar, repainted
+// over and over. Eight bands look continuous and cost eight escapes.
+const gradientBands = 8
+
 // gradientBar draws the overall bar, shading it from the start colour to the
 // end colour across its length when the terminal can show it.
 func (r *Reporter) gradientBar(width int, frac float64) string {
 	full, partial := barCells(width, frac)
 	var b strings.Builder
-	for i := 0; i < width; i++ {
-		switch {
-		case i < full:
-			b.WriteString(r.pal.gradient(float64(i)/float64(width), "█"))
-		case i == full && partial != ' ':
-			b.WriteString(r.pal.gradient(float64(i)/float64(width), string(partial)))
-		default:
-			b.WriteString(r.pal.track("░"))
+	filled := func(i int) bool { return i < full || (i == full && partial != ' ') }
+	band := func(i int) int { return i * gradientBands / width }
+
+	for i := 0; i < width; {
+		if !filled(i) {
+			j := i
+			for j < width && !filled(j) {
+				j++
+			}
+			b.WriteString(r.pal.track(strings.Repeat("░", j-i)))
+			i = j
+			continue
 		}
+		// One run per colour band, so the whole band shares an escape.
+		j := i
+		var run strings.Builder
+		for j < width && filled(j) && band(j) == band(i) {
+			if j == full {
+				run.WriteRune(partial)
+			} else {
+				run.WriteRune('█')
+			}
+			j++
+		}
+		b.WriteString(r.pal.gradient(float64(i)/float64(width), run.String()))
+		i = j
 	}
 	return b.String()
 }
 
+// plainBar is the single-colour bar used for individual transfers: three
+// escapes regardless of width.
 func (r *Reporter) plainBar(width int, frac float64) string {
 	full, partial := barCells(width, frac)
 	var b strings.Builder
-	for i := 0; i < width; i++ {
-		switch {
-		case i < full:
-			b.WriteString(r.pal.accent("█"))
-		case i == full && partial != ' ':
-			b.WriteString(r.pal.accent(string(partial)))
-		default:
-			b.WriteString(r.pal.track("░"))
-		}
+	if full > 0 {
+		b.WriteString(r.pal.accent(strings.Repeat("█", full)))
+	}
+	rest := width - full
+	if partial != ' ' && rest > 0 {
+		b.WriteString(r.pal.accent(string(partial)))
+		rest--
+	}
+	if rest > 0 {
+		b.WriteString(r.pal.track(strings.Repeat("░", rest)))
 	}
 	return b.String()
 }
@@ -244,13 +277,17 @@ func (r *Reporter) plainBar(width int, frac float64) string {
 func (r *Reporter) indeterminate(width int) string {
 	const runLen = 6
 	pos := (r.spinner * 2) % (width + runLen)
+	lo := max(pos-runLen, 0)
+	hi := min(pos, width)
 	var b strings.Builder
-	for i := 0; i < width; i++ {
-		if i >= pos-runLen && i < pos {
-			b.WriteString(r.pal.gradient(float64(i)/float64(width), "█"))
-		} else {
-			b.WriteString(r.pal.track("░"))
-		}
+	if lo > 0 {
+		b.WriteString(r.pal.track(strings.Repeat("░", lo)))
+	}
+	if hi > lo {
+		b.WriteString(r.pal.gradient(float64(lo)/float64(width), strings.Repeat("█", hi-lo)))
+	}
+	if width > hi {
+		b.WriteString(r.pal.track(strings.Repeat("░", width-hi)))
 	}
 	return b.String()
 }
