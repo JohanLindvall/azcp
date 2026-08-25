@@ -157,7 +157,7 @@ func (s *Store) walk(ctx context.Context, dir *uri.URL,
 				}
 				continue
 			}
-			if id, _, ok := fileIdentity(target); ok {
+			if id, _, ok := fileIdentity(e.URL.Path, target); ok {
 				if visited[id] {
 					s.log.Warn("skipping symlink loop", "path", e.URL.Display())
 					continue

@@ -260,7 +260,7 @@ func (e *Engine) relinkExisting(t *task) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	id, nlink, ok := local.IDOf(info)
+	id, nlink, ok := local.IDOf(t.src.URL.Path, info)
 	if !ok || nlink < 2 {
 		return false, nil
 	}
@@ -286,7 +286,7 @@ func (e *Engine) rememberLink(t *task) {
 	if err != nil {
 		return
 	}
-	id, nlink, ok := local.IDOf(info)
+	id, nlink, ok := local.IDOf(t.src.URL.Path, info)
 	if !ok || nlink < 2 {
 		return
 	}

@@ -293,9 +293,11 @@ func specialBits(m fs.FileMode) fs.FileMode {
 // recreate hard links between copied files (cp --preserve=links).
 type FileID struct{ Dev, Ino uint64 }
 
-// IDOf returns the file identity from a stat result, along with its link
-// count, so only multiply-linked files need tracking.
-func IDOf(fi fs.FileInfo) (FileID, int, bool) { return fileIdentity(fi) }
+// IDOf returns the file identity, along with its link count, so only
+// multiply-linked files need tracking. The path is needed as well as the stat
+// result because Windows does not carry a file index in either, and the file
+// has to be opened to be identified.
+func IDOf(path string, fi fs.FileInfo) (FileID, int, bool) { return fileIdentity(path, fi) }
 
 // DeviceOf returns the filesystem a node lives on, taken from the raw stat
 // result carried on a Node. It is how --one-file-system recognises a mount

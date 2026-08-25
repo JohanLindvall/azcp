@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !darwin && !windows
 
 package local
 
@@ -32,4 +32,4 @@ func ownerOf(fs.FileInfo) (int, int, bool) { return 0, 0, false }
 
 func deviceOfSys(any) (uint64, bool) { return 0, false }
 
-func fileIdentity(fs.FileInfo) (FileID, int, bool) { return FileID{}, 0, false }
+func fileIdentity(string, fs.FileInfo) (FileID, int, bool) { return FileID{}, 0, false }

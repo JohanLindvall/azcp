@@ -341,12 +341,21 @@ func (e *Engine) derefAt(top bool) bool {
 func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 	out chan<- *task, display, rel string) error {
 
+	// A depth limit is the backstop. Identity-based loop detection is exact,
+	// but it depends on the platform being able to identify a file at all;
+	// this holds wherever that does not.
+	if depth := strings.Count(rel, "/"); depth > maxCopyDepth {
+		e.fail("refusing to descend more than %d levels into %s "+
+			"(a symbolic link loop?)", maxCopyDepth, quote(src.URL.Display()))
+		return nil
+	}
+
 	// Following symbolic links can turn the tree into a graph. Remembering
 	// which directories have been entered keeps a link that points back up
 	// from looping forever.
 	if e.opt.DerefWalk() && !src.URL.IsRemote() {
 		if info, err := os.Stat(src.URL.Path); err == nil {
-			if id, _, ok := local.IDOf(info); ok {
+			if id, _, ok := local.IDOf(src.URL.Path, info); ok {
 				if e.visitedDirs[id] {
 					e.log.Warn("skipping directory already visited through a symbolic link",
 						"path", src.URL.Display())
@@ -414,6 +423,10 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 	}
 	return nil
 }
+
+// maxCopyDepth bounds how deep a recursive copy will go. Real trees are
+// nowhere near this; a loop reaches it quickly.
+const maxCopyDepth = 512
 
 // joinRel appends an element to a copy-root-relative path.
 func joinRel(base, name string) string {

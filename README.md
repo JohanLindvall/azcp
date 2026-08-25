@@ -44,12 +44,17 @@ differential-tested against real `bash` run with `globstar` and `extglob`, and
 the copy semantics are tested against temporary directories. `make e2e` needs
 Docker, and starts and stops the emulator around itself.
 
-Builds for Linux, macOS, Windows and FreeBSD. On Windows the `cp` semantics
-that have no counterpart — ownership, extended attributes, hard links — are
-reported rather than silently skipped. A macOS binary reaches the keychain
-through cgo, so one cross-compiled from another platform by `make release`
-signs in once per run instead of remembering it; `make build` on the Mac itself
-does not have that limitation.
+Tested on Linux, macOS and Windows, on x86-64 and arm64 — natively, not by
+cross-compiling, because copy semantics are exactly the thing that differs per
+operating system.
+
+Windows has no POSIX layer, so `--preserve=ownership` and `--preserve=xattr`
+have nothing to act on and `--one-file-system` does not apply; file identity
+does exist there, so `--preserve=links` and the loop guard for `-L` both work.
+A macOS binary reaches the keychain through cgo, so one cross-compiled from
+another platform by `make release` signs in once per run instead of
+remembering it; the released macOS binaries are built on macOS and do not have
+that limitation.
 
 ## Locations
 
