@@ -4,20 +4,85 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  check:
+  # Formatting, vet and the race detector once, where they are cheapest.
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # so `git describe` can stamp a version
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
-      # Formatting, vet, tests and the race detector.
-      - run: make check
-      # Every platform a release is built for must compile.
+          check-latest: true
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+      - run: go vet ./...
+      - name: go mod tidy is a no-op
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+      - name: Race detector
+        run: go test -race ./...
+
+  # The tests themselves on every platform a release is built for. The copy
+  # semantics are full of things that differ per operating system — symbolic
+  # links, file modes, device identity, path separators — so they are worth
+  # running natively rather than only cross-compiling.
+  test:
+    name: test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest      # linux/amd64
+          - ubuntu-24.04-arm   # linux/arm64
+          - macos-latest       # darwin/arm64
+          - macos-15-intel     # darwin/amd64
+          - windows-latest     # windows/amd64
+          - windows-11-arm     # windows/arm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
+      - run: go build ./...
+      - run: go test ./...
+
+  # Every platform a release is built for must at least compile from here, so a
+  # broken build tag is caught without waiting for a tag.
+  cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
       - run: make cross
-      # The blob paths, against the storage emulator.
+
+  # The blob paths, against the Azure storage emulator. Docker is only
+  # available on the Linux runners.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
       - run: make e2e

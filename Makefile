@@ -11,10 +11,16 @@ VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 LDFLAGS   := -s -w -X '$(PKG)/internal/cli.Version=$(VERSION)'
 BUILDOPTS := -trimpath -ldflags "$(LDFLAGS)"
 
-# Platforms `make release` builds for. Windows is included and compiles, but
-# the cp semantics it can honour there are limited: ownership, extended
-# attributes and hard links have no counterpart.
-PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
+# Platforms a release covers. Windows compiles and runs, but the cp semantics it
+# can honour are limited: ownership, extended attributes and hard links have no
+# counterpart there.
+#
+# `make release` cross-compiles all of these from wherever it is run, which is
+# right for a local build. The release workflow instead builds each on its own
+# runner, because macOS reaches its keychain through cgo and a cross-compiled
+# binary cannot.
+PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 \
+             windows/amd64 windows/arm64
 
 # Settings for the Azurite emulator used by `make e2e`. The key is the
 # well-known development one published by Microsoft, not a secret.

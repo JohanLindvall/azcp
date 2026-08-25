@@ -91,7 +91,7 @@ func run(argv []string) int {
 		return exitUsage
 	}
 
-	logger.Debug("starting", "version", cli.Version,
+	logger.Debug("starting", "version", cli.VersionString(),
 		"jobs", opt.Jobs, "part_size", opt.PartSize,
 		"part_concurrency", opt.PartConcurrency, "retries", opt.Retries)
 

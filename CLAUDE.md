@@ -42,6 +42,24 @@ blob-to-blob copies there take the asynchronous `Copy Blob` route. That is a
 gap in the emulator, not in this tool — do not "fix" it by removing the
 preferred routes.
 
+## CI and releases
+
+`ci.yml` runs the tests natively on all six platforms a release covers, because
+the copy semantics are full of things that differ per operating system —
+symbolic links, file modes, device identity, path separators — and
+cross-compiling proves none of it. Formatting, vet, the race detector, the
+cross-compile check and the emulator-backed end-to-end suite run once on Linux.
+
+`release.yml` fires on a `v*` tag. It re-runs the tests rather than trusting
+that main was green, then builds each platform on its own runner. That last
+part is not incidental: macOS reaches its keychain through cgo, so a macOS
+binary cross-compiled from Linux silently loses the ability to remember a
+sign-in. Linux and Windows are built with `CGO_ENABLED=0` for static binaries.
+
+Version comes from the tag via `-X internal/cli.Version`. A binary built
+without that stamp falls back to the module version in its build info, so a
+`go install module@v1.2.3` still reports the right thing.
+
 ## Layout
 
 ```

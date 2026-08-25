@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -84,10 +85,16 @@ func IsRemoteArg(s string) bool {
 // Parse parses a command-line location.
 func Parse(s string, opt Options) (*URL, error) {
 	if !IsRemoteArg(s) {
+		// Every path decision in this package is made on "/" boundaries, and
+		// Windows accepts "/" wherever it accepts "\", so a native path is
+		// normalised on the way in rather than special-cased in a dozen
+		// places. On Unix this is a no-op, and a file name containing a
+		// backslash is left alone.
+		p := filepath.ToSlash(s)
 		return &URL{
 			Scheme:        SchemeFile,
-			Path:          s,
-			TrailingSlash: len(s) > 1 && strings.HasSuffix(s, "/"),
+			Path:          p,
+			TrailingSlash: len(p) > 1 && strings.HasSuffix(p, "/"),
 			raw:           s,
 		}, nil
 	}

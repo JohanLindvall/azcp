@@ -115,7 +115,7 @@ func New(cfg Config) (*Engine, error) {
 		MaxRetries:      int32(o.Retries - 1),
 		TryTimeout:      o.Timeout,
 		CreateContainer: o.CreateContainer,
-		UserAgent:       cli.Program + "/" + cli.Version,
+		UserAgent:       cli.Program + "/" + cli.VersionString(),
 		PeakRequests:    o.PeakRequests(),
 		BytesPerSecond:  o.BandwidthLimit,
 	})

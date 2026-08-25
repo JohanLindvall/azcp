@@ -1,0 +1,175 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (must already exist)'
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Set once so the archive names and the stamped version cannot disagree.
+  VERSION: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  # A tag push does not run ci.yml, so a release checks itself rather than
+  # trusting that main was green when the tag was cut.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
+      - run: go vet ./...
+      - run: go test ./...
+      - run: make cross
+
+  build:
+    needs: verify
+    name: ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux and Windows are built without cgo, so the binaries are static
+          # and carry no libc requirement.
+          - { os: ubuntu-latest,    goos: linux,   goarch: amd64, cgo: '0' }
+          - { os: ubuntu-24.04-arm, goos: linux,   goarch: arm64, cgo: '0' }
+          - { os: windows-latest,   goos: windows, goarch: amd64, cgo: '0' }
+          - { os: windows-11-arm,   goos: windows, goarch: arm64, cgo: '0' }
+          # macOS reaches its keychain through cgo, and a binary cross-compiled
+          # without it cannot remember a sign-in. Each is built on its own
+          # runner so that it can.
+          - { os: macos-15-intel,   goos: darwin,  goarch: amd64, cgo: '1' }
+          - { os: macos-latest,     goos: darwin,  goarch: arm64, cgo: '1' }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+        run: |
+          set -euo pipefail
+          out=azcp
+          [ "$GOOS" = windows ] && out=azcp.exe
+          go build -trimpath \
+            -ldflags "-s -w -X 'github.com/JohanLindvall/azcp/internal/cli.Version=${VERSION}'" \
+            -o "build/$out" ./cmd/azcp
+          ls -l build
+
+      # Every entry above builds natively, so the binary can be run here to
+      # confirm the version was actually stamped into it.
+      - name: Check the binary reports the right version
+        run: |
+          set -euo pipefail
+          out=azcp
+          [ "${{ matrix.goos }}" = windows ] && out=azcp.exe
+          "./build/$out" --version | tee /dev/stderr | grep -q "${VERSION}"
+
+      - name: Stage the archive contents
+        run: |
+          set -euo pipefail
+          name="azcp_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          echo "PKG=$name" >> "$GITHUB_ENV"
+          mkdir -p "dist/$name"
+          cp README.md LICENSE "dist/$name/"
+          cp build/* "dist/$name/"
+
+      - name: Archive (zip)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: Compress-Archive -Path "dist/$env:PKG" -DestinationPath "dist/$env:PKG.zip"
+
+      - name: Archive (tar.gz)
+        if: matrix.goos != 'windows'
+        run: tar -C dist -czf "dist/${PKG}.tar.gz" "${PKG}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.PKG }}
+          path: dist/${{ env.PKG }}.*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          # Only the archives; the staged directories are an artefact of packing.
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Release notes
+        run: |
+          set -euo pipefail
+          cat > NOTES.md <<'EOF'
+          A drop-in `cp` that also copies to and from Azure Blob Storage.
+
+          ### Install
+
+          Download the archive for your platform below, or:
+
+          ```
+          go install github.com/JohanLindvall/azcp/cmd/azcp@VERSION_PLACEHOLDER
+          ```
+
+          ### Binaries
+
+          | platform | archive |
+          | --- | --- |
+          | Linux x86-64 | `azcp_VERSION_PLACEHOLDER_linux_amd64.tar.gz` |
+          | Linux arm64 | `azcp_VERSION_PLACEHOLDER_linux_arm64.tar.gz` |
+          | macOS Apple silicon | `azcp_VERSION_PLACEHOLDER_darwin_arm64.tar.gz` |
+          | macOS Intel | `azcp_VERSION_PLACEHOLDER_darwin_amd64.tar.gz` |
+          | Windows x86-64 | `azcp_VERSION_PLACEHOLDER_windows_amd64.zip` |
+          | Windows arm64 | `azcp_VERSION_PLACEHOLDER_windows_arm64.zip` |
+
+          Verify with `sha256sum -c SHA256SUMS`.
+
+          Linux and Windows binaries are static and need no runtime. macOS
+          binaries are built on macOS so they can use the keychain to remember
+          a sign-in between runs.
+          EOF
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" NOTES.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${VERSION}" \
+            --title "azcp ${VERSION}" \
+            --notes-file NOTES.md \
+            --verify-tag \
+            dist/*.tar.gz dist/*.zip dist/SHA256SUMS

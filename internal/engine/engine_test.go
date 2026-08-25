@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,9 @@ func tree(t *testing.T, root string) []string {
 			return err
 		}
 		if rel, _ := filepath.Rel(root, p); rel != "." {
-			out = append(out, rel)
+			// Compared against "/"-separated expectations, so Windows'
+			// backslashes are normalised rather than special-cased.
+			out = append(out, filepath.ToSlash(rel))
 		}
 		return nil
 	})
@@ -328,7 +331,9 @@ func TestPreserveTimestampsAndMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o741 {
+	// Windows has no POSIX mode: Go maps the whole thing to one read-only bit,
+	// so there is nothing meaningful to compare.
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o741 {
 		t.Errorf("mode = %v, want 0741", fi.Mode().Perm())
 	}
 	if !fi.ModTime().Truncate(time.Second).Equal(when) {

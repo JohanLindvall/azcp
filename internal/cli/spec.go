@@ -5,6 +5,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"runtime/debug"
 	"strings"
 
 	"github.com/JohanLindvall/azcp/internal/cpflags"
@@ -13,9 +14,24 @@ import (
 // Program identity, used in messages and in the SDK's user-agent string.
 const Program = "azcp"
 
-// Version is stamped at build time by the Makefile from `git describe`. The
-// fallback is what `go install` and a plain `go build` produce.
+// Version is stamped at build time by the Makefile and the release workflow.
+// It is deliberately a plain string so the linker can set it with -X.
 var Version = "dev"
+
+// VersionString reports the version to show. A binary from `go install
+// module@v1.2.3` carries no linker stamp, but the toolchain records the module
+// version in the build info, which is better than calling it "dev".
+func VersionString() string {
+	if Version != "dev" {
+		return Version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			return v
+		}
+	}
+	return Version
+}
 
 // N.B. the short options here are exactly GNU cp's, and no extension is given a
 // short form that cp uses. -j is the one extension with a short form, because
@@ -286,5 +302,5 @@ func meta(s cpflags.Spec) string {
 // VersionText is printed by --version.
 func VersionText() string {
 	return fmt.Sprintf("%s %s\nA cp-compatible copier with Azure Blob Storage support.\n",
-		Program, Version)
+		Program, VersionString())
 }

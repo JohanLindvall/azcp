@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -19,6 +20,11 @@ import (
 // portability problem; where bash is present it is the strongest statement
 // available that the matcher is right.
 func TestMatchesBash(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The bash on PATH may be Git Bash or WSL, and WSL sees a different
+		// filesystem entirely, so the comparison would not mean anything.
+		t.Skip("not meaningful on Windows")
+	}
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash not available")
@@ -146,7 +152,7 @@ func listTree(t *testing.T, root string) []string {
 			return rerr
 		}
 		if rel != "." {
-			names = append(names, rel)
+			names = append(names, filepath.ToSlash(rel))
 		}
 		return nil
 	})

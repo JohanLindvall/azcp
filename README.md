@@ -17,9 +17,18 @@ azcp -r 'azure://a/data/2024/**' 'azure://b/backup/2024/'
 
 ## Installing
 
+Download a binary from [the latest release][releases] — Linux, macOS and
+Windows, on x86-64 and arm64 — or:
+
 ```
 go install github.com/JohanLindvall/azcp/cmd/azcp@latest
 ```
+
+[releases]: https://github.com/JohanLindvall/azcp/releases/latest
+
+Linux and Windows binaries are static and need no runtime. macOS binaries are
+built on macOS so they can reach the keychain and remember a sign-in between
+runs.
 
 Or from a clone — `make` on its own lists every target:
 

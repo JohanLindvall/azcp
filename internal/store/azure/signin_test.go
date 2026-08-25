@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -196,10 +197,30 @@ func contains(h, n string) bool {
 	return false
 }
 
+// isolateConfigDir points os.UserConfigDir at a temporary directory, so a test
+// can never read or overwrite a real saved sign-in. Which variable does that
+// differs per platform.
+func isolateConfigDir(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("AppData", dir)
+	case "darwin":
+		t.Setenv("HOME", dir)
+	default:
+		t.Setenv("XDG_CONFIG_HOME", dir)
+	}
+	got, err := os.UserConfigDir()
+	if err != nil || !strings.HasPrefix(got, dir) {
+		t.Skipf("cannot redirect the config directory on this platform (got %q)", got)
+	}
+}
+
 // The record is what lets a later run skip the browser, so it has to survive a
 // round trip through the file it is kept in.
 func TestAuthenticationRecordRoundTrip(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfigDir(t)
 	c := &Credentials{Log: slog.New(slog.DiscardHandler)}
 
 	if _, ok := c.loadRecord(); ok {
@@ -232,7 +253,8 @@ func TestAuthenticationRecordRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := fi.Mode().Perm(); perm != 0o600 {
+	// Windows has no POSIX mode to check.
+	if perm := fi.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
 		t.Errorf("record mode = %v, want 0600", perm)
 	}
 
@@ -250,7 +272,7 @@ func TestAuthenticationRecordRoundTrip(t *testing.T) {
 // A tenant id reaches a file name, so it must not be able to escape the
 // directory it names a file in.
 func TestRecordPathIgnoresHostileTenant(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfigDir(t)
 	c := &Credentials{Log: slog.New(slog.DiscardHandler), TenantID: "../../etc/passwd"}
 	path, err := c.recordPath()
 	if err != nil {
@@ -263,7 +285,7 @@ func TestRecordPathIgnoresHostileTenant(t *testing.T) {
 
 // resume must never start a sign-in, whatever it finds.
 func TestResumeCannotPrompt(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfigDir(t)
 	c := &Credentials{Log: slog.New(slog.DiscardHandler), TenantID: "azcp-test-resume"}
 	if _, ok := c.resume(context.Background()); ok {
 		t.Error("resume succeeded with nothing saved")

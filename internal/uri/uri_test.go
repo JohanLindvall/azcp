@@ -1,6 +1,9 @@
 package uri
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestParseRemote(t *testing.T) {
 	cases := []struct {
@@ -132,5 +135,42 @@ func TestBaseOfAccountRoot(t *testing.T) {
 	l, _ := Parse("/", Options{})
 	if got := l.Base(); got != "" {
 		t.Errorf("local root Base = %q, want empty", got)
+	}
+}
+
+// Windows paths arrive with backslashes; every path decision here is made on
+// "/" boundaries, so they are normalised on the way in. This runs everywhere:
+// on Unix it checks the normalisation is a no-op and leaves odd names alone.
+func TestLocalPathSeparators(t *testing.T) {
+	if filepath.Separator == '\\' {
+		u, err := Parse(`C:\Users\jl\src`, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u.Path != "C:/Users/jl/src" {
+			t.Errorf("Path = %q, want forward slashes", u.Path)
+		}
+		if got := u.Base(); got != "src" {
+			t.Errorf("Base = %q, want %q", got, "src")
+		}
+		if got := u.Join("x").Path; got != "C:/Users/jl/src/x" {
+			t.Errorf("Join = %q", got)
+		}
+		if got := u.Dir().Path; got != "C:/Users/jl" {
+			t.Errorf("Dir = %q", got)
+		}
+		return
+	}
+	// On Unix a backslash is an ordinary character in a file name and must
+	// survive untouched.
+	u, err := Parse(`weird\name.txt`, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Path != `weird\name.txt` {
+		t.Errorf("Path = %q, want the backslash left alone", u.Path)
+	}
+	if got := u.Base(); got != `weird\name.txt` {
+		t.Errorf("Base = %q", got)
 	}
 }
