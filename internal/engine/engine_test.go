@@ -26,12 +26,15 @@ func run(t *testing.T, dir string, argv ...string) int64 {
 	if err != nil {
 		t.Fatalf("parse %v: %v", argv, err)
 	}
-	e := New(Config{
+	e, err := New(Config{
 		Options:  opt,
 		Log:      slog.New(slog.DiscardHandler),
 		Progress: progress.New(progress.Config{Mode: progress.ModeNever}),
 		Stdin:    strings.NewReader(""),
 	})
+	if err != nil {
+		t.Fatalf("new engine %v: %v", argv, err)
+	}
 	failed, runErr := e.Run(context.Background())
 	if runErr != nil {
 		t.Fatalf("run %v: %v", argv, runErr)
@@ -540,4 +543,130 @@ func TestOneFileSystemCopiesNormally(t *testing.T) {
 	if got := read(t, filepath.Join(d, "dst/a/b.txt")); got != "1" {
 		t.Errorf("content = %q", got)
 	}
+}
+
+func TestExcludeAndInclude(t *testing.T) {
+	setup := func(t *testing.T) string {
+		d := t.TempDir()
+		for _, p := range []string{
+			"src/keep.log", "src/junk.tmp", "src/notes.md",
+			"src/a/deep.log", "src/a/deep.tmp",
+			"src/build/out.bin", "src/build/sub/more.bin",
+			"src/vendor/lib.go",
+		} {
+			write(t, filepath.Join(d, p), p)
+		}
+		return d
+	}
+
+	t.Run("a bare pattern matches the name at any depth", func(t *testing.T) {
+		d := setup(t)
+		if n := run(t, d, "-r", "--exclude", "*.tmp", "src", "dst"); n != 0 {
+			t.Fatalf("failed = %d", n)
+		}
+		for _, gone := range []string{"dst/junk.tmp", "dst/a/deep.tmp"} {
+			if exists(filepath.Join(d, gone)) {
+				t.Errorf("%s should have been excluded", gone)
+			}
+		}
+		for _, kept := range []string{"dst/keep.log", "dst/a/deep.log", "dst/notes.md"} {
+			if !exists(filepath.Join(d, kept)) {
+				t.Errorf("%s should have been copied", kept)
+			}
+		}
+	})
+
+	// The anchor is what is being copied, not how it was named, so the same
+	// pattern works however the source is spelled.
+	t.Run("a pattern with a slash anchors at the copy root", func(t *testing.T) {
+		d := setup(t)
+		if n := run(t, d, "-r", "--exclude", "build/**", "src", "dst"); n != 0 {
+			t.Fatalf("failed = %d", n)
+		}
+		if exists(filepath.Join(d, "dst/build/out.bin")) ||
+			exists(filepath.Join(d, "dst/build/sub/more.bin")) {
+			t.Error("the build subtree should have been pruned")
+		}
+		if !exists(filepath.Join(d, "dst/keep.log")) {
+			t.Error("pruning took too much with it")
+		}
+
+		// Spelling the source differently must not change what the pattern means.
+		d2 := setup(t)
+		abs := filepath.Join(d2, "src")
+		if n := run(t, d2, "-r", "--exclude", "build/**", abs, "dst2"); n != 0 {
+			t.Fatalf("failed = %d", n)
+		}
+		if exists(filepath.Join(d2, "dst2/build/out.bin")) {
+			t.Error("an absolute source changed what the pattern anchored to")
+		}
+	})
+
+	t.Run("include selects, and exclude beats include", func(t *testing.T) {
+		d := setup(t)
+		if n := run(t, d, "-r", "--include", "*.log", "src", "dst"); n != 0 {
+			t.Fatalf("failed = %d", n)
+		}
+		if !exists(filepath.Join(d, "dst/keep.log")) || !exists(filepath.Join(d, "dst/a/deep.log")) {
+			t.Error("--include did not keep the logs")
+		}
+		if exists(filepath.Join(d, "dst/notes.md")) || exists(filepath.Join(d, "dst/junk.tmp")) {
+			t.Error("--include kept something it should not have")
+		}
+
+		d2 := setup(t)
+		if n := run(t, d2, "-r", "--include", "*.log", "--exclude", "deep.*", "src", "dst"); n != 0 {
+			t.Fatalf("failed = %d", n)
+		}
+		if !exists(filepath.Join(d2, "dst/keep.log")) {
+			t.Error("keep.log should have survived")
+		}
+		if exists(filepath.Join(d2, "dst/a/deep.log")) {
+			t.Error("--exclude should beat --include")
+		}
+	})
+
+	t.Run("repeated flags accumulate and braces expand", func(t *testing.T) {
+		d := setup(t)
+		if n := run(t, d, "-r", "--exclude", "*.tmp", "--exclude", "*.{md,bin}", "src", "dst"); n != 0 {
+			t.Fatalf("failed = %d", n)
+		}
+		for _, gone := range []string{"dst/junk.tmp", "dst/notes.md", "dst/build/out.bin"} {
+			if exists(filepath.Join(d, gone)) {
+				t.Errorf("%s should have been excluded", gone)
+			}
+		}
+		if !exists(filepath.Join(d, "dst/keep.log")) {
+			t.Error("keep.log should have survived")
+		}
+	})
+
+	t.Run("extended patterns work here too", func(t *testing.T) {
+		d := setup(t)
+		if n := run(t, d, "-r", "--include", "!(*.tmp|*.bin)", "src", "dst"); n != 0 {
+			t.Fatalf("failed = %d", n)
+		}
+		if exists(filepath.Join(d, "dst/junk.tmp")) || exists(filepath.Join(d, "dst/build/out.bin")) {
+			t.Error("the extended pattern did not exclude")
+		}
+		if !exists(filepath.Join(d, "dst/keep.log")) {
+			t.Error("the extended pattern excluded too much")
+		}
+	})
+
+	// An unclosed group is literal text to a shell, and to this matcher too;
+	// it must not become an error or match everything by accident.
+	t.Run("an unclosed group is literal, as it is in a shell", func(t *testing.T) {
+		d := setup(t)
+		write(t, filepath.Join(d, "src/@(unclosed"), "odd name")
+		if n := run(t, d, "-r", "--exclude", "@(unclosed", "src", "dst"); n != 0 {
+			t.Fatalf("failed = %d", n)
+		}
+		if exists(filepath.Join(d, "dst/@(unclosed")) {
+			t.Error("the literal name was not excluded")
+		}
+		if !exists(filepath.Join(d, "dst/keep.log")) {
+			t.Error("an unclosed group excluded more than its literal self")
+		}
+	})
 }

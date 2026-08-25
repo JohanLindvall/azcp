@@ -104,10 +104,19 @@ func (p Policy) delay(attempt int) time.Duration {
 	return half + time.Duration(rand.Int64N(int64(half)+1))
 }
 
+// ErrRetryable marks an error as worth another attempt when the failure is
+// domain knowledge this package does not have — a checksum that did not match,
+// for instance, which says the bytes arrived wrong and may well arrive right
+// the second time.
+var ErrRetryable = errors.New("retryable")
+
 // IsTransient reports whether err is worth retrying.
 func IsTransient(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, ErrRetryable) {
+		return true
 	}
 	// A cancelled or expired context is the caller giving up, never a hint to
 	// try again.

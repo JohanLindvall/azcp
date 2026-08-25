@@ -61,7 +61,15 @@ func (e *Engine) scan(ctx context.Context, out chan<- *task) error {
 			continue
 		}
 		e.rootDev, e.hasRootDev = local.DeviceOf(src.node.Sys)
-		if err := e.plan(ctx, src.node, target, out, src.node.URL.Base(), true); err != nil {
+		// Filter patterns are relative to what is being copied, not to how it
+		// was spelled: --exclude 'build/**' prunes src/build whether the
+		// source was written as ./src, /abs/path/src or azure://acct/c/src.
+		// A named file is still matchable by its own name.
+		rootRel := ""
+		if !src.node.IsDir() {
+			rootRel = src.node.URL.Base()
+		}
+		if err := e.plan(ctx, src.node, target, out, src.node.URL.Base(), rootRel, true); err != nil {
 			return err
 		}
 	}
@@ -270,10 +278,17 @@ func (e *Engine) guardSelfCopy(src *store.Node, dst *uri.URL) error {
 
 // plan turns one source node into tasks, recursing into directories.
 func (e *Engine) plan(ctx context.Context, src *store.Node, dst *uri.URL,
-	out chan<- *task, display string, top bool) error {
+	out chan<- *task, display, rel string, top bool) error {
 
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	// A named source is filtered too, so --exclude means the same thing
+	// whether a file was reached by recursion or spelled out.
+	if e.filter.active() && !src.IsDir() && !e.filter.allow(rel) {
+		e.log.Debug("filtered out", "path", src.URL.Display(), "relative", rel)
+		e.markSkipped()
+		return nil
 	}
 	// A symlink is resolved here rather than at transfer time, so everything
 	// downstream sees the kind of thing it is actually copying.
@@ -296,7 +311,7 @@ func (e *Engine) plan(ctx context.Context, src *store.Node, dst *uri.URL,
 			e.fail("-r not specified; omitting directory %s", quote(src.URL.Display()))
 			return nil
 		}
-		return e.planDir(ctx, src, dst, out, display)
+		return e.planDir(ctx, src, dst, out, display, rel)
 
 	case src.Kind == store.KindOther:
 		e.note("skipping %s: %s cannot be copied",
@@ -324,7 +339,7 @@ func (e *Engine) derefAt(top bool) bool {
 }
 
 func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
-	out chan<- *task, display string) error {
+	out chan<- *task, display, rel string) error {
 
 	// Following symbolic links can turn the tree into a graph. Remembering
 	// which directories have been entered keeps a link that points back up
@@ -356,7 +371,7 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 	// A remote subtree is enumerated in one go rather than a request per
 	// prefix: see planRemoteTree.
 	if src.URL.IsRemote() {
-		return e.planRemoteTree(ctx, src, dst, out, display)
+		return e.planRemoteTree(ctx, src, dst, out, display, rel)
 	}
 
 	entries, err := e.storeFor(src.URL).ReadDir(ctx, src.URL)
@@ -378,8 +393,14 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 				"path", child.URL.Display())
 			continue
 		}
+		childRel := joinRel(rel, child.Name())
+		// An excluded directory is pruned rather than walked and discarded.
+		if child.IsDir() && !e.filter.descend(childRel) {
+			e.log.Debug("pruning excluded directory", "path", child.URL.Display())
+			continue
+		}
 		if err := e.plan(ctx, child, dst.Join(child.Name()), out,
-			display+"/"+child.Name(), false); err != nil {
+			display+"/"+child.Name(), childRel, false); err != nil {
 			return err
 		}
 	}
@@ -392,6 +413,14 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 		}
 	}
 	return nil
+}
+
+// joinRel appends an element to a copy-root-relative path.
+func joinRel(base, name string) string {
+	if base == "" {
+		return name
+	}
+	return base + "/" + name
 }
 
 // crossesFilesystem reports whether --one-file-system should stop at this
@@ -414,7 +443,7 @@ func (e *Engine) crossesFilesystem(n *store.Node) bool {
 // to five thousand blobs per request, so the same tree is a couple of round
 // trips and transfers begin immediately.
 func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.URL,
-	out chan<- *task, display string) error {
+	out chan<- *task, display, rootRel string) error {
 
 	base := src.URL.PathPart()
 	made := map[string]bool{}
@@ -433,6 +462,15 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 		}
 		rel, ok := store.RelUnder(base, n.URL.PathPart())
 		if !ok || rel == "" {
+			return nil
+		}
+		filterRel := joinRel(rootRel, rel)
+		if n.IsDir() {
+			if !e.filter.descend(filterRel) {
+				return nil
+			}
+		} else if !e.filter.allow(filterRel) {
+			e.markSkipped()
 			return nil
 		}
 		target := dst.Join(strings.Split(rel, "/")...)

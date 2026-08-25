@@ -63,6 +63,19 @@ internal/uri         location parsing
 Flow: `cli.Parse` → `engine.Run` → one scanner goroutine walks the sources and
 feeds a channel → `--jobs` workers transfer files → `progress` draws.
 
+## Where this sits against AzCopy
+
+AzCopy is the tool people already have. `azcp` earns its place by being `cp`,
+by having a real pattern language on both sides, and by issuing fewer requests:
+no HEAD before every upload, and one flat listing instead of one per directory.
+It deliberately does not have resumable job plans, `sync`, or back ends other
+than blob storage — see the README for why. Do not add those without a reason
+that outweighs the command line staying `cp`'s.
+
+The numbers in the README were measured, not estimated: `scripts/e2e.sh` covers
+correctness, and request counts came from the emulator's access log. Re-measure
+rather than reason about it if you change a transfer path.
+
 ## Invariants worth knowing before editing
 
 **The terminal has one owner.** While the progress display is running it owns
@@ -146,6 +159,18 @@ listed. It also has to synthesise what the walk gives it: destination
 directories created once each, and marker blobs for the directories that turn
 out to be empty.
 
+**The SDK single-shots anything up to 256 MiB.** `blockblob.UploadFile` ignores
+the block size it is given and sends a file of 256 MiB or less in one request,
+which is one unparallelised stream that restarts from nothing if it fails.
+`uploadBlocks` in `store/azure/transfer.go` exists for that reason: anything
+filling more than one block is staged and committed here instead. Do not
+"simplify" it back to UploadFile.
+
+**Connection pool size is a performance feature.** See `store/azure/transport.go`.
+The SDK's default of ten idle connections per host means a run with sixty-four
+jobs re-establishes a connection for most requests. It costs nothing against a
+local emulator, which is exactly why it went unnoticed.
+
 **Blob storage has no directories.** `store/azure` synthesises them: a prefix
 with children behaves as a directory, `WalkAll` emits ancestor prefixes so `**`
 sees a tree, and an empty directory is the zero-byte `name/` marker blob.
@@ -170,7 +195,7 @@ matching semantics must keep it passing — bash is the specification.
 is the closest thing to an end-to-end test that needs no credentials. Add cases
 there when changing `cp` semantics.
 
-`scripts/e2e.sh` covers the blob paths against the emulator; it is the only
+`scripts/e2e.sh` covers the blob paths against the emulator — 23 checks; it is the only
 test that exercises upload, download, blob-to-blob copy and remote wildcards
 together. Add to it when changing anything in `store/azure`.
 

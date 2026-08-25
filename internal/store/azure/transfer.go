@@ -12,9 +12,12 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
@@ -52,6 +55,13 @@ type TransferOptions struct {
 	// NoClobber makes the write fail if the destination blob already exists,
 	// closing the gap between checking and writing that a plain stat leaves.
 	NoClobber bool
+	// PutMD5 records a checksum of the whole file on the blob, so a later
+	// download can be verified against it. It costs one extra read of the
+	// source, since blocks are sent out of order and cannot be hashed on the
+	// way past.
+	PutMD5 bool
+	// CheckMD5 says what to do when a downloaded blob carries a checksum.
+	CheckMD5 MD5Check
 }
 
 func (o TransferOptions) blockSize(size int64) int64 {
@@ -77,14 +87,25 @@ func (o TransferOptions) concurrency() int {
 }
 
 func (o TransferOptions) httpHeaders(name string) *blob.HTTPHeaders {
+	return o.httpHeadersWithMD5(name, nil)
+}
+
+func (o TransferOptions) httpHeadersWithMD5(name string, sum []byte) *blob.HTTPHeaders {
 	ct := o.ContentType
 	if ct == "" {
 		ct = guessContentType(name)
 	}
-	if ct == "" {
+	if ct == "" && len(sum) == 0 {
 		return nil
 	}
-	return &blob.HTTPHeaders{BlobContentType: &ct}
+	h := &blob.HTTPHeaders{}
+	if ct != "" {
+		h.BlobContentType = &ct
+	}
+	if len(sum) > 0 {
+		h.BlobContentMD5 = sum
+	}
+	return h
 }
 
 func (o TransferOptions) accessConditions() *blob.AccessConditions {
@@ -138,21 +159,124 @@ func (s *Store) upload(ctx context.Context, srcPath string, dst *uri.URL, o Tran
 	if err != nil {
 		return err
 	}
+	size := fi.Size()
+
+	var sum []byte
+	if o.PutMD5 {
+		if sum, err = fileMD5(srcPath); err != nil {
+			return fmt.Errorf("cannot checksum %s: %w", srcPath, err)
+		}
+	}
+
+	// Anything that does not fill more than one block goes up in a single
+	// request, which is both fewer round trips and less to go wrong.
+	if size <= o.blockSize(size) {
+		c, err := s.client(ctx, dst)
+		if err != nil {
+			return err
+		}
+		_, err = c.UploadFile(ctx, dst.Container, dst.Key, f, &blockblob.UploadFileOptions{
+			BlockSize:        o.blockSize(size),
+			Concurrency:      uint16(o.concurrency()),
+			Progress:         o.Progress,
+			HTTPHeaders:      o.httpHeadersWithMD5(srcPath, sum),
+			AccessConditions: o.accessConditions(),
+			AccessTier:       o.tier(),
+		})
+		return err
+	}
+	return s.uploadBlocks(ctx, f, size, srcPath, dst, sum, o)
+}
+
+// uploadBlocks stages a file as blocks and commits them.
+//
+// The SDK's own UploadFile cannot be used for this: it sends anything up to
+// 256 MiB as one Put Blob regardless of the block size it was given, so a
+// 200 MiB upload was a single unparallelised stream that had to start over from
+// nothing if it failed near the end. Staging blocks restores what --part-size
+// and --part-concurrency are supposed to mean, which matters most on exactly
+// the link where it hurts: high bandwidth and high latency, where one stream
+// cannot fill the pipe.
+func (s *Store) uploadBlocks(ctx context.Context, f *os.File, size int64,
+	srcPath string, dst *uri.URL, sum []byte, o TransferOptions) error {
 
 	c, err := s.client(ctx, dst)
 	if err != nil {
 		return err
 	}
-	_, err = c.UploadFile(ctx, dst.Container, dst.Key, f, &blockblob.UploadFileOptions{
-		BlockSize:        o.blockSize(fi.Size()),
-		Concurrency:      uint16(o.concurrency()),
-		Progress:         o.Progress,
-		HTTPHeaders:      o.httpHeaders(srcPath),
+	bb := c.ServiceClient().NewContainerClient(dst.Container).NewBlockBlobClient(dst.Key)
+
+	blockSize := o.blockSize(size)
+	count := int((size + blockSize - 1) / blockSize)
+	ids := make([]string, count)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		firstErr  error
+		staged    atomic.Int64
+		semaphore = make(chan struct{}, o.concurrency())
+	)
+	fail := func(err error) {
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+			// Nothing else can succeed once a block is lost, and the blob is
+			// only written when every block commits.
+			cancel()
+		}
+		mu.Unlock()
+	}
+
+	for i := range count {
+		select {
+		case semaphore <- struct{}{}:
+		case <-ctx.Done():
+			wg.Wait()
+			if firstErr != nil {
+				return firstErr
+			}
+			return ctx.Err()
+		}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-semaphore }()
+
+			offset := int64(i) * blockSize
+			n := min(blockSize, size-offset)
+			id := blockID(i)
+			ids[i] = id
+
+			// A SectionReader over the open file lets every block read its own
+			// range concurrently, and lets the pipeline rewind one to retry it.
+			body := streaming.NopCloser(io.NewSectionReader(f, offset, n))
+			if _, err := bb.StageBlock(ctx, id, body, nil); err != nil {
+				fail(fmt.Errorf("staging block %d of %d: %w", i+1, count, err))
+				return
+			}
+			// Counted on completion rather than as bytes are read, so a
+			// retried block cannot make the total go backwards.
+			if o.Progress != nil {
+				o.Progress(staged.Add(n))
+			}
+		}(i)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+
+	_, err = bb.CommitBlockList(ctx, ids, &blockblob.CommitBlockListOptions{
+		HTTPHeaders:      o.httpHeadersWithMD5(srcPath, sum),
 		AccessConditions: o.accessConditions(),
-		AccessTier:       o.tier(),
+		Tier:             o.tier(),
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("committing %d blocks: %w", count, err)
 	}
 	return nil
 }
@@ -180,7 +304,18 @@ func (s *Store) UploadStream(ctx context.Context, r io.Reader, dst *uri.URL, o T
 // Download writes a blob to an already-open local file, fetching ranges in
 // parallel. The file is truncated to the blob's length.
 func (s *Store) Download(ctx context.Context, src *store.Node, f *os.File, o TransferOptions) error {
-	return s.withSignIn(ctx, func() error { return s.download(ctx, src, f, o) })
+	if err := s.withSignIn(ctx, func() error { return s.download(ctx, src, f, o) }); err != nil {
+		return err
+	}
+	if o.CheckMD5 == MD5Off {
+		return nil
+	}
+	// The file has to be re-read: ranges arrive out of order, so there is no
+	// point during the transfer at which a running hash would be correct.
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return s.verifyDownload(f.Name(), src.MD5, o.CheckMD5, src.URL.Display())
 }
 
 func (s *Store) download(ctx context.Context, src *store.Node, f *os.File, o TransferOptions) error {

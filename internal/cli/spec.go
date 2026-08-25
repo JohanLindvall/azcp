@@ -86,7 +86,8 @@ var specs = []cpflags.Spec{
 
 	// --- extensions ---------------------------------------------------------
 	{Long: "jobs", Short: 'j', Arg: cpflags.RequiredArg, Meta: "N",
-		Help: "transfer up to N files at once (default 8)"},
+		Help: "transfer up to N files at once " +
+			"(default: scaled to the machine for network copies, 4 for local)"},
 	{Long: "part-size", Arg: cpflags.RequiredArg, Meta: "SIZE",
 		Help: "block size for multi-part blob transfers (default 8MiB)"},
 	{Long: "part-concurrency", Arg: cpflags.RequiredArg, Meta: "N",
@@ -97,6 +98,9 @@ var specs = []cpflags.Spec{
 		Help: "initial backoff between attempts (default 300ms)"},
 	{Long: "retry-max-delay", Arg: cpflags.RequiredArg, Meta: "DUR",
 		Help: "longest backoff between attempts (default 30s)"},
+	{Long: "bwlimit", Arg: cpflags.RequiredArg, Meta: "RATE",
+		Help: "cap throughput, in bytes per second (e.g. 10M); " +
+			"does not apply to a server-side blob-to-blob copy"},
 	{Long: "timeout", Arg: cpflags.RequiredArg, Meta: "DUR",
 		Help: "bound on a single network request (default: none)"},
 	{Long: "max-errors", Arg: cpflags.RequiredArg, Meta: "N",
@@ -113,6 +117,14 @@ var specs = []cpflags.Spec{
 		Help: "text or json (default text)"},
 	{Long: "log-file", Arg: cpflags.RequiredArg, Meta: "PATH",
 		Help: "append log records to PATH instead of stderr"},
+	{Long: "exclude", Arg: cpflags.RequiredArg, Meta: "PATTERN",
+		Help: "skip entries matching PATTERN; repeatable. A pattern without " +
+			"a slash matches the name at any depth, one with a slash matches " +
+			"the path relative to the copy root, and an excluded directory is " +
+			"not descended into"},
+	{Long: "include", Arg: cpflags.RequiredArg, Meta: "PATTERN",
+		Help: "copy only entries matching PATTERN; repeatable. --exclude wins " +
+			"where both match"},
 	{Long: "dry-run", Arg: cpflags.NoArg,
 		Help: "report what would be copied without copying it"},
 	{Long: "glob", Arg: cpflags.RequiredArg, Meta: "WHEN",
@@ -127,6 +139,11 @@ var specs = []cpflags.Spec{
 		Help: "create the destination container if it does not exist"},
 	{Long: "content-type", Arg: cpflags.RequiredArg, Meta: "TYPE",
 		Help: "set the blob content type instead of guessing it"},
+	{Long: "put-md5", Arg: cpflags.NoArg,
+		Help: "record a checksum on each uploaded blob, so it can be verified later"},
+	{Long: "check-md5", Arg: cpflags.RequiredArg, Meta: "WHEN",
+		Help: "verify a downloaded blob against its recorded checksum: " +
+			"off, warn, fail (default), require"},
 	{Long: "access-tier", Arg: cpflags.RequiredArg, Meta: "TIER",
 		Help: "set the blob access tier: Hot, Cool, Cold or Archive"},
 

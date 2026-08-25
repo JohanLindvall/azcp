@@ -56,6 +56,8 @@ func (e *Engine) transferOptions() azure.TransferOptions {
 		ContentType: e.opt.ContentType,
 		AccessTier:  e.opt.AccessTier,
 		NoClobber:   e.opt.NoClobber,
+		PutMD5:      e.opt.PutMD5,
+		CheckMD5:    e.opt.CheckMD5,
 	}
 }
 
@@ -326,10 +328,17 @@ func (e *Engine) checkUnsupported(dest *uri.URL) error {
 		e.log.Warn("ignoring --preserve=context: this tool does not copy SELinux contexts")
 	}
 	remote := dest.IsRemote()
+	srcRemote := false
 	for _, s := range e.opt.Sources {
 		if uri.IsRemoteArg(s) {
-			remote = true
+			remote, srcRemote = true, true
 		}
+	}
+	if e.opt.BandwidthLimit > 0 && srcRemote && dest.IsRemote() {
+		// The service moves these bytes between its own machines; they never
+		// reach this process, so there is nothing here to pace.
+		e.log.Warn("--bwlimit does not apply to a server-side blob-to-blob copy: " +
+			"the data never passes through this host")
 	}
 	if !remote {
 		return nil

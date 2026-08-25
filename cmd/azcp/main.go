@@ -79,12 +79,17 @@ func run(argv []string) int {
 	defer stop()
 	go hardStopOnSecondSignal(prog)
 
-	eng := engine.New(engine.Config{
+	eng, err := engine.New(engine.Config{
 		Options:  opt,
 		Log:      logger,
 		Progress: prog,
 		Stdin:    os.Stdin,
 	})
+	if err != nil {
+		prog.Stop()
+		fmt.Fprintf(os.Stderr, "%s: %v\n", cli.Program, err)
+		return exitUsage
+	}
 
 	logger.Debug("starting", "version", cli.Version,
 		"jobs", opt.Jobs, "part_size", opt.PartSize,

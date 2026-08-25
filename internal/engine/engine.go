@@ -39,14 +39,15 @@ type Config struct {
 
 // Engine performs one invocation's worth of copying.
 type Engine struct {
-	opt   *cli.Options
-	log   *slog.Logger
-	prog  *progress.Reporter
-	local *local.Store
-	az    *azure.Store
-	retry retryx.Policy
-	uriOK uri.Options
-	stdin io.Reader
+	opt    *cli.Options
+	log    *slog.Logger
+	prog   *progress.Reporter
+	local  *local.Store
+	az     *azure.Store
+	retry  retryx.Policy
+	filter *filter
+	uriOK  uri.Options
+	stdin  io.Reader
 
 	failed  atomic.Int64
 	skipped atomic.Int64
@@ -81,8 +82,9 @@ type deferredDir struct {
 	info os.FileInfo
 }
 
-// New builds an engine.
-func New(cfg Config) *Engine {
+// New builds an engine. A bad --include or --exclude pattern is reported here,
+// before anything is transferred.
+func New(cfg Config) (*Engine, error) {
 	o := cfg.Options
 	e := &Engine{
 		opt:         o,
@@ -100,6 +102,11 @@ func New(cfg Config) *Engine {
 	}
 	e.local = local.New(cfg.Log, o.DerefWalk())
 	e.local.OneFileSystem = o.OneFileSystem
+	f, err := newFilter(o.Include, o.Exclude)
+	if err != nil {
+		return nil, cli.Usage(err)
+	}
+	e.filter = f
 	e.az = azure.New(azure.Config{
 		Auth:            o.Auth,
 		Log:             cfg.Log,
@@ -109,8 +116,10 @@ func New(cfg Config) *Engine {
 		TryTimeout:      o.Timeout,
 		CreateContainer: o.CreateContainer,
 		UserAgent:       cli.Program + "/" + cli.Version,
+		PeakRequests:    o.PeakRequests(),
+		BytesPerSecond:  o.BandwidthLimit,
 	})
-	return e
+	return e, nil
 }
 
 // maxWholeFileAttempts bounds how many times a whole file is restarted. The SDK

@@ -118,6 +118,49 @@ mkdir -p "$WORK/across"
 [ -d "$WORK/across/logs/2024" ] && ok "a wildcard matches across containers" \
                                || bad "a container wildcard matched nothing"
 
+# --- filtering --------------------------------------------------------------
+mkdir -p "$WORK/filtered"
+"$AZCP" -r --exclude '*.log' "$AZ/tree" "$WORK/filtered" >/dev/null
+if [ -f "$WORK/filtered/tree/logs/2024/app-1.log" ]; then
+  bad "--exclude did not exclude"
+else
+  ok "--exclude skips by name at any depth"
+fi
+[ -f "$WORK/filtered/tree/file.txt" ] && ok "--exclude kept everything else" \
+                                      || bad "--exclude took too much"
+
+mkdir -p "$WORK/pruned"
+"$AZCP" -r --exclude 'logs/**' "$AZ/tree" "$WORK/pruned" >/dev/null
+[ -d "$WORK/pruned/tree/logs" ] && bad "an excluded subtree was still copied" \
+                               || ok "--exclude prunes a whole subtree"
+
+mkdir -p "$WORK/only"
+"$AZCP" -r --include '*.gz' "$AZ/tree" "$WORK/only" >/dev/null
+check "--include selects" "$(find "$WORK/only" -type f -name '*.gz' | wc -l)" \
+                          "$(find "$SRC" -type f -name '*.gz' | wc -l)"
+check "--include excludes the rest" "$(find "$WORK/only" -type f ! -name '*.gz' | wc -l)" "0"
+
+# --- integrity --------------------------------------------------------------
+"$AZCP" --put-md5 "$SRC/big.bin" "$AZ/tree/md5.bin" >/dev/null
+if "$AZCP" --check-md5=require "$AZ/tree/md5.bin" "$WORK/md5.bin" >/dev/null 2>&1; then
+  ok "--put-md5 records a checksum that --check-md5=require accepts"
+else
+  bad "a checksum written by --put-md5 did not verify"
+fi
+cmp -s "$SRC/big.bin" "$WORK/md5.bin" && ok "the verified file is byte-identical" \
+                                     || bad "the verified file differs"
+
+# --- bandwidth --------------------------------------------------------------
+# 12 MB at 8 MB/s cannot finish in under a second; the point is that the cap
+# takes effect at all, not its precision.
+start=$(date +%s)
+"$AZCP" --bwlimit=8M "$AZ/tree/big.bin" "$WORK/capped.bin" >/dev/null
+elapsed=$(( $(date +%s) - start ))
+[ "$elapsed" -ge 1 ] && ok "--bwlimit paces the transfer" \
+                     || bad "--bwlimit had no effect (finished in ${elapsed}s)"
+cmp -s "$SRC/big.bin" "$WORK/capped.bin" && ok "a throttled transfer is still exact" \
+                                         || bad "throttling corrupted the file"
+
 # --- overwrite rules --------------------------------------------------------
 echo "changed" > "$WORK/changed.txt"
 "$AZCP" -n "$WORK/changed.txt" "$AZ/tree/file.txt" >/dev/null

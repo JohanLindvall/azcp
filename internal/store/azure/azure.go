@@ -52,6 +52,11 @@ type Config struct {
 	CreateContainer bool
 	// UserAgent is appended to the SDK's telemetry string.
 	UserAgent string
+	// PeakRequests is how many requests this run can have outstanding at once.
+	// It sizes the connection pool; see transport.go for why that matters.
+	PeakRequests int
+	// BytesPerSecond caps throughput across the whole run. Zero is unlimited.
+	BytesPerSecond int64
 }
 
 // Store is the Azure Blob Storage namespace.
@@ -59,6 +64,9 @@ type Store struct {
 	cfg   Config
 	log   *slog.Logger
 	creds *Credentials
+
+	clientOnce sync.Once
+	http       *http.Client
 
 	// signIn guards the single interactive escalation a run is allowed.
 	signIn signInState
@@ -102,6 +110,7 @@ func (s *Store) Credentials() *Credentials { return s.creds }
 
 func (s *Store) clientOptions() *azblob.ClientOptions {
 	return &azblob.ClientOptions{ClientOptions: azcore.ClientOptions{
+		Transport: s.httpClient(),
 		Retry: policy.RetryOptions{
 			MaxRetries: s.cfg.MaxRetries,
 			TryTimeout: s.cfg.TryTimeout,
@@ -113,6 +122,13 @@ func (s *Store) clientOptions() *azblob.ClientOptions {
 		},
 		Telemetry: policy.TelemetryOptions{ApplicationID: s.cfg.UserAgent},
 	}}
+}
+
+// httpClient returns the shared client, built once so every account in a run
+// draws on the same connection pool.
+func (s *Store) httpClient() *http.Client {
+	s.clientOnce.Do(func() { s.http = newHTTPClient(s.cfg.PeakRequests, s.cfg.BytesPerSecond) })
+	return s.http
 }
 
 // shouldRetry decides whether the SDK should try a request again, and logs the

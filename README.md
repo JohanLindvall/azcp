@@ -98,6 +98,51 @@ authenticate against; each tenant is remembered separately. Credential material 
 to a log: SAS signatures, account keys and bearer tokens are redacted on the
 way out.
 
+## Choosing what to copy
+
+Beyond selecting sources with a pattern, a recursive copy can be filtered as it
+goes:
+
+```
+azcp -r --exclude '*.tmp' ./tree azure://acct/backup/
+azcp -r --exclude 'node_modules/**' --exclude '*.log' ./app azure://acct/rel/
+azcp -r --include '**/*.parquet' azure://acct/lake/ ./local/
+```
+
+A pattern with no slash matches the name at any depth, which is what `*.tmp`
+means to most people. One with a slash matches the path relative to what is
+being copied — not to how you spelled it, so `--exclude 'build/**'` prunes
+`src/build` whether the source was written `./src`, `/abs/path/src` or
+`azure://acct/c/src`. An excluded directory is pruned rather than walked and
+discarded. `--exclude` beats `--include` where both match, and both take the
+full pattern language, extended patterns and braces included.
+
+## Verifying a copy
+
+`--put-md5` records a checksum of the whole file on each uploaded blob, and
+`--check-md5` verifies a download against the checksum the blob carries:
+
+| `--check-md5` | |
+| --- | --- |
+| `off` | do not check |
+| `warn` | report a mismatch and keep the file |
+| `fail` | a mismatch fails the transfer (default) |
+| `require` | additionally fail when the blob records no checksum |
+
+The default is safe for blobs that carry no checksum, which is most of them.
+A mismatch is retried before it is reported, since bytes that arrived wrong
+often arrive right the second time. Both directions cost an extra read of the
+file, because blocks and ranges move out of order and cannot be hashed on the
+way past — which is why neither is on by default.
+
+## Limiting bandwidth
+
+`--bwlimit=10M` caps throughput at ten mebibytes a second across the whole run,
+counted in the HTTP transport so it covers uploads, downloads and listings
+alike. It cannot apply to a server-side blob-to-blob copy, where the bytes move
+between storage servers and never reach this host; `azcp` says so rather than
+appearing to work.
+
 ## Wildcards
 
 The shell cannot see inside a container, so `azcp` expands patterns itself — on
@@ -126,9 +171,18 @@ listing rather than a request per directory.
 
 ## Transfers
 
-Files move `--jobs` at a time (default 8), and each large file is split into
-`--part-size` blocks moved `--part-concurrency` at a time. Uploads stage blocks
-in parallel and downloads fetch ranges in parallel.
+Files move `--jobs` at a time and each large file is split into `--part-size`
+blocks moved `--part-concurrency` at a time. Uploads stage blocks in parallel
+and downloads fetch ranges in parallel; a file that does not fill more than one
+block goes up in a single request instead.
+
+`--jobs` defaults to the machine — four times the core count, between 16 and 64
+— when either side is a URL, because a network transfer spends nearly all its
+time waiting and it is the number in flight that fills the link. A copy that
+never leaves the filesystem defaults to four instead: there the disk is the
+bottleneck, and seeking between many files makes it slower rather than faster.
+The HTTP connection pool is sized to match, so a busy run is not re-establishing
+a connection for every request.
 
 A recursive copy *from* blob storage enumerates the whole subtree with one flat
 listing rather than a request per prefix. A tree of a few hundred directories
@@ -190,7 +244,7 @@ Added by `azcp`:
 
 | Option | |
 | --- | --- |
-| `-j, --jobs=N` | files transferred at once (default 8) |
+| `-j, --jobs=N` | files at once (default: scaled to the machine, 4 for local) |
 | `--part-size=SIZE` | block size for multi-part transfers (default 8MiB) |
 | `--part-concurrency=N` | blocks of one file at once (default 4) |
 | `--retries=N` | attempts per request (default 6) |
@@ -199,6 +253,11 @@ Added by `azcp`:
 | `--max-errors=N` | stop after N failures (default: never) |
 | `--progress=WHEN` | `auto`, `always`, `never` |
 | `--progress-interval=DUR` | how often the display repaints (default 1s) |
+| `--exclude=PATTERN` | skip matching entries; repeatable |
+| `--include=PATTERN` | copy only matching entries; repeatable |
+| `--put-md5` | record a checksum on each uploaded blob |
+| `--check-md5=WHEN` | `off`, `warn`, `fail` (default), `require` |
+| `--bwlimit=RATE` | cap throughput, in bytes per second |
 | `--log-level`, `--log-format`, `--log-file` | |
 | `--dry-run` | report what would be copied |
 | `--glob=WHEN` | `auto`, `always`, `never` |
@@ -210,6 +269,54 @@ Added by `azcp`:
 
 Exit status is 0 on success, 1 if a file could not be copied, 2 if the command
 line was wrong — the same as `cp`.
+
+## Compared with AzCopy
+
+`azcp` is not trying to replace AzCopy's job management. It is trying to be the
+tool you reach for when you want `cp`.
+
+Measured against `azcopy` 10.32.7 on the same workloads and the same endpoint,
+counting HTTP requests — which is what a real account charges in latency:
+
+| workload | azcp | azcopy |
+| --- | --- | --- |
+| upload 500 × 8 KiB | **503** | 1000 |
+| download 500 × 8 KiB | 503 | 504 |
+| upload one 200 MiB file | 29 | **27** |
+| download one 200 MiB file | **26** | 27 |
+| download 300 files in 341 directories | **93** (2 listings) | 195 (103 listings) |
+
+The two differences that matter are the ends of that table. AzCopy issues a
+HEAD per file before uploading it, which doubles the request count for a tree of
+small files; `azcp` only inspects the destination when an option depends on it.
+And AzCopy enumerates a remote tree directory by directory, so a few hundred
+directories is a few hundred round trips before the last transfer can start;
+`azcp` takes one flat listing.
+
+Where `azcp` is ahead:
+
+- **It is `cp`.** Same options, same operands, same exit statuses, same
+  messages. AzCopy has its own verb-based grammar and cannot copy local to
+  local at all.
+- **Real patterns.** `**`, extended patterns and braces, matched against paths,
+  on both sides of the transfer. AzCopy has four overlapping filter flags whose
+  patterns match the file name only and whose path forms take no wildcards.
+- **`cp` semantics that survive the round trip**: `-a`, `-p`, `--preserve`,
+  backups, hard and symbolic links, reflink cloning and sparse files.
+- **Sign-in that stays signed in**, with a browser or a device code, remembered
+  in the platform's credential store.
+
+Where AzCopy is ahead, and deliberately not copied here:
+
+- **Resumable jobs.** AzCopy records a plan file per job and can resume an
+  interrupted transfer. `azcp` re-runs with `-n` or `-u`, which is cheaper to
+  reason about and needs no state on disk, but it is not the same thing for a
+  transfer measured in days.
+- **`azcopy sync`**, with deletion at the destination. `-u` covers the common
+  case; a real sync does not fit `cp`'s command line and has not been forced
+  into it.
+- **Other back ends**: Files, ADLS Gen2, S3 and GCS. `azcp` does blobs.
+- **`azcopy bench`**, a throughput benchmark that needs no data of your own.
 
 ## Differences from cp
 

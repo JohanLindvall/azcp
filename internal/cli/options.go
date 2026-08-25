@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/JohanLindvall/azcp/internal/progress"
 	"github.com/JohanLindvall/azcp/internal/store/azure"
 	"github.com/JohanLindvall/azcp/internal/store/local"
+	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
 // Deref says how symbolic links named in the source are treated.
@@ -89,16 +91,22 @@ type Options struct {
 	SELinux              bool
 
 	// Transfer behaviour
-	Jobs            int
+	Jobs int
+	// jobsSet records that --jobs was given, so the default is not second-
+	// guessed after the operands reveal what kind of copy this is.
+	jobsSet         bool
 	PartSize        int64
 	PartConcurrency int
 	Retries         int
 	RetryDelay      time.Duration
 	RetryMaxDelay   time.Duration
 	Timeout         time.Duration
+	BandwidthLimit  int64
 	MaxErrors       int
 	DryRun          bool
 	Glob            GlobMode
+	Exclude         []string
+	Include         []string
 
 	// Presentation
 	Progress         progress.Mode
@@ -114,6 +122,8 @@ type Options struct {
 	CreateContainer bool
 	ContentType     string
 	AccessTier      string
+	PutMD5          bool
+	CheckMD5        azure.MD5Check
 
 	Sources []string
 	Dest    string
@@ -135,6 +145,37 @@ func Defaults() *Options {
 		Auth:             azure.AuthAuto,
 	}
 }
+
+// defaultJobs picks how many files to move at once when the user has not said.
+//
+// A network transfer spends nearly all its time waiting, so many in flight is
+// what fills the link; the figure scales with the machine the way other
+// transfer tools do. A copy that never leaves the filesystem is the opposite
+// case — the disk is the bottleneck, and seeking between many files makes it
+// slower rather than faster — so it stays modest.
+func defaultJobs(network bool) int {
+	if !network {
+		return min(4, max(runtime.NumCPU(), 1))
+	}
+	return min(64, max(16, 4*runtime.NumCPU()))
+}
+
+// TouchesNetwork reports whether either side of the copy is a remote URL.
+func (o *Options) TouchesNetwork() bool {
+	if uri.IsRemoteArg(o.Dest) {
+		return true
+	}
+	for _, s := range o.Sources {
+		if uri.IsRemoteArg(s) {
+			return true
+		}
+	}
+	return false
+}
+
+// PeakRequests is how many requests the run can have outstanding at once, used
+// to size the HTTP connection pool.
+func (o *Options) PeakRequests() int { return o.Jobs * o.PartConcurrency }
 
 // UsageError marks a problem with the command line, which the caller reports
 // with exit status 2 and a pointer at --help.
@@ -170,6 +211,9 @@ func Parse(argv []string) (*Options, error) {
 	}
 	if err := o.resolveOperands(res.Operands); err != nil {
 		return nil, err
+	}
+	if !o.jobsSet {
+		o.Jobs = defaultJobs(o.TouchesNetwork())
 	}
 	return o, o.validate()
 }
@@ -300,7 +344,7 @@ func (o *Options) apply(f cpflags.Flag) error {
 		if err != nil {
 			return err
 		}
-		o.Jobs = n
+		o.Jobs, o.jobsSet = n, true
 	case "part-size":
 		n, err := humanize.ParseSize(f.Value)
 		if err != nil {
@@ -331,6 +375,12 @@ func (o *Options) apply(f cpflags.Flag) error {
 			return fmt.Errorf("invalid argument for '--retry-max-delay': %w", err)
 		}
 		o.RetryMaxDelay = d
+	case "bwlimit":
+		n, err := humanize.ParseSize(f.Value)
+		if err != nil {
+			return fmt.Errorf("invalid argument for '--bwlimit': %w", err)
+		}
+		o.BandwidthLimit = n
 	case "timeout":
 		d, err := time.ParseDuration(f.Value)
 		if err != nil {
@@ -367,6 +417,10 @@ func (o *Options) apply(f cpflags.Flag) error {
 		o.LogFormat = f.Value
 	case "log-file":
 		o.LogFile = f.Value
+	case "exclude":
+		o.Exclude = append(o.Exclude, f.Value)
+	case "include":
+		o.Include = append(o.Include, f.Value)
 	case "dry-run":
 		o.DryRun = true
 	case "glob":
@@ -395,6 +449,14 @@ func (o *Options) apply(f cpflags.Flag) error {
 		o.CreateContainer = true
 	case "content-type":
 		o.ContentType = f.Value
+	case "put-md5":
+		o.PutMD5 = true
+	case "check-md5":
+		m, err := azure.ParseMD5Check(f.Value)
+		if err != nil {
+			return err
+		}
+		o.CheckMD5 = m
 	case "access-tier":
 		o.AccessTier = f.Value
 
