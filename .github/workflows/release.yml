@@ -181,7 +181,7 @@ jobs:
           Or as a container:
 
           ```
-          docker run --rm -v "$PWD:/data" ghcr.io/johanlindvall/azcp:VERSION_PLACEHOLDER --help
+          docker run --rm -v "$PWD:/data" ghcr.io/johanlindvall/azcp:IMAGE_PLACEHOLDER --help
           ```
 
           ### Binaries
@@ -211,7 +211,11 @@ jobs:
           binaries are built on macOS so they can use the keychain to remember
           a sign-in between runs.
           EOF
-          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" NOTES.md
+          # Two conventions, not one. A Go module version is not a version
+          # without its leading "v", while the image tags come from
+          # docker/metadata-action's semver rule, which drops it — so naming
+          # the image after the git tag names something that was never pushed.
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g; s/IMAGE_PLACEHOLDER/${VERSION#v}/g" NOTES.md
 
       - name: Publish
         env:
