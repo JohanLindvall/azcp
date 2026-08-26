@@ -11,8 +11,12 @@ import (
 // A bulk copy will take everything the link has, which is exactly what makes
 // operations teams ban such tools from shared networks. Throttling lives in the
 // HTTP transport rather than in the transfer code so that it covers every byte
-// in both directions — uploads, downloads and listings alike — without each
-// path having to remember to ask.
+// of content in both directions without each path having to remember to ask.
+//
+// What it does not cover is the scan. Listing a large container is megabytes of
+// XML, and pacing that means nothing moves at all until the listing has
+// trickled through — a limit meant to leave room on a shared link instead
+// spends its whole budget on finding out what to copy. The bulk is the point.
 //
 // A server-side copy cannot be throttled by anything here: the bytes move
 // between storage servers and never reach this process. The engine says so
@@ -78,6 +82,16 @@ func (l *limiter) take(ctx context.Context, n int) (int, error) {
 	}
 }
 
+// giveBack returns tokens taken for bytes that never arrived.
+func (l *limiter) giveBack(n int) {
+	if l == nil || n <= 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.tokens = min(l.tokens+float64(n), l.burst)
+}
+
 // throttledReader paces a stream through the bucket.
 type throttledReader struct {
 	r   io.ReadCloser
@@ -90,7 +104,16 @@ func (t *throttledReader) Read(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return t.r.Read(p[:allowed])
+	n, rerr := t.r.Read(p[:allowed])
+	// Pay for the bytes, not for the buffer they were asked for in. A read
+	// from a socket returns whatever has arrived — often a single segment
+	// against a buffer thousands of times its size — and charging for the
+	// buffer throttles the stream to a fraction of the rate. A local emulator
+	// never shows this, because it fills every buffer it is handed.
+	if n < allowed {
+		t.lim.giveBack(allowed - n)
+	}
+	return n, rerr
 }
 
 func (t *throttledReader) Close() error { return t.r.Close() }
@@ -123,9 +146,20 @@ func (t *throttledTransport) RoundTrip(req *http.Request) (*http.Response, error
 		}
 	}
 	resp, err := t.base.RoundTrip(req)
-	if err != nil || t.lim == nil || resp.Body == nil {
+	if err != nil || t.lim == nil || resp.Body == nil || isControlOp(req) {
 		return resp, err
 	}
 	resp.Body = &throttledReader{r: resp.Body, lim: t.lim, ctx: req.Context()}
 	return resp, nil
+}
+
+// isControlOp reports whether a request asks about names rather than contents.
+// Listings, properties, metadata and block lists are all addressed with a
+// "comp" parameter and none of them carries bulk data, so their answers are not
+// paced.
+//
+// This is asked of responses only. Staging a block is PUT ...&comp=block, whose
+// body is exactly the bulk the limit exists for.
+func isControlOp(req *http.Request) bool {
+	return req.URL.Query().Has("comp")
 }

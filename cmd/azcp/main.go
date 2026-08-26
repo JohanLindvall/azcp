@@ -169,28 +169,41 @@ func hardStopOnSecondSignal(prog *progress.Reporter, opt *cli.Options) {
 // resumeHint says how much of an interrupted run can be picked up again, and
 // says nothing at all when the answer is none of it.
 //
-// The two directions differ, and the difference is the whole point of saying
-// anything: an upload leaves its staged blocks with the service, so it can be
-// continued whatever the interrupted run was given, while a download can only
-// be continued into the record that --resume writes as it goes. Telling
-// somebody to rerun with --resume when there is no record to continue from
-// would just be a slower way of starting over.
+// It takes two flags to carry on from where a run stopped, because they answer
+// different questions. --resume finishes a file that stopped part-way; -n
+// leaves alone the ones that arrived whole, which --resume knows nothing about
+// — it keeps no record of a finished file, deliberately, since that is a job
+// plan by another name. Naming only --resume, as this once did, promises to
+// carry on and then copies everything again.
+//
+// The directions differ too: an upload leaves its staged blocks with the
+// service, so it can be continued whatever the interrupted run was given, while
+// a download can only be continued into a record --resume was already writing.
 func resumeHint(prog *progress.Reporter, opt *cli.Options) string {
 	uploads, downloads := prog.Unfinished()
 	n := uploads + downloads
 	switch {
 	case n == 0:
 		return ""
-	case opt.Resume:
+	case opt.Resume && skipsExisting(opt):
 		return fmt.Sprintf("; %d unfinished transfer(s), which the same command "+
-			"run again will continue", n)
+			"run again carries on from", n)
+	case opt.Resume:
+		return fmt.Sprintf("; %d unfinished transfer(s) — run the same command again "+
+			"with -n as well and only what is missing is fetched", n)
 	case downloads == 0:
-		return fmt.Sprintf("; %d unfinished upload(s) — add --resume to carry on "+
-			"from what already arrived", n)
+		return fmt.Sprintf("; %d unfinished upload(s) — `--resume -n` carries on from "+
+			"what already arrived rather than starting over", n)
 	default:
-		return fmt.Sprintf("; %d unfinished transfer(s) — with --resume they could "+
-			"be carried on from rather than started over", n)
+		return fmt.Sprintf("; %d unfinished transfer(s) — `--resume -n` would carry on "+
+			"from what already arrived rather than starting over", n)
 	}
+}
+
+// skipsExisting reports whether the run already leaves a destination that is
+// there alone, which is what keeps a resumed run from copying everything twice.
+func skipsExisting(opt *cli.Options) bool {
+	return opt.NoClobber || opt.Update != cli.UpdateAll
 }
 
 // runBenchmark measures throughput instead of copying anything.

@@ -335,10 +335,15 @@ way past — which is why neither is on by default.
 ## Limiting bandwidth
 
 `--bwlimit=10M` caps throughput at ten mebibytes a second across the whole run,
-counted in the HTTP transport so it covers uploads, downloads and listings
-alike. It cannot apply to a server-side blob-to-blob copy, where the bytes move
-between storage servers and never reach this host; `azcp` says so rather than
-appearing to work.
+counted in the HTTP transport so it covers uploads and downloads alike, and
+charged by the bytes that arrive rather than the buffers they were asked for in.
+
+Scanning is not capped. Listing a large container is megabytes of XML with every
+transfer in the run waiting behind it, and pacing that would spend the whole
+budget on working out what to copy; the bulk is what the limit is for. Nor can
+it apply to a server-side blob-to-blob copy, where the bytes move between
+storage servers and never reach this host — `azcp` says so rather than appearing
+to work.
 
 ## Keeping a destination in step
 
@@ -365,11 +370,27 @@ azcp -r --newer-than 2024-01-01 --older-than 2024-02-01 ./archive azure://acct/j
 
 ## Interrupted transfers
 
-`--resume` continues rather than starting again:
+`--resume` continues a transfer that stopped part-way rather than starting it
+again:
 
 ```
 azcp --resume -r ./huge azure://acct/data/
 ```
+
+It says nothing about the files that already arrived whole, and keeps no list of
+them — that would be a job plan by another name, which this tool does not have.
+To carry on where a whole interrupted run left off, pair it with `-n`, which
+leaves a destination that is already there alone:
+
+```
+azcp --resume -n -r azure://acct/data/ ./huge
+```
+
+A file that stopped part-way is not one of those: it is already the size of the
+whole blob and was touched a moment ago, so nothing about it says it is
+unfinished except the record beside it. That record is believed, and `-n` and
+`-u` are kept off it — otherwise the one file that needed finishing would be the
+one skipped, and the run would report success over it.
 
 Uploading, it needs nothing on this machine. Blocks staged by the earlier
 attempt are still held against the blob, so `azcp` asks the service what

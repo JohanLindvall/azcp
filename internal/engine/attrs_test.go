@@ -98,3 +98,60 @@ func TestInterruptedAsksTheContext(t *testing.T) {
 		t.Error("a transfer that succeeded was called an interruption")
 	}
 }
+
+// A download that stopped part-way is already the size of the whole blob —
+// ranges arrive out of order — and was touched a moment ago. Nothing about it
+// on disk says it is unfinished, so -n and -u skip it as a copy already made
+// and the run reports success over a broken file. The record beside it is the
+// only thing that knows, and it has to be believed.
+func TestUnfinishedDownloadIsNotSkipped(t *testing.T) {
+	for _, flag := range []string{"-n", "-u"} {
+		t.Run(flag, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "half.bin")
+			write(t, path, "the first half of it")
+
+			opt, err := cli.Parse([]string{flag, "src", "dst"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := &Engine{opt: opt, log: slog.New(slog.DiscardHandler)}
+
+			srcURL, err := uri.Parse("azure://acct/container/half.bin", uri.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			dstURL, err := uri.Parse(path, uri.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The destination looks newer than the blob, as a file written a
+			// moment ago does.
+			src := &store.Node{URL: srcURL, Size: 100, ModTime: time.Now().Add(-time.Hour)}
+			dst := &store.Node{URL: dstURL, Size: 100, ModTime: time.Now()}
+
+			// With nothing beside it, it is a finished copy as far as anyone
+			// can tell, and these options exist to leave it alone.
+			proceed, _, err := e.decideOverwrite(context.Background(), src, dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if proceed {
+				t.Errorf("%s overwrote an existing destination", flag)
+			}
+
+			// With a record, it is this copy, stopped part-way.
+			write(t, path+".azcp-part", "azcp-resume 1 etag 100 8388608\n0\n")
+			proceed, backup, err := e.decideOverwrite(context.Background(), src, dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !proceed {
+				t.Errorf("%s skipped a download that never finished, leaving it broken", flag)
+			}
+			if backup != "" {
+				t.Errorf("backup = %q, want none: there is nothing worth keeping", backup)
+			}
+		})
+	}
+}

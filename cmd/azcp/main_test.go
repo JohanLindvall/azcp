@@ -25,25 +25,36 @@ func interruptedRun(t *testing.T, uploads, downloads int) *progress.Reporter {
 }
 
 // Stopping a transfer is the moment to say what can be picked up again — and,
-// just as importantly, to say nothing when the answer is nothing.
+// just as importantly, to say nothing when the answer is nothing. Naming
+// --resume on its own is worse than saying nothing: it promises to carry on and
+// then copies every finished file a second time.
 func TestResumeHint(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
 		uploads, downs   int
-		resume           bool
+		opt              cli.Options
 		want, wantAbsent string
 	}{
 		{name: "nothing was in flight", want: ""},
-		{name: "uploads, without --resume", uploads: 2, want: "add --resume"},
-		{name: "uploads, with --resume", uploads: 2, resume: true,
-			want: "run again", wantAbsent: "add --resume"},
-		{name: "downloads, without --resume", downs: 3, want: "with --resume"},
-		{name: "downloads, with --resume", downs: 3, resume: true, want: "run again"},
-		{name: "both, without --resume", uploads: 1, downs: 1, want: "with --resume"},
+		{name: "uploads, with no flags", uploads: 2,
+			want: "--resume -n"},
+		{name: "downloads, with no flags", downs: 3,
+			want: "--resume -n"},
+		{name: "both, with no flags", uploads: 1, downs: 1,
+			want: "--resume -n"},
+		{name: "--resume alone still needs -n", uploads: 2,
+			opt:  cli.Options{Resume: true},
+			want: "with -n as well"},
+		{name: "--resume -n carries on as it is", downs: 3,
+			opt:  cli.Options{Resume: true, NoClobber: true},
+			want: "carries on from", wantAbsent: "-n as well"},
+		{name: "--resume -u carries on as it is", downs: 3,
+			opt:  cli.Options{Resume: true, Update: cli.UpdateOlder},
+			want: "carries on from", wantAbsent: "-n as well"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			opt := &cli.Options{Resume: tc.resume}
-			got := resumeHint(interruptedRun(t, tc.uploads, tc.downs), opt)
+			opt := tc.opt
+			got := resumeHint(interruptedRun(t, tc.uploads, tc.downs), &opt)
 			if tc.want == "" {
 				if got != "" {
 					t.Errorf("hint = %q, want nothing to be said", got)

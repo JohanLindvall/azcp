@@ -281,6 +281,25 @@ and the `OnFailedRead` callbacks in `store/azure` fall silent once the context
 is done. Getting this wrong turns one keystroke into a screenful of warnings and
 a summary claiming dozens of failures — which is what it did.
 
+**A bandwidth limit is for the bulk, and charges for what arrives.** Two things
+in `store/azure/throttle.go` are easy to get wrong and impossible to see against
+the emulator, which fills every buffer it is handed. A read must be charged for
+the bytes it returns, not for the buffer it was offered — a socket hands over a
+segment at a time, so charging for a 32 KiB buffer per 1.5 KiB read throttles a
+stream to a twentieth of the rate asked for. And a response to a control
+operation — anything addressed with a `comp` parameter: listings, properties,
+block lists — is not paced at all, because a scan of a large container is
+megabytes of XML that every transfer in the run is waiting behind. Request
+bodies stay paced whatever they are: staging a block is `PUT ...&comp=block`.
+
+**A resume record outranks -n and -u.** A download that stopped part-way is
+already the size of the whole blob — ranges arrive out of order — and carries a
+timestamp from a moment ago, so nothing on disk distinguishes it from a finished
+copy. `azure.IncompleteDownload` is what says otherwise, and `decideOverwrite`
+asks before anything else: skipping that file is the one case where -n leaves
+broken data behind and reports success. For the same reason `--resume` wins the
+open-flag choice in `download`, since -n would otherwise refuse to open it.
+
 **`--delete` is the one thing here that destroys data.** `engine/prune.go`
 refuses if anything failed to copy, protects whatever `--exclude` ruled out, and
 honours `--dry-run`. Do not relax any of those three without a very good

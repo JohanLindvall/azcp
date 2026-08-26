@@ -12,6 +12,7 @@ import (
 	"github.com/JohanLindvall/azcp/internal/glob"
 	"github.com/JohanLindvall/azcp/internal/logx"
 	"github.com/JohanLindvall/azcp/internal/store"
+	"github.com/JohanLindvall/azcp/internal/store/azure"
 	"github.com/JohanLindvall/azcp/internal/store/local"
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
@@ -634,6 +635,13 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 	}
 }
 
+// unfinishedDownload reports whether the destination is a download that never
+// finished, which -n, -u and -i must not mistake for a copy already made.
+func unfinishedDownload(src, dst *store.Node) bool {
+	return src.URL.IsRemote() && !dst.URL.IsRemote() &&
+		azure.IncompleteDownload(dst.URL.Path)
+}
+
 // needsDestCheck reports whether the destination has to be inspected before
 // writing. Skipping the check when no option depends on it saves one round trip
 // per file, which is the difference between a fast and a slow upload of many
@@ -645,6 +653,12 @@ func (e *Engine) needsDestCheck() bool {
 
 // decideOverwrite applies -n, -i, -u and -b to an existing destination.
 func (e *Engine) decideOverwrite(ctx context.Context, src, dst *store.Node) (bool, string, error) {
+	if unfinishedDownload(src, dst) {
+		// Not a destination to be weighed against the source: it is this copy,
+		// stopped part-way. Left alone it stays broken, and it is the one thing
+		// on disk that looks finished without being it.
+		return true, "", nil
+	}
 	if e.opt.NoClobber {
 		return false, "", nil
 	}

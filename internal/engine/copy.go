@@ -105,12 +105,18 @@ func (e *Engine) upload(ctx context.Context, t *task, pt *progress.Task) error {
 func (e *Engine) download(ctx context.Context, t *task, pt *progress.Task) error {
 	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 	switch {
-	case e.opt.NoClobber:
-		flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
 	case e.opt.Resume:
 		// Truncating would destroy the very bytes the resume record vouches
 		// for. The ranges still to come are written where they belong.
+		//
+		// This wins over -n, which would refuse to open a file that is already
+		// there: the only tasks that reach here with -n set are ones the
+		// scanner let through, and the sole reason it lets an existing
+		// destination through is that a record says the download never
+		// finished. Refusing it would leave it unfinished for good.
 		flags = os.O_WRONLY | os.O_CREATE
+	case e.opt.NoClobber:
+		flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
 	}
 	f, err := e.openDest(t, flags, 0o644)
 	if err != nil {

@@ -40,6 +40,29 @@ type resumeFile struct {
 	have map[int]bool
 }
 
+// IncompleteDownload reports whether a resume record sits beside path, meaning
+// the file there is a download that stopped part-way.
+//
+// Nothing else can tell. Ranges arrive out of order, so a partly written file
+// is already the size of the whole blob and carries a timestamp from when it
+// was last touched: to -n and -u it is indistinguishable from a finished copy,
+// and skipping it would leave it that way for good.
+func IncompleteDownload(path string) bool {
+	_, err := os.Stat(path + resumeSuffix)
+	return err == nil
+}
+
+// removeResumeRecord discards a record beside path. A download that ran without
+// --resume has just written the whole file, so any record left by an earlier
+// attempt describes something that no longer exists.
+func removeResumeRecord(path string) error {
+	err := os.Remove(path + resumeSuffix)
+	if err != nil && os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 // openResumeFile opens or starts a record for this blob. A record describing a
 // different blob — a different etag, size or block size — is discarded, because
 // continuing into it would splice two files together.
