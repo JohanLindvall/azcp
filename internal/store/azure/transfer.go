@@ -468,6 +468,10 @@ func (s *Store) openRead(ctx context.Context, src *store.Node) (io.ReadCloser, e
 	return resp.NewRetryReader(ctx, &blob.RetryReaderOptions{
 		MaxRetries: s.cfg.MaxRetries,
 		OnFailedRead: func(failures int32, lastErr error, rnge blob.HTTPRange, willRetry bool) {
+			if ctx.Err() != nil {
+				// Cancelled, not failed: see the same guard in download.go.
+				return
+			}
 			s.log.Warn("stream read failed",
 				"blob", src.URL.Display(), "offset", rnge.Offset,
 				"failures", failures, "will_retry", willRetry, "error", lastErr)

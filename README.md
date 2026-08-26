@@ -381,6 +381,12 @@ out of order and a half-written file is indistinguishable from a whole one with
 holes. A small record is kept beside the file and removed when it is complete. A
 record that describes a different blob is discarded rather than spliced in.
 
+Stopping a run with Ctrl-C says how much was left unfinished and whether it can
+be picked up, which differs by direction for the reason above — an upload can be
+continued whatever the interrupted run was given, a download only if it was
+already keeping a record. Nothing else is said: everything still in flight ends
+at the same moment, and that is not a list of failures.
+
 ## Wildcards
 
 The shell cannot see inside a container, so `azcp` expands patterns itself — on

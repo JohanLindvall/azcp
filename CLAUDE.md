@@ -137,6 +137,16 @@ only `mu`, via `Begin` and `Done`, so a slow terminal can never stall a
 transfer. Holding one lock across both — as an earlier version did — makes
 every file start and finish wait on terminal I/O.
 
+**The live region is erased, never abandoned.** `render` returns to the top of
+the region and erases to the end of the screen with `ESC[J`, which removes it
+however many rows a resize has since made of it. Lines inside the region are
+separated by real newlines, so a terminal that re-wraps on resize can only make
+it taller — it splits a line that no longer fits and never rejoins one broken
+deliberately — which is why moving up `drawn-1` rows always lands inside the
+region rather than above it, where the scrollback is. Forgetting `drawn` on a
+resize instead, which is the obvious alternative, leaves a copy of the whole
+display on screen every time the window changes size.
+
 **Frames are written in runs, not per character.** Colouring each cell
 individually costs an escape sequence per character: about 1.7 kB for one bar,
 repainted every frame. `gradientBar` quantises into `gradientBands` colour
@@ -178,6 +188,16 @@ turns that rejection into an interactive sign-in and one retry, at most once per
 run and only when stderr is a terminal. A 403 with an identity in hand is a
 missing role and is *not* escalated, because signing in as the same person again
 changes nothing.
+
+**Ask for a token the way the SDK asks for one.** The storage pipeline sets
+`EnableCAE` on every token request it makes, and azidentity answers CAE and
+non-CAE requests from *separate* MSAL clients with separate caches. A sign-in
+that primes the other one leaves the SDK's first request with nothing cached,
+and MSAL deals with that by opening a second browser window — one sign-in
+completed, another demanded immediately. `tokenRequest()` in `store/azure/auth.go`
+is the single place that says how to ask; `authenticate`, `probeWithin` and
+`Token` all go through it, and they have to keep agreeing or a resumed sign-in
+validates against one cache and the transfer draws on the other.
 
 **A sign-in must survive the process.** Tokens go into the platform's secure
 store via `azidentity/cache`, and a non-secret `AuthenticationRecord` under the
@@ -250,6 +270,16 @@ reported. For a copier that is data corruption, not a convenience.
 `store/azure/download.go`: the SDK dereferences a `Content-Length` the service
 does not send for an encoded blob and panics, and resuming needs to know which
 ranges landed, which only the code issuing them can know.
+
+**Cancelling is not failing.** Ctrl-C ends every transfer in flight at the same
+moment, and the error each one comes back with cannot be trusted to say so: Go
+cancels a signal context with a cause of its own ("interrupt signal received"),
+and what returns through the SDK is whatever it was given. `engine.interrupted`
+asks the context instead. A transfer stopped that way goes to
+`progress.Task.Interrupted`, which counts it as unfinished rather than failed,
+and the `OnFailedRead` callbacks in `store/azure` fall silent once the context
+is done. Getting this wrong turns one keystroke into a screenful of warnings and
+a summary claiming dozens of failures — which is what it did.
 
 **`--delete` is the one thing here that destroys data.** `engine/prune.go`
 refuses if anything failed to copy, protects whatever `--exclude` ruled out, and

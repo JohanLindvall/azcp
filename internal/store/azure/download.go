@@ -99,6 +99,12 @@ func (s *Store) downloadRanges(ctx context.Context, src *store.Node, f io.Writer
 			body := resp.NewRetryReader(ctx, &blob.RetryReaderOptions{
 				MaxRetries: s.cfg.MaxRetries,
 				OnFailedRead: func(failures int32, lastErr error, rng blob.HTTPRange, willRetry bool) {
+					if ctx.Err() != nil {
+						// The run is being cancelled, which fails every range
+						// still in flight at once. One line each turns Ctrl-C
+						// into a screenful of things that went wrong.
+						return
+					}
 					s.log.Warn("range read failed",
 						"blob", src.URL.Display(), "offset", rng.Offset,
 						"failures", failures, "will_retry", willRetry, "error", lastErr)

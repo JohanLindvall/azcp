@@ -85,13 +85,21 @@ func (e *Engine) restoreAttrs(t *task) {
 			e.log.Warn("cannot restore mode", "path", t.dst.Display(), "error", err)
 		}
 	}
-	if e.opt.Preserve.Timestamps && !p.MTime.IsZero() {
-		atime := p.ATime
-		if atime.IsZero() {
-			atime = p.MTime
+	if e.opt.Preserve.Timestamps {
+		mtime, atime := p.MTime, p.ATime
+		if mtime.IsZero() {
+			// Nothing preserved on the blob — most likely it was put there by
+			// something other than azcp — so the service's own record of when
+			// it was last written is the best available.
+			mtime = t.src.ModTime
 		}
-		if err := os.Chtimes(path, atime, p.MTime); err != nil {
-			e.log.Warn("cannot restore timestamps", "path", t.dst.Display(), "error", err)
+		if atime.IsZero() {
+			atime = mtime
+		}
+		if !mtime.IsZero() {
+			if err := os.Chtimes(path, atime, mtime); err != nil {
+				e.log.Warn("cannot restore timestamps", "path", t.dst.Display(), "error", err)
+			}
 		}
 	}
 }

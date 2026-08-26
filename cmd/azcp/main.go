@@ -78,7 +78,7 @@ func run(argv []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
-	go hardStopOnSecondSignal(prog)
+	go hardStopOnSecondSignal(prog, opt)
 
 	eng, err := engine.New(engine.Config{
 		Options:  opt,
@@ -131,7 +131,7 @@ func run(argv []string) int {
 	reportLogged(opt)
 
 	if ctx.Err() != nil {
-		fmt.Fprintf(os.Stderr, "%s: interrupted\n", cli.Program)
+		fmt.Fprintf(os.Stderr, "%s: interrupted%s\n", cli.Program, resumeHint(prog, opt))
 		return exitFail
 	}
 	if failed > 0 {
@@ -156,14 +156,41 @@ func reportLogged(opt *cli.Options) {
 // hardStopOnSecondSignal makes a second interrupt take effect at once. The
 // first one cancels the context and lets in-flight work unwind; someone who
 // asks twice wants out now, and the cursor still has to come back.
-func hardStopOnSecondSignal(prog *progress.Reporter) {
+func hardStopOnSecondSignal(prog *progress.Reporter, opt *cli.Options) {
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	<-ch // the first is also handled by NotifyContext
 	<-ch
 	prog.Stop()
-	fmt.Fprintf(os.Stderr, "\n%s: interrupted\n", cli.Program)
+	fmt.Fprintf(os.Stderr, "\n%s: interrupted%s\n", cli.Program, resumeHint(prog, opt))
 	os.Exit(exitFail)
+}
+
+// resumeHint says how much of an interrupted run can be picked up again, and
+// says nothing at all when the answer is none of it.
+//
+// The two directions differ, and the difference is the whole point of saying
+// anything: an upload leaves its staged blocks with the service, so it can be
+// continued whatever the interrupted run was given, while a download can only
+// be continued into the record that --resume writes as it goes. Telling
+// somebody to rerun with --resume when there is no record to continue from
+// would just be a slower way of starting over.
+func resumeHint(prog *progress.Reporter, opt *cli.Options) string {
+	uploads, downloads := prog.Unfinished()
+	n := uploads + downloads
+	switch {
+	case n == 0:
+		return ""
+	case opt.Resume:
+		return fmt.Sprintf("; %d unfinished transfer(s), which the same command "+
+			"run again will continue", n)
+	case downloads == 0:
+		return fmt.Sprintf("; %d unfinished upload(s) — add --resume to carry on "+
+			"from what already arrived", n)
+	default:
+		return fmt.Sprintf("; %d unfinished transfer(s) — with --resume they could "+
+			"be carried on from rather than started over", n)
+	}
 }
 
 // runBenchmark measures throughput instead of copying anything.

@@ -15,30 +15,49 @@ const (
 	showCursor = "\x1b[?25h"
 	clearLine  = "\x1b[2K"
 	cursorUp   = "\x1b[A"
+	// eraseBelow clears from the cursor to the end of the screen. The live
+	// region is the last thing on it, so this takes the whole region however
+	// many rows it turns out to occupy — which is the only way to be rid of a
+	// frame the terminal has re-wrapped since it was drawn.
+	eraseBelow = "\x1b[J"
 )
 
 // rateWindow is how far back throughput is averaged. Long enough to be steady,
 // short enough to react when a big file finishes.
 const rateWindow = 3 * time.Second
 
-// clear erases the live region. The caller must hold r.mu.
+// erase writes the sequence that removes the live region, leaving the cursor
+// where the region began. The caller must hold r.paint.
+//
+// Lines within the region are separated by real newlines, so a resize can only
+// ever make it taller: a terminal that re-wraps on resize splits a line that no
+// longer fits and never rejoins one that was broken deliberately. Moving up
+// r.drawn-1 rows therefore lands inside the region rather than above it, and
+// erasing to the end of the screen from there takes whatever the re-wrap made
+// of the rest.
+func (r *Reporter) erase(b *bytes.Buffer) {
+	if r.drawn == 0 {
+		return
+	}
+	b.WriteString("\r")
+	for i := 1; i < r.drawn; i++ {
+		b.WriteString(cursorUp)
+	}
+	b.WriteString(eraseBelow)
+	r.drawn = 0
+}
+
+// clear erases the live region. The caller must hold r.paint.
 func (r *Reporter) clear() {
 	if !r.enabled || r.drawn == 0 {
 		return
 	}
 	var b bytes.Buffer
-	b.WriteString("\r")
-	for i := 0; i < r.drawn; i++ {
-		if i > 0 {
-			b.WriteString(cursorUp)
-		}
-		b.WriteString(clearLine)
-	}
-	r.drawn = 0
+	r.erase(&b)
 	_, _ = r.out.Write(b.Bytes())
 }
 
-// render draws the current frame. The caller must hold r.mu.
+// render draws the current frame. The caller must hold r.paint.
 func (r *Reporter) render() {
 	if !r.enabled || r.stopped {
 		return
@@ -49,15 +68,7 @@ func (r *Reporter) render() {
 	b.Grow(len(lines) * (r.width + 16))
 	// Erase whatever is there before drawing, so a shorter frame cannot leave
 	// remnants of a taller one behind.
-	if r.drawn > 0 {
-		b.WriteString("\r")
-		for i := 0; i < r.drawn; i++ {
-			if i > 0 {
-				b.WriteString(cursorUp)
-			}
-			b.WriteString(clearLine)
-		}
-	}
+	r.erase(&b)
 	for i, l := range lines {
 		b.WriteString(clearLine)
 		b.WriteString(l)

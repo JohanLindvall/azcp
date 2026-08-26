@@ -390,6 +390,9 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 
 	entries, err := e.storeFor(src.URL).ReadDir(ctx, src.URL)
 	if err != nil {
+		if interrupted(ctx, err) {
+			return nil
+		}
 		e.fail("cannot read directory %s: %s", quote(src.URL.Display()), brief(err))
 		return nil
 	}
@@ -488,6 +491,9 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 	empty := map[string]*uri.URL{}
 
 	onError := func(u *uri.URL, err error) error {
+		if interrupted(ctx, err) {
+			return nil
+		}
 		e.fail("cannot read %s: %s", quote(u.Display()), brief(err))
 		return nil
 	}

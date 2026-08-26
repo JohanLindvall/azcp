@@ -514,3 +514,67 @@ func TestExplainAuthNamesTheTenant(t *testing.T) {
 		t.Error("an unrelated failure was rewritten")
 	}
 }
+
+// tokenRecorder remembers how a token was asked for.
+type tokenRecorder struct {
+	mu   sync.Mutex
+	opts policy.TokenRequestOptions
+}
+
+func (r *tokenRecorder) GetToken(_ context.Context, o policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.opts = o
+	return azcore.AccessToken{Token: "stub", ExpiresOn: time.Now().Add(time.Hour)}, nil
+}
+
+func (r *tokenRecorder) Authenticate(_ context.Context, o *policy.TokenRequestOptions) (azidentity.AuthenticationRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.opts = *o
+	return azidentity.AuthenticationRecord{Username: "someone@example.com"}, nil
+}
+
+func (r *tokenRecorder) asked() policy.TokenRequestOptions {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.opts
+}
+
+// The storage SDK asks for CAE tokens on every request, and azidentity answers
+// CAE and non-CAE requests from separate MSAL clients with separate caches. A
+// sign-in that primes the other one leaves the first real request with nothing
+// cached, which MSAL deals with by opening a second browser window — so every
+// token this package asks for has to be asked for the same way the SDK will.
+func TestEveryTokenIsAskedForTheSameWay(t *testing.T) {
+	rec := &tokenRecorder{}
+	c := &Credentials{Log: slog.New(slog.DiscardHandler)}
+
+	if _, err := c.authenticate(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	assertAskedForCAE(t, "the interactive sign-in", rec.asked())
+
+	if err := probeWithin(context.Background(), rec, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	assertAskedForCAE(t, "the probe behind a resumed sign-in", rec.asked())
+
+	c.mu.Lock()
+	c.resolved, c.cred = true, rec
+	c.mu.Unlock()
+	if _, err := c.Token(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertAskedForCAE(t, "the server-side copy token", rec.asked())
+}
+
+func assertAskedForCAE(t *testing.T, what string, o policy.TokenRequestOptions) {
+	t.Helper()
+	if !o.EnableCAE {
+		t.Errorf("%s asked without EnableCAE, which azidentity answers from another cache", what)
+	}
+	if len(o.Scopes) != 1 || o.Scopes[0] != storageScope {
+		t.Errorf("%s asked for scopes %v, want [%s]", what, o.Scopes, storageScope)
+	}
+}

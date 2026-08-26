@@ -139,16 +139,9 @@ func (e *Engine) download(ctx context.Context, t *task, pt *progress.Task) error
 			t.dst = t.dst.WithPathPart(final)
 		}
 	}
+	// restoreAttrs covers the timestamps too, including falling back to the
+	// service's own when the blob carries none of its own.
 	e.restoreAttrs(t)
-	if e.opt.Preserve.Timestamps && !t.src.ModTime.IsZero() &&
-		len(t.src.Metadata) == 0 {
-		// No preserved timestamp to restore; the service's own is the best
-		// available.
-		if err := os.Chtimes(t.dst.Path, t.src.ModTime, t.src.ModTime); err != nil {
-			e.log.Warn("cannot preserve timestamp",
-				"path", t.dst.Display(), "error", err)
-		}
-	}
 	return nil
 }
 

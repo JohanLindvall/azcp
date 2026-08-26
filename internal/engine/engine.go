@@ -237,6 +237,16 @@ func (e *Engine) Failures() []Failure {
 	return append([]Failure(nil), e.failures...)
 }
 
+// interrupted reports whether err is just the run being cancelled.
+//
+// The error alone cannot be relied on to say so. Go cancels a signal context
+// with a cause of its own — "interrupt signal received" — and what comes back
+// through the SDK is whatever it was given, which need not unwrap to
+// context.Canceled. The context is the thing that knows.
+func interrupted(ctx context.Context, err error) bool {
+	return err != nil && (ctx.Err() != nil || errors.Is(err, context.Canceled))
+}
+
 // recordFailure keeps a failure for the summary. The list is capped: a run that
 // fails on a hundred thousand files does not need all of them in memory to make
 // the point.
@@ -270,12 +280,16 @@ func (e *Engine) runTask(ctx context.Context, t *task) {
 			return e.transfer(ctx, t, pt)
 		})
 	err = attemptErr
+	if interrupted(ctx, err) {
+		// Cancelling a run ends every transfer still in flight at once. None
+		// of that is a failure, and counting it as one turns "stop" into a
+		// screenful of things that went wrong.
+		pt.Interrupted()
+		return
+	}
 	pt.Done(err)
 
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return
-		}
 		e.failed.Add(1)
 		level := slog.LevelError
 		if logx.SharesTerminal() {

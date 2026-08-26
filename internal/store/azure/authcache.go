@@ -149,7 +149,8 @@ func (c *Credentials) authenticate(ctx context.Context, a authenticator) (aziden
 	ctx, cancel := context.WithTimeout(ctx, interactiveTimeout)
 	defer cancel()
 	c.prompts++
-	return a.Authenticate(ctx, &policy.TokenRequestOptions{Scopes: []string{storageScope}})
+	opts := tokenRequest()
+	return a.Authenticate(ctx, &opts)
 }
 
 // Prompts reports how many interactive sign-ins this run has started. A

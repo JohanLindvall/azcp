@@ -111,6 +111,11 @@ type Reporter struct {
 	failedFiles  atomic.Int64
 	skippedFiles atomic.Int64
 	retries      atomic.Int64
+	// partUp and partDown count transfers cut off part-way by the run being
+	// cancelled — what an interrupted run leaves behind, and the only thing
+	// --resume has anything to say about.
+	partUp   atomic.Int64
+	partDown atomic.Int64
 
 	active   []*Task
 	started  time.Time
@@ -120,6 +125,10 @@ type Reporter struct {
 
 	// interval is how often the display repaints.
 	interval time.Duration
+
+	// termWidth reports the terminal width. Tests replace it, since a resize
+	// cannot be staged on anything that is not a real terminal.
+	termWidth func() (int, error)
 }
 
 type sample struct {
@@ -155,7 +164,11 @@ func New(cfg Config) *Reporter {
 		started:  time.Now(),
 		interval: interval,
 	}
-	if w, _, err := term.GetSize(int(out.Fd())); err == nil && w > 0 {
+	r.termWidth = func() (int, error) {
+		w, _, err := term.GetSize(int(out.Fd()))
+		return w, err
+	}
+	if w, err := r.termWidth(); err == nil && w > 0 {
 		r.width = w
 	}
 	return r
@@ -253,6 +266,13 @@ func (r *Reporter) Totals() (done, failed, skipped, retries int64, bytes int64, 
 		r.retries.Load(), r.doneBytes.Load(), time.Since(r.started)
 }
 
+// Unfinished reports how many uploads and downloads stopped with bytes already
+// moved. A local copy is not counted: there is nothing on the far side holding
+// what it managed, so there is nothing to continue into.
+func (r *Reporter) Unfinished() (uploads, downloads int64) {
+	return r.partUp.Load(), r.partDown.Load()
+}
+
 // Task tracks one file in flight.
 type Task struct {
 	r    *Reporter
@@ -341,14 +361,42 @@ func (t *Task) Done(err error) {
 			r.doneBytes.Add(t.size - n)
 		}
 	}
+	r.remove(t)
+}
+
+// Interrupted removes a transfer the run was cancelled out from under. It is
+// not a failure — nobody needs telling that what they stopped stopped — and it
+// is not progress either, so the bytes come back out of the total; what it is
+// is unfinished, which is the one thing worth remembering about it.
+func (t *Task) Interrupted() {
+	if t == nil {
+		return
+	}
+	r := t.r
+	// Only a transfer that had moved something is unfinished; one that never
+	// started is simply not done, and resuming it would save nothing.
+	if n := t.counted.Swap(0); n != 0 {
+		r.doneBytes.Add(-n)
+		switch t.dir {
+		case DirUpload:
+			r.partUp.Add(1)
+		case DirDownload:
+			r.partDown.Add(1)
+		}
+	}
+	r.remove(t)
+}
+
+// remove takes a task out of the live display.
+func (r *Reporter) remove(t *Task) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	for i, a := range r.active {
 		if a == t {
 			r.active = append(r.active[:i], r.active[i+1:]...)
-			break
+			return
 		}
 	}
-	r.mu.Unlock()
 }
 
 func (r *Reporter) write(s string) {
@@ -362,14 +410,16 @@ func (r *Reporter) write(s string) {
 // than driven by SIGWINCH, so resize handling is identical on platforms that
 // have no such signal, at the cost of one cheap query per frame.
 //
-// The caller must hold r.mu.
+// The caller must hold r.paint.
 func (r *Reporter) refreshWidth() {
-	w, _, err := term.GetSize(int(r.out.Fd()))
+	w, err := r.termWidth()
 	if err != nil || w <= 0 || w == r.width {
 		return
 	}
-	// The frame on screen was laid out for the old width; forget it rather
-	// than trying to erase lines that have since reflowed.
+	// Only the width changes here. The frame on screen was laid out for the
+	// old one and the terminal may have re-wrapped it since, but it must still
+	// be erased rather than abandoned: forgetting it leaves a copy of the whole
+	// display in the scrollback every time the window is resized, which is what
+	// the erase in render is written to survive.
 	r.width = w
-	r.drawn = 0
 }

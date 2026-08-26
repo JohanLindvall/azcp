@@ -21,6 +21,19 @@ import (
 // storageScope is the OAuth scope for the Blob service.
 const storageScope = "https://storage.azure.com/.default"
 
+// tokenRequest describes every token this package asks for on its own behalf.
+//
+// EnableCAE is not optional here, however little continuous access evaluation
+// has to do with copying a file. The storage SDK sets it on every request it
+// makes, and azidentity answers CAE and non-CAE requests from *separate* MSAL
+// clients with separate caches. Signing in without it primes the wrong one, so
+// the SDK's first request finds nothing cached and MSAL deals with that by
+// opening a second browser window — one sign-in completed, and another asked
+// for straight away. Ask the way the SDK asks, and one sign-in serves both.
+func tokenRequest() policy.TokenRequestOptions {
+	return policy.TokenRequestOptions{Scopes: []string{storageScope}, EnableCAE: true}
+}
+
 // AuthMode selects how credentials are found. The default, AuthAuto, tries
 // everything in turn so that a correctly configured environment needs no flags
 // at all.
@@ -124,7 +137,7 @@ func (c *Credentials) Token(ctx context.Context) (string, error) {
 	if cred == nil {
 		return "", errors.New("no token credential available")
 	}
-	tk, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{storageScope}})
+	tk, err := cred.GetToken(ctx, tokenRequest())
 	if err != nil {
 		return "", err
 	}
@@ -408,7 +421,9 @@ func probe(ctx context.Context, cred azcore.TokenCredential) error {
 func probeWithin(ctx context.Context, cred azcore.TokenCredential, d time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()
-	_, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{storageScope}})
+	// Asked for exactly as the SDK will ask, or a resumed sign-in that probes
+	// clean here still has nothing the first real request can use.
+	_, err := cred.GetToken(ctx, tokenRequest())
 	return err
 }
 
