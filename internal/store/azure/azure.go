@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -71,8 +72,13 @@ type Store struct {
 	clientOnce sync.Once
 	http       *http.Client
 
-	// signIn guards the single interactive escalation a run is allowed.
-	signIn signInState
+	// signIn guards the single interactive escalation a run is allowed, and
+	// tenant the one directory a run follows the service to. authGen counts
+	// both: an operation that failed under an older credential is worth
+	// retrying for that reason alone.
+	signIn  signInState
+	tenant  tenantState
+	authGen atomic.Uint64
 
 	// noCopyRoute remembers, per endpoint and route, that a server-side copy
 	// mechanism is not implemented there, so the rest of the run stops asking.

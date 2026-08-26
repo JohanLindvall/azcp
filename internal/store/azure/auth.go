@@ -73,7 +73,9 @@ type Credentials struct {
 	Mode        AuthMode
 	Log         *slog.Logger
 	Interactive bool // a terminal is attached, so a sign-in prompt can be answered
-	TenantID    string
+	// TenantID is the directory to authenticate against. UseTenant replaces it
+	// when the storage account names another; every other reader holds mu.
+	TenantID string
 
 	mu        sync.Mutex
 	resolved  bool
@@ -81,6 +83,9 @@ type Credentials struct {
 	err       error
 	kind      string
 	escalated bool
+	// resumeTried records that a saved sign-in has been looked for, so that it
+	// is looked for once per tenant rather than once per rejection.
+	resumeTried bool
 	// prompts counts interactive sign-ins started, which must never exceed one.
 	prompts int
 
@@ -93,6 +98,9 @@ type Credentials struct {
 	// signInFn stands in for the interactive flow in tests, which cannot open
 	// a browser. It is nil everywhere else.
 	signInFn func(context.Context, AuthMode) (azcore.TokenCredential, string, error)
+	// resumeFn stands in for the saved-sign-in lookup in tests, which must not
+	// read the user's credential store. It is nil everywhere else.
+	resumeFn func(context.Context) (azcore.TokenCredential, bool)
 }
 
 // kindResumed marks a credential rebuilt from a previous run's sign-in, which
@@ -157,37 +165,77 @@ func (c *Credentials) IsAnonymous() bool {
 // Escalate discards whatever was discovered and signs in interactively,
 // replacing the cached credential. It is called when the storage service
 // rejects what discovery found — the one thing the credential chain cannot
-// work out for itself.
+// work out for itself. It returns the credential to try again with and where
+// that came from.
 //
 // A run prompts at most once, whether the sign-in succeeds or not: a person who
 // declined once should not be asked again for every remaining file.
-func (c *Credentials) Escalate(ctx context.Context) (azcore.TokenCredential, error) {
+func (c *Credentials) Escalate(ctx context.Context) (azcore.TokenCredential, string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.escalated {
-		return c.cred, c.err
-	}
-	c.escalated = true
 
 	// A previous run may have signed in as somebody the account does accept —
 	// worth trying before asking, but pointless if that is already what was
-	// just rejected.
-	if c.kind != kindResumed {
-		if cred, ok := c.resume(ctx); ok {
+	// just rejected. Resuming asks nothing of anybody, so it does not spend the
+	// run's one prompt: if the account refuses that identity too, the next
+	// rejection still finds somebody to ask.
+	if !c.resumeTried && c.kind != kindResumed {
+		c.resumeTried = true
+		if cred, ok := c.tryResume(ctx); ok {
 			c.cred, c.kind, c.err, c.resolved = cred, kindResumed, nil, true
-			return cred, nil
+			return cred, kindResumed, nil
 		}
 	}
+	if c.escalated {
+		return c.cred, c.kind, c.err
+	}
+	c.escalated = true
 	if !c.Interactive {
-		return nil, errors.New("no terminal is attached, so there is nobody to sign in")
+		return nil, "", errors.New("no terminal is attached, so there is nobody to sign in")
 	}
 	cred, kind, err := c.signIn(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	c.cred, c.kind, c.err, c.resolved = cred, kind, nil, true
 	c.logger().Info("signed in to Azure", "method", kind)
-	return cred, nil
+	return cred, kind, nil
+}
+
+// UseTenant points the credential at a tenant learned after the fact — the
+// storage account names the one it trusts when it turns a token away — and
+// reports whether the identity in hand was re-pointed, which is what makes
+// trying the operation again worthwhile.
+//
+// That identity may well have access there, so it is asked for a token in the
+// new tenant before anybody is troubled for a sign-in, and any sign-in that
+// follows is directed at the same tenant.
+func (c *Credentials) UseTenant(tenant string, refused func(error)) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if tenant == "" || tenant == c.TenantID {
+		return false
+	}
+	c.TenantID = tenant
+	// A sign-in saved for one tenant says nothing about another, and the record
+	// for this one has its own name and has not been looked for yet.
+	c.resumeTried = false
+	c.logger().Debug("authenticating against the tenant the account named", "tenant", tenant)
+	if c.cred == nil {
+		// Nothing to re-point, so nothing to try again with — but a sign-in
+		// that follows is now directed at the tenant just recorded.
+		return false
+	}
+	c.cred = forTenant(c.cred, tenant, refused)
+	return true
+}
+
+// tryResume looks for a sign-in saved by an earlier run.
+func (c *Credentials) tryResume(ctx context.Context) (azcore.TokenCredential, bool) {
+	if c.resumeFn != nil {
+		return c.resumeFn(ctx)
+	}
+	return c.resume(ctx)
 }
 
 // signIn runs an interactive sign-in, preferring a browser where there is a

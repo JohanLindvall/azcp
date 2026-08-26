@@ -187,10 +187,27 @@ avoid. `resume` reconstructs the session and is wired to *never* prompt
 (`DisableAutomaticAuthentication` plus a prompt that refuses), so it is safe to
 call anywhere.
 
+**The account names its own tenant, and that beats guessing.** A 401 from blob
+storage carries `WWW-Authenticate: Bearer authorization_uri=.../TENANT/...`,
+which is the one thing discovery cannot work out for itself. `tenant.go` reads
+it and `refreshAuth` follows it *before* anyone is asked to sign in: the
+identity already found is re-asked for a token in that tenant, and any sign-in
+that does follow is directed there too. The SDK parses the same header and then
+discards the tenant — a standing TODO in azblob's challenge policy — so do not
+assume it is handled underneath. This happens once per run, and never when
+`--tenant` has already named one. A refusal to *issue* that token arrives as an
+unexported azidentity type, which is why `tenantCredential` records it as it
+happens instead of the error being recognised by matching on its type.
+
 **One prompt per run, and the tests say so.** `Credentials.escalated`,
 `Store.signIn.done` and the counter behind `Credentials.Prompts` all exist to
 pin that. `signin_test.go` fires twenty concurrent rejections and asserts a
-single sign-in; keep it passing.
+single sign-in; keep it passing. Resuming a sign-in saved by an earlier run is
+not a prompt and must not spend it — an account that refuses that identity too
+still has somebody to ask, which is what `Store.signIn.resumed` keeps track of.
+Which callers retry is decided by `Store.authGen`: an operation that failed
+under an older credential is worth repeating, one that already ran with the
+current one is not.
 
 **Prompts are not log records.** The device code, the "opening a browser" notice
 and the "account rejected the credential" line go through `logx.Errf` so they

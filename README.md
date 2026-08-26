@@ -257,20 +257,27 @@ sign-in will have to be repeated.
 
 If the storage account then *rejects* whatever was found — an `az login`
 session for the wrong tenant produces a perfectly good token that the account
-still refuses — `azcp` says so and signs you in: a browser window where there
-is a desktop to show one on, otherwise a device code you can complete
-elsewhere. It asks once per run, and only when stderr is a terminal, so a
-scripted run fails with a message instead of waiting for an answer nobody can
-see.
+still refuses — the account itself says which directory it does trust, in the
+challenge it sends back. `azcp` follows that: the identity already in hand is
+asked for a token in that tenant, which is all a guest account usually needs,
+and nobody is troubled at all.
+
+Where even that is refused, `azcp` says so and signs you in, naming the tenant
+rather than leaving you to guess it: a browser window where there is a desktop
+to show one on, otherwise a device code you can complete elsewhere, and either
+way directed at the tenant the account named. It asks only when stderr is a
+terminal, so a scripted run fails with a message instead of waiting for an
+answer nobody can see.
 
 It asks at most once per run, however many transfers are rejected at the same
 moment.
 
 `--auth` pins the choice to `identity`, `browser`, `device` or `anonymous` when
 the automatic one is not what you want, and `--tenant` selects the directory to
-authenticate against; each tenant is remembered separately. Credential material is never written to the terminal or
-to a log: SAS signatures, account keys and bearer tokens are redacted on the
-way out.
+authenticate against — pinning it against the account's own answer, too. Each
+tenant is remembered separately. Credential material is never written to the
+terminal or to a log: SAS signatures, account keys and bearer tokens are
+redacted on the way out.
 
 ## Choosing what to copy
 
