@@ -133,6 +133,11 @@ func (r *Reporter) headerLine(width int, phase string, scanning bool,
 	} else if doneB > 0 {
 		parts = append(parts, humanize.Bytes(doneB))
 	}
+	// Worth saying only when it differs from the work found: on a first copy
+	// every file seen becomes a file planned, and repeating it says nothing.
+	if seen := r.seenFiles.Load(); seen > totalF {
+		parts = append(parts, fmt.Sprintf("%s seen", humanize.Count(seen)))
+	}
 	if f := r.failedFiles.Load(); f > 0 {
 		parts = append(parts, r.pal.bad(fmt.Sprintf("%s failed", humanize.Count(f))))
 	}
@@ -360,6 +365,9 @@ func (r *Reporter) Summary(w *os.File, dryRun bool) {
 		humanize.Bytes(bytes), humanize.Duration(elapsed), rate)
 
 	var notes []string
+	if seen := r.seenFiles.Load(); seen > done+skipped {
+		notes = append(notes, fmt.Sprintf("%s seen", humanize.Count(seen)))
+	}
 	if skipped > 0 {
 		notes = append(notes, fmt.Sprintf("%s skipped", humanize.Count(skipped)))
 	}

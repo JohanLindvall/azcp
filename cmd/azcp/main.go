@@ -234,6 +234,7 @@ func writeJSONSummary(prog *progress.Reporter, eng *engine.Engine, opt *cli.Opti
 	summary := map[string]any{
 		"event":           "summary",
 		"version":         cli.VersionString(),
+		"seen":            prog.Seen(),
 		"copied":          done,
 		"failed":          failed,
 		"skipped":         skipped,

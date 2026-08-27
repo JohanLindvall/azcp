@@ -263,6 +263,20 @@ which is one unparallelised stream that restarts from nothing if it fails.
 filling more than one block is staged and committed here instead. Do not
 "simplify" it back to UploadFile.
 
+**A connection that stops delivering is not a connection that breaks.** TCP
+keeps a silent socket alive indefinitely — keepalives answer, queues stay empty,
+nothing errors — so a response that stops mid-body leaves the reader waiting on
+bytes that will never come. Go's dialer sets a 30-second keepalive, after which
+the kernel's nine probes at 75 seconds take about eleven minutes to give up: one
+wedged listing freezes a whole scan for that long, because the walk is ordered,
+and one wedged range read leaves a file at 95% and a run that appears hung.
+There is no per-attempt timeout to fall back on, deliberately, since a large
+block may honestly take minutes. `stallTransport` in `store/azure/transport.go`
+bounds the one thing that is never honest — delivering nothing at all — and the
+failure it raises is marked `retryx.ErrRetryable` and carries a cause of its
+own, so the pipeline reissues the request and `engine.interrupted` does not
+mistake it for Ctrl-C.
+
 **Connection pool size is a performance feature.** See `store/azure/transport.go`.
 The SDK's default of ten idle connections per host means a run with sixty-four
 jobs re-establishes a connection for most requests. It costs nothing against a

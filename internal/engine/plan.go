@@ -575,6 +575,7 @@ func (e *Engine) planSymlink(ctx context.Context, src *store.Node, dst *uri.URL,
 	out chan<- *task, display string) error {
 
 	if dst.IsRemote() && !e.preservesToBlob() {
+		e.prog.Saw(1)
 		e.note("skipping symbolic link %s: blob storage has no links "+
 			"(use -L to copy what it points at, or -a to record it)",
 			quote(src.URL.Display()))
@@ -588,6 +589,7 @@ func (e *Engine) planSymlink(ctx context.Context, src *store.Node, dst *uri.URL,
 func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 	out chan<- *task, display string) error {
 
+	e.prog.Saw(1)
 	t := &task{src: src, dst: dst, display: display}
 
 	if e.needsDestCheck() {

@@ -372,6 +372,11 @@ azcp -r --newer-than 7d azure://acct/logs/ ./recent/
 azcp -r --newer-than 2024-01-01 --older-than 2024-02-01 ./archive azure://acct/jan/
 ```
 
+A connection that goes quiet is abandoned after a minute and tried again. The
+bound is on delivering *nothing*, not on taking a long time, so a large block
+arriving slowly is left alone — but a socket that has silently stopped no longer
+costs the eleven minutes it takes TCP to notice.
+
 ## Interrupted transfers
 
 `--resume` continues a transfer that stopped part-way rather than starting it

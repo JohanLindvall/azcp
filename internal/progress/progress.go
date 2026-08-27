@@ -104,6 +104,10 @@ type Reporter struct {
 	spinner int
 	samples []sample
 
+	// seenFiles counts what the scan has looked at, whether or not it turned
+	// into work. On a re-run that skips almost everything it is the only
+	// number that moves, and so the only sign the scan is getting anywhere.
+	seenFiles    atomic.Int64
 	plannedFiles atomic.Int64
 	plannedBytes atomic.Int64
 	doneFiles    atomic.Int64
@@ -251,6 +255,12 @@ func (r *Reporter) Plan(files, bytes int64) {
 	r.plannedFiles.Add(files)
 	r.plannedBytes.Add(bytes)
 }
+
+// Saw records a file the scan has considered, copied or not.
+func (r *Reporter) Saw(n int64) { r.seenFiles.Add(n) }
+
+// Seen reports how many files the scan has considered.
+func (r *Reporter) Seen() int64 { return r.seenFiles.Load() }
 
 // Skipped records a file that was deliberately not copied.
 func (r *Reporter) Skipped(n int64) { r.skippedFiles.Add(n) }
