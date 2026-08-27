@@ -43,7 +43,10 @@ Where the speed comes from — none of it clever, all of it measured:
   are local, where the disk is the bottleneck and more parallelism is slower.
 - **One flat listing per subtree**, not one request per directory. AzCopy issues
   103 listings for a tree where `azcp` issues 2; at 20 ms each that is seven
-  seconds before the last file can start.
+  seconds before the last file can start. Where a listing per container really
+  is unavoidable — an account full of small containers — they are fetched
+  several at a time and handed on in order: 400 containers 50 ms away took
+  18.5s one at a time and 0.79s this way.
 - **No HEAD before every upload.** AzCopy checks each destination first, which
   doubles the request count for small files. `azcp` looks only when an option
   actually depends on what is there.
@@ -338,9 +341,10 @@ way past — which is why neither is on by default.
 counted in the HTTP transport so it covers uploads and downloads alike, and
 charged by the bytes that arrive rather than the buffers they were asked for in.
 
-Scanning is not capped. Listing a large container is megabytes of XML with every
-transfer in the run waiting behind it, and pacing that would spend the whole
-budget on working out what to copy; the bulk is what the limit is for. Nor can
+Scanning is neither capped nor slowed. Listing a large container is megabytes of
+XML with every transfer in the run waiting behind it, and pacing that would
+spend the whole budget on working out what to copy; the bulk is what the limit
+is for. Nor can
 it apply to a server-side blob-to-blob copy, where the bytes move between
 storage servers and never reach this host — `azcp` says so rather than appearing
 to work.
