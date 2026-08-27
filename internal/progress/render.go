@@ -141,6 +141,11 @@ func (r *Reporter) headerLine(width int, phase string, scanning bool,
 	if f := r.failedFiles.Load(); f > 0 {
 		parts = append(parts, r.pal.bad(fmt.Sprintf("%s failed", humanize.Count(f))))
 	}
+	// A link that is degrading shows up here first, and waiting for the closing
+	// summary to say so is waiting until it no longer matters.
+	if n := r.retries.Load(); n > 0 {
+		parts = append(parts, r.pal.warn(fmt.Sprintf("%s retried", humanize.Count(n))))
+	}
 	if s := r.skippedFiles.Load(); s > 0 {
 		parts = append(parts, r.pal.warn(fmt.Sprintf("%s skipped", humanize.Count(s))))
 	}

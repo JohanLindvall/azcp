@@ -163,6 +163,14 @@ argument — use `uri.URL.Display()`, which renders a SAS as `?<sas>`.
 stderr with that line (`logx.SharesTerminal`). Adding a `log.Error` beside a
 user-facing message prints the same problem twice.
 
+**The scan must not be paced by the transfers.** The task queue is deep — far
+deeper than the worker count — because a queue of four per worker fills within
+seconds against large files, and a blocked scanner examines nothing at all after
+that, not even the files it would have skipped. The total, the count of what has
+been seen and any estimate of when the run ends all come from the scan, so
+starving it means none of them exist until it is over. The queue holds pointers
+to nodes the walk has already built, so depth is cheap.
+
 **Scanning decides on one goroutine on purpose.** It preserves `cp`'s ordering,
 creates directories before their contents, and keeps `-i` prompts serial. The
 overwrite decisions (`-n`, `-i`, `-u`, `-b`) live there, not in the workers.

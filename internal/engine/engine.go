@@ -177,7 +177,14 @@ func (e *Engine) Run(ctx context.Context) (int64, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	tasks := make(chan *task, e.opt.Jobs*4)
+	// Deep enough that the scan is not held to the rate the transfers retire
+	// work at. A queue of four per worker fills in seconds against large files,
+	// and from then on nothing is examined at all — not even the files that
+	// would have been skipped — so the total, the count of what was seen and
+	// any estimate of when it will end all stay unknown until it is over. The
+	// queue holds pointers to nodes the walk has already built, so depth costs
+	// little beyond keeping them alive.
+	tasks := make(chan *task, max(e.opt.Jobs*4, 8192))
 	var wg sync.WaitGroup
 	for i := 0; i < e.opt.Jobs; i++ {
 		wg.Add(1)

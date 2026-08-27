@@ -136,7 +136,9 @@ func (s *Store) clientOptions() *azblob.ClientOptions {
 // httpClient returns the shared client, built once so every account in a run
 // draws on the same connection pool.
 func (s *Store) httpClient() *http.Client {
-	s.clientOnce.Do(func() { s.http = newHTTPClient(s.cfg.PeakRequests, s.cfg.BytesPerSecond) })
+	s.clientOnce.Do(func() {
+		s.http = newHTTPClient(s.cfg.PeakRequests+s.listAhead(), s.cfg.BytesPerSecond)
+	})
 	return s.http
 }
 

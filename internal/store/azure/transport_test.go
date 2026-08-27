@@ -39,8 +39,9 @@ func stalledServer(t *testing.T) *httptest.Server {
 func TestStalledResponseFailsAndIsRetryable(t *testing.T) {
 	srv := stalledServer(t)
 	c := &http.Client{Transport: &stallTransport{
-		base:    http.DefaultTransport,
-		timeout: 150 * time.Millisecond,
+		base:           http.DefaultTransport,
+		timeout:        150 * time.Millisecond,
+		controlTimeout: 150 * time.Millisecond,
 	}}
 
 	resp, err := c.Get(srv.URL)
@@ -84,8 +85,9 @@ func TestSlowButMovingResponseIsLeftAlone(t *testing.T) {
 	defer srv.Close()
 
 	c := &http.Client{Transport: &stallTransport{
-		base:    http.DefaultTransport,
-		timeout: 150 * time.Millisecond,
+		base:           http.DefaultTransport,
+		timeout:        150 * time.Millisecond,
+		controlTimeout: 150 * time.Millisecond,
 	}}
 	resp, err := c.Get(srv.URL)
 	if err != nil {
