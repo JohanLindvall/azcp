@@ -272,11 +272,19 @@ func parseAge(s string) (time.Duration, error) {
 // transfer tools do. A copy that never leaves the filesystem is the opposite
 // case — the disk is the bottleneck, and seeking between many files makes it
 // slower rather than faster — so it stays modest.
+//
+// It also decides how many sockets a run opens, since HTTP/1.1 carries one
+// request per connection and each job may have --part-concurrency of them
+// outstanding. Thirty-two jobs of four parts is a hundred and twenty-eight
+// requests in flight, which is far more than a fast link needs — at 70 MB/s
+// and a 15 ms round trip there is about a megabyte in flight altogether, eight
+// kilobytes per connection — and it is half the sockets the figure used to
+// open. Middleboxes count flows; links count bytes.
 func defaultJobs(network bool) int {
 	if !network {
 		return min(4, max(runtime.NumCPU(), 1))
 	}
-	return min(64, max(16, 4*runtime.NumCPU()))
+	return min(32, max(8, 2*runtime.NumCPU()))
 }
 
 // TouchesNetwork reports whether either side of the copy is a remote URL.

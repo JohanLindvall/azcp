@@ -450,13 +450,21 @@ blocks moved `--part-concurrency` at a time. Uploads stage blocks in parallel
 and downloads fetch ranges in parallel; a file that does not fill more than one
 block goes up in a single request instead.
 
-`--jobs` defaults to the machine — four times the core count, between 16 and 64
-— when either side is a URL, because a network transfer spends nearly all its
-time waiting and it is the number in flight that fills the link. A copy that
-never leaves the filesystem defaults to four instead: there the disk is the
+`--jobs` defaults to the machine — twice the core count, between 8 and 32 — when
+either side is a URL, because a network transfer spends nearly all its time
+waiting and it is the number in flight that fills the link. A copy that never
+leaves the filesystem defaults to four instead: there the disk is the
 bottleneck, and seeking between many files makes it slower rather than faster.
 The HTTP connection pool is sized to match, so a busy run is not re-establishing
 a connection for every request.
+
+That default also decides how many sockets a run opens: HTTP/1.1 carries one
+request per connection, and each job may have `--part-concurrency` of them
+outstanding. Thirty-two jobs of four parts is a hundred and twenty-eight
+requests in flight, which is more than a fast link needs — at 70 MB/s over a
+15 ms round trip there is about a megabyte in flight altogether — and few enough
+that the middleboxes on the way, which count flows rather than bytes, are not
+being asked to hold hundreds open. Raise `--jobs` where the path can take it.
 
 A recursive copy *from* blob storage enumerates the whole subtree with one flat
 listing rather than a request per prefix. A tree of a few hundred directories
