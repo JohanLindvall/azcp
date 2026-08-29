@@ -365,9 +365,22 @@ func (o *Options) apply(f cpflags.Flag) error {
 			return err
 		}
 		o.Backup = mode
+	case "b":
+		// GNU's -b is --backup without the argument.
+		mode, err := parseBackup("", false)
+		if err != nil {
+			return err
+		}
+		o.Backup = mode
 	case "copy-contents":
 		// Only affects recursion into special files, which this tool never
 		// does; accepted so existing command lines keep working.
+	case "debug":
+		// cp's --debug explains how each file was copied. The nearest
+		// equivalents here are -v and the debug-level log records, which is
+		// where the transfer decisions are narrated.
+		o.Verbose = true
+		o.LogLevel = "debug"
 	case "d":
 		o.Deref = DerefNever
 		o.Preserve.Links = true
@@ -446,7 +459,9 @@ func (o *Options) apply(f cpflags.Flag) error {
 		o.HasTargetDir = true
 	case "no-target-directory", "T":
 		o.NoTargetDirectory = true
-	case "update", "u":
+	case "u":
+		o.Update = UpdateOlder
+	case "update":
 		v := valueOr(f, "older")
 		switch v {
 		case "all":
