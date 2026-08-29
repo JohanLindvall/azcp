@@ -84,16 +84,19 @@ func openResumeFile(dst string, src *store.Node, blockSize int64) (*resumeFile, 
 	}
 
 	fresh := len(r.have) == 0
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// A fresh record truncates at open rather than truncating the handle
+	// afterwards: Windows refuses Truncate on a file opened for appending,
+	// which quietly left --resume downloads there with no record at all.
+	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	if fresh {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	}
+	f, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
 		return nil, err
 	}
 	r.f = f
 	if fresh {
-		if err := f.Truncate(0); err != nil {
-			f.Close()
-			return nil, err
-		}
 		if _, err := fmt.Fprintln(f, header); err != nil {
 			f.Close()
 			return nil, err

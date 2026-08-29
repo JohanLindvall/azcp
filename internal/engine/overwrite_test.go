@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -94,7 +95,8 @@ func TestAttributesOnlyKeepsDestinationData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o640 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o640 {
+		// Windows has no POSIX mode to copy.
 		t.Errorf("mode not copied: %v", fi.Mode())
 	}
 }

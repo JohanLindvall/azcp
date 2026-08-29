@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -101,7 +102,9 @@ func TestCopySymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := os.Readlink(filepath.Join(dir, "copy"))
-	if err != nil || got != "target/elsewhere" {
+	// Windows reports the target with its own separators; the link is the
+	// same one.
+	if err != nil || filepath.ToSlash(got) != "target/elsewhere" {
 		t.Errorf("link points at %q (%v)", got, err)
 	}
 }
@@ -129,7 +132,8 @@ func TestApplyAttrsModeAndTimes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if di.Mode().Perm() != 0o750 {
+	if runtime.GOOS != "windows" && di.Mode().Perm() != 0o750 {
+		// Windows has no POSIX mode to preserve.
 		t.Errorf("mode %v", di.Mode())
 	}
 	if !di.ModTime().Equal(when) {
