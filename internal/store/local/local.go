@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 
 	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/uri"
@@ -43,14 +42,14 @@ func (s *Store) Stat(_ context.Context, u *uri.URL, follow bool) (*store.Node, e
 		if terr != nil {
 			// A dangling link: report it as it is, so the caller can decide
 			// whether that is an error (cp -L) or fine (cp -P).
-			return s.node(u, fi)
+			return s.node(u, fi), nil
 		}
 		fi = target
 	}
-	return s.node(u, fi)
+	return s.node(u, fi), nil
 }
 
-func (s *Store) node(u *uri.URL, fi fs.FileInfo) (*store.Node, error) {
+func (s *Store) node(u *uri.URL, fi fs.FileInfo) *store.Node {
 	n := &store.Node{
 		URL:     u,
 		Size:    fi.Size(),
@@ -76,7 +75,7 @@ func (s *Store) node(u *uri.URL, fi fs.FileInfo) (*store.Node, error) {
 	default:
 		n.Kind = store.KindOther
 	}
-	return n, nil
+	return n
 }
 
 // ReadDir lists the immediate children of a directory, in lexical order.
@@ -95,13 +94,9 @@ func (s *Store) ReadDir(_ context.Context, u *uri.URL) ([]*store.Node, error) {
 				"path", filepath.Join(u.Path, e.Name()), "error", err)
 			continue
 		}
-		n, err := s.node(u.Join(e.Name()), fi)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, n)
+		out = append(out, s.node(u.Join(e.Name()), fi))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
+	// os.ReadDir has already sorted the entries by name.
 	return out, nil
 }
 
@@ -116,6 +111,15 @@ func (s *Store) WalkAll(ctx context.Context, u *uri.URL,
 	}
 	rootDev, _ := deviceOfSys(root.Sys)
 	visited := map[FileID]bool{}
+	if s.Follow {
+		// The root belongs in the visited set from the start, or a link
+		// pointing back at it re-enters the tree and walks it all twice.
+		if info, err := os.Stat(u.Path); err == nil {
+			if id, _, ok := fileIdentity(u.Path, info); ok {
+				visited[id] = true
+			}
+		}
+	}
 	return s.walk(ctx, u, onError, fn, visited, rootDev, 0)
 }
 

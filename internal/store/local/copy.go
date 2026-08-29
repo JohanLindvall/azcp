@@ -219,10 +219,7 @@ func CopySymlink(srcPath, dstPath string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Symlink(target, dstPath); err != nil {
-		return err
-	}
-	return nil
+	return os.Symlink(target, dstPath)
 }
 
 // Preserve records which attributes to carry across, mirroring cp's
