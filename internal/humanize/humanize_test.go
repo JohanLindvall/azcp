@@ -1,6 +1,7 @@
 package humanize
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -68,6 +69,22 @@ func TestParseSize(t *testing.T) {
 	for _, bad := range []string{"", "abc", "10x", "MiB"} {
 		if _, err := ParseSize(bad); err == nil {
 			t.Errorf("ParseSize(%q) should fail", bad)
+		}
+	}
+}
+
+func TestRate(t *testing.T) {
+	cases := map[float64]string{
+		0:               "—",
+		-5:              "—",
+		math.NaN():      "—",
+		math.Inf(1):     "—",
+		512:             "512 B/s",
+		2 * 1024 * 1024: "2.00 MiB/s",
+	}
+	for in, want := range cases {
+		if got := Rate(in); got != want {
+			t.Errorf("Rate(%v) = %q, want %q", in, got, want)
 		}
 	}
 }

@@ -66,7 +66,7 @@ func (w *walker) log() *slog.Logger {
 	if w.opts.Log != nil {
 		return w.opts.Log
 	}
-	return slog.New(discardHandler{})
+	return slog.New(slog.DiscardHandler)
 }
 
 func (w *walker) emit(n *Node) {
@@ -220,10 +220,3 @@ func relUnder(base, child string) (string, bool) {
 	}
 	return strings.Join(c[len(b):], "/"), true
 }
-
-type discardHandler struct{ slog.Handler }
-
-func (discardHandler) Enabled(context.Context, slog.Level) bool  { return false }
-func (discardHandler) Handle(context.Context, slog.Record) error { return nil }
-func (d discardHandler) WithAttrs([]slog.Attr) slog.Handler      { return d }
-func (d discardHandler) WithGroup(string) slog.Handler           { return d }

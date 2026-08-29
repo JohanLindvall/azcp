@@ -163,7 +163,7 @@ func (r *Reporter) barLine(width int, doneB, totalB int64, rate float64) string 
 		eta := time.Duration(float64(totalB-doneB)/rate) * time.Second
 		right += fmt.Sprintf("  eta %-7s", humanize.Duration(eta))
 	} else {
-		right += strings.Repeat(" ", 12)
+		right += strings.Repeat(" ", len("  eta ")+7)
 	}
 	pctW := 5
 	barW := width - humanize.Width(right) - pctW - 2
@@ -197,7 +197,7 @@ func (r *Reporter) taskLine(width int, t *Task) string {
 	if el := time.Since(t.start).Seconds(); el > 0.4 && got > 0 {
 		rateStr = humanize.Rate(float64(got) / el)
 	}
-	right := fmt.Sprintf(" %s %4s %10s", "", "", "")
+	var right string
 	if t.size > 0 {
 		frac := min(max(float64(got)/float64(t.size), 0), 1)
 		right = fmt.Sprintf(" %s %3.0f%% %10s", r.plainBar(barW, frac), frac*100, rateStr)
@@ -319,8 +319,8 @@ func (r *Reporter) spin() string {
 	return r.pal.accent(spinnerFrames[r.spinner%len(spinnerFrames)])
 }
 
-// rate averages throughput over a short trailing window. The caller must hold
-// r.mu.
+// rate averages throughput over a short trailing window. The samples belong to
+// the paint lock, which the caller must hold.
 func (r *Reporter) rate(doneB int64) float64 {
 	now := time.Now()
 	r.samples = append(r.samples, sample{now, doneB})

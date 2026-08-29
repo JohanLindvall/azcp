@@ -5,6 +5,7 @@ package humanize
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -33,7 +34,7 @@ func Bytes(n int64) string {
 // Rate renders a transfer rate, e.g. "112 MiB/s". A non-positive or
 // non-finite rate renders as an em dash so unknown speeds do not print "0 B/s".
 func Rate(bytesPerSec float64) string {
-	if bytesPerSec <= 0 || bytesPerSec != bytesPerSec {
+	if bytesPerSec <= 0 || math.IsNaN(bytesPerSec) || math.IsInf(bytesPerSec, 0) {
 		return "—"
 	}
 	val := bytesPerSec

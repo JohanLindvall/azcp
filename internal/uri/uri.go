@@ -206,7 +206,6 @@ func (u *URL) PathPart() string {
 func (u *URL) WithPathPart(p string) *URL {
 	c := *u
 	c.TrailingSlash = false
-	c.SAS = u.SAS
 	if !u.IsRemote() {
 		c.Path = p
 		c.raw = p
