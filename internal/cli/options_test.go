@@ -158,6 +158,15 @@ func TestMetadataParsing(t *testing.T) {
 	}
 }
 
+func TestCopyMetadataFlag(t *testing.T) {
+	if o := mustParse(t, "a", "b"); o.CopyMetadata {
+		t.Error("--copy-metadata should be off by default")
+	}
+	if o := mustParse(t, "--copy-metadata", "a", "b"); !o.CopyMetadata {
+		t.Error("--copy-metadata was not recorded")
+	}
+}
+
 func TestParseTimeSpec(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	if got, err := ParseTimeSpec("2024-05-06", now); err != nil ||

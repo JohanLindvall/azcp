@@ -129,6 +129,12 @@ func (o TransferOptions) httpHeadersWithMD5(name string, sum []byte) *blob.HTTPH
 	return h
 }
 
+// anyHeader reports whether any content header was set on the command line.
+func (o TransferOptions) anyHeader() bool {
+	return o.ContentType != "" || o.ContentEncoding != "" || o.ContentDisposition != "" ||
+		o.ContentLanguage != "" || o.CacheControl != ""
+}
+
 // metadata renders the metadata map the way the SDK wants it.
 func (o TransferOptions) metadata() map[string]*string {
 	if len(o.Metadata) == 0 {
@@ -178,6 +184,54 @@ func guessContentType(name string) string {
 	return ""
 }
 
+// inParallel runs fn for every index in [0, count), at most workers at a time,
+// abandoning the rest after the first failure. It reports that first error, or
+// the caller's cancellation when no work failed. It is the scaffolding shared
+// by block uploads, ranged downloads and staged server-side copies, which all
+// move the pieces of one file concurrently and must stop as one.
+func inParallel(ctx context.Context, count, workers int, fn func(ctx context.Context, i int) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		firstErr  error
+		semaphore = make(chan struct{}, workers)
+	)
+	fail := func(err error) {
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+			// Nothing else can succeed once a piece is lost; the whole is only
+			// ever assembled from every piece.
+			cancel()
+		}
+		mu.Unlock()
+	}
+	for i := range count {
+		select {
+		case semaphore <- struct{}{}:
+		case <-ctx.Done():
+			wg.Wait()
+			if firstErr != nil {
+				return firstErr
+			}
+			return ctx.Err()
+		}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-semaphore }()
+			if err := fn(ctx, i); err != nil {
+				fail(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	return firstErr
+}
+
 // Upload writes a local file to a blob, staging blocks in parallel.
 func (s *Store) Upload(ctx context.Context, srcPath string, dst *uri.URL, o TransferOptions) error {
 	return s.withSignIn(ctx, func() error { return s.upload(ctx, srcPath, dst, o) })
@@ -213,14 +267,14 @@ func (s *Store) upload(ctx context.Context, srcPath string, dst *uri.URL, o Tran
 			BlockSize:        o.blockSize(size),
 			Concurrency:      uint16(o.concurrency()),
 			Progress:         o.Progress,
-			HTTPHeaders:      o.httpHeadersWithMD5(srcPath, sum),
+			HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, sum),
 			Metadata:         o.metadata(),
 			AccessConditions: o.accessConditions(),
 			AccessTier:       o.tier(),
 		})
 		return err
 	}
-	return s.uploadBlocks(ctx, f, size, srcPath, dst, sum, o)
+	return s.uploadBlocks(ctx, f, size, sum, dst, o)
 }
 
 // uploadBlocks stages a file as blocks and commits them.
@@ -233,7 +287,7 @@ func (s *Store) upload(ctx context.Context, srcPath string, dst *uri.URL, o Tran
 // the link where it hurts: high bandwidth and high latency, where one stream
 // cannot fill the pipe.
 func (s *Store) uploadBlocks(ctx context.Context, f io.ReaderAt, size int64,
-	srcPath string, dst *uri.URL, sum []byte, o TransferOptions) error {
+	sum []byte, dst *uri.URL, o TransferOptions) error {
 
 	c, err := s.client(ctx, dst)
 	if err != nil {
@@ -260,77 +314,38 @@ func (s *Store) uploadBlocks(ctx context.Context, f io.ReaderAt, size int64,
 		}
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var (
-		wg        sync.WaitGroup
-		mu        sync.Mutex
-		firstErr  error
-		staged_   atomic.Int64
-		semaphore = make(chan struct{}, o.concurrency())
-	)
-	fail := func(err error) {
-		mu.Lock()
-		if firstErr == nil {
-			firstErr = err
-			// Nothing else can succeed once a block is lost, and the blob is
-			// only written when every block commits.
-			cancel()
-		}
-		mu.Unlock()
-	}
-
-	for i := range count {
-		if id := blockID(i); staged[id] {
-			ids[i] = id
-			offset := int64(i) * blockSize
+	var sent atomic.Int64
+	err = inParallel(ctx, count, o.concurrency(), func(ctx context.Context, i int) error {
+		offset := int64(i) * blockSize
+		n := min(blockSize, size-offset)
+		id := blockID(i)
+		ids[i] = id
+		if staged[id] {
 			if o.Progress != nil {
-				o.Progress(staged_.Add(min(blockSize, size-offset)))
+				o.Progress(sent.Add(n))
 			}
-			continue
+			return nil
 		}
-		select {
-		case semaphore <- struct{}{}:
-		case <-ctx.Done():
-			wg.Wait()
-			if firstErr != nil {
-				return firstErr
-			}
-			return ctx.Err()
+		// A SectionReader over the open file lets every block read its own
+		// range concurrently, and lets the pipeline rewind one to retry it.
+		body := streaming.NopCloser(io.NewSectionReader(f, offset, n))
+		if _, err := bb.StageBlock(ctx, id, body, nil); err != nil {
+			return fmt.Errorf("staging block %d of %d: %w", i+1, count, err)
 		}
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			defer func() { <-semaphore }()
-
-			offset := int64(i) * blockSize
-			n := min(blockSize, size-offset)
-			id := blockID(i)
-			ids[i] = id
-
-			// A SectionReader over the open file lets every block read its own
-			// range concurrently, and lets the pipeline rewind one to retry it.
-			body := streaming.NopCloser(io.NewSectionReader(f, offset, n))
-			if _, err := bb.StageBlock(ctx, id, body, nil); err != nil {
-				fail(fmt.Errorf("staging block %d of %d: %w", i+1, count, err))
-				return
-			}
-			// Counted on completion rather than as bytes are read, so a
-			// retried block cannot make the total go backwards.
-			if o.Progress != nil {
-				o.Progress(staged_.Add(n))
-			}
-		}(i)
-	}
-	wg.Wait()
-	if firstErr != nil {
-		return firstErr
+		// Counted on completion rather than as bytes are read, so a retried
+		// block cannot make the total go backwards.
+		if o.Progress != nil {
+			o.Progress(sent.Add(n))
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	_, err = bb.CommitBlockList(ctx, ids, &blockblob.CommitBlockListOptions{
 		Metadata:         o.metadata(),
-		HTTPHeaders:      o.httpHeadersWithMD5(srcPath, sum),
+		HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, sum),
 		AccessConditions: o.accessConditions(),
 		Tier:             o.tier(),
 	})
@@ -344,32 +359,94 @@ func (s *Store) uploadBlocks(ctx context.Context, f io.ReaderAt, size int64,
 // parallel. It is what the benchmark uses, since the bytes come from memory
 // rather than from a file.
 func (s *Store) UploadAt(ctx context.Context, src io.ReaderAt, size int64,
-	name string, dst *uri.URL, o TransferOptions) error {
+	dst *uri.URL, o TransferOptions) error {
 
 	return s.withSignIn(ctx, func() error {
-		return s.uploadBlocks(ctx, src, size, name, dst, nil, o)
+		return s.uploadBlocks(ctx, src, size, nil, dst, o)
 	})
 }
 
 // UploadStream writes an arbitrary reader to a blob. It is used when the source
-// size is not known ahead of time, such as when reading from a pipe.
+// size is not known ahead of time, such as when reading from a pipe. Note that
+// a stream cannot be replayed, so the sign-in retry only helps when the failure
+// came before anything was read.
 func (s *Store) UploadStream(ctx context.Context, r io.Reader, dst *uri.URL, o TransferOptions) error {
-	c, err := s.client(ctx, dst)
-	if err != nil {
+	return s.withSignIn(ctx, func() error {
+		c, err := s.client(ctx, dst)
+		if err != nil {
+			return err
+		}
+		_, err = c.UploadStream(ctx, dst.Container, dst.Key, r, &blockblob.UploadStreamOptions{
+			BlockSize:        o.blockSize(0),
+			Concurrency:      o.concurrency(),
+			Metadata:         o.metadata(),
+			HTTPHeaders:      o.httpHeaders(dst.Key),
+			AccessConditions: o.accessConditions(),
+			AccessTier:       o.tier(),
+		})
 		return err
-	}
-	_, err = c.UploadStream(ctx, dst.Container, dst.Key, r, &blockblob.UploadStreamOptions{
-		BlockSize:        o.blockSize(0),
-		Concurrency:      o.concurrency(),
-		Metadata:         o.metadata(),
-		HTTPHeaders:      o.httpHeaders(dst.Key),
-		AccessConditions: o.accessConditions(),
-		AccessTier:       o.tier(),
 	})
-	if err != nil {
-		return err
-	}
-	return nil
+}
+
+// PutAttrs applies metadata, headers and tier to a blob without touching its
+// content, which is what --attributes-only means: cp leaves an existing
+// destination's data exactly as it found it. Only when nothing is there does
+// it degenerate to creating an empty blob, as cp creates an empty file.
+func (s *Store) PutAttrs(ctx context.Context, dst *uri.URL, o TransferOptions) error {
+	return s.withSignIn(ctx, func() error {
+		c, err := s.client(ctx, dst)
+		if err != nil {
+			return err
+		}
+		bc := c.ServiceClient().NewContainerClient(dst.Container).NewBlobClient(dst.Key)
+		props, err := bc.GetProperties(ctx, nil)
+		if isNotFound(err) {
+			bb := c.ServiceClient().NewContainerClient(dst.Container).NewBlockBlobClient(dst.Key)
+			_, err := bb.Upload(ctx, streaming.NopCloser(strings.NewReader("")),
+				&blockblob.UploadOptions{
+					Metadata:         o.metadata(),
+					HTTPHeaders:      o.httpHeaders(dst.Key),
+					AccessConditions: o.accessConditions(),
+					Tier:             o.tier(),
+				})
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		if m := o.metadata(); m != nil {
+			if _, err := bc.SetMetadata(ctx, m, nil); err != nil {
+				return err
+			}
+		}
+		if o.anyHeader() {
+			// Set Blob Properties clears every header it is not given, so the
+			// ones not being changed are carried over from what is there.
+			keep := func(override string, current *string) *string {
+				if override != "" {
+					return &override
+				}
+				return current
+			}
+			_, err := bc.SetHTTPHeaders(ctx, blob.HTTPHeaders{
+				BlobContentType:        keep(o.ContentType, props.ContentType),
+				BlobContentEncoding:    keep(o.ContentEncoding, props.ContentEncoding),
+				BlobContentDisposition: keep(o.ContentDisposition, props.ContentDisposition),
+				BlobContentLanguage:    keep(o.ContentLanguage, props.ContentLanguage),
+				BlobCacheControl:       keep(o.CacheControl, props.CacheControl),
+				BlobContentMD5:         props.ContentMD5,
+			}, nil)
+			if err != nil {
+				return err
+			}
+		}
+		if t := o.tier(); t != nil {
+			if _, err := bc.SetTier(ctx, *t, nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // PutMarker writes a zero-length blob carrying only metadata. It is how a
@@ -499,6 +576,10 @@ func (s *Store) openRead(ctx context.Context, src *store.Node) (io.ReadCloser, e
 //
 // Only when none of those works do the bytes pass through this process.
 func (s *Store) Copy(ctx context.Context, src *store.Node, dst *uri.URL, o TransferOptions) error {
+	return s.withSignIn(ctx, func() error { return s.copy(ctx, src, dst, o) })
+}
+
+func (s *Store) copy(ctx context.Context, src *store.Node, dst *uri.URL, o TransferOptions) error {
 	if !s.copyRouteDisabled(dst, routeSync) {
 		srcURL, auth, err := s.copySource(ctx, src.URL, dst)
 		if err != nil {
@@ -591,7 +672,7 @@ func (s *Store) asyncCopy(ctx context.Context, src *store.Node, dst *uri.URL, o 
 	if err != nil {
 		return err
 	}
-	srcURL := src.URL.ServiceURL() + "/" + src.URL.Container + "/" + src.URL.Key
+	srcURL := blobURL(src.URL)
 	if src.URL.SAS != "" {
 		srcURL += "?" + src.URL.SAS
 	} else if sas := lookupStatic(src.URL.Account).sas; sas != "" {
@@ -600,6 +681,9 @@ func (s *Store) asyncCopy(ctx context.Context, src *store.Node, dst *uri.URL, o 
 
 	dstBlob := c.ServiceClient().NewContainerClient(dst.Container).NewBlobClient(dst.Key)
 	started, err := dstBlob.StartCopyFromURL(ctx, srcURL, &blob.StartCopyFromURLOptions{
+		// nil means the service copies the source's own metadata, which is
+		// what a copy with nothing overridden should do.
+		Metadata:         o.metadata(),
 		AccessConditions: o.accessConditions(),
 		Tier:             o.tier(),
 	})
@@ -725,7 +809,7 @@ func unsupportedByEndpoint(err error) bool {
 // Which of these applies depends on how the source is authenticated. Failing
 // here is not fatal: the caller tries another route.
 func (s *Store) copySource(ctx context.Context, src, dst *uri.URL) (string, *string, error) {
-	base := src.ServiceURL() + "/" + src.Container + "/" + src.Key
+	base := blobURL(src)
 	if src.SAS != "" {
 		return base + "?" + src.SAS, nil, nil
 	}
@@ -762,6 +846,7 @@ func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 	if src.Size <= maxSyncCopyBytes {
 		_, err := bb.UploadBlobFromURL(ctx, srcURL, &blockblob.UploadBlobFromURLOptions{
 			CopySourceAuthorization: auth,
+			Metadata:                o.metadata(),
 			AccessConditions:        o.accessConditions(),
 			Tier:                    o.tier(),
 			HTTPHeaders:             o.httpHeaders(dst.Key),
@@ -775,31 +860,35 @@ func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 		return nil
 	}
 
-	// Too large for one request: stage it a block at a time, still without the
-	// bytes passing through this process.
+	// Too large for one request: stage it block by block, still without the
+	// bytes passing through this process. The blocks move --part-concurrency
+	// at a time, exactly as an upload's would — the requests are cheap to
+	// carry, and it is the service doing the reading at the far end.
 	bs := o.blockSize(src.Size)
-	var ids []string
-	var done int64
-	for off := int64(0); off < src.Size; off += bs {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		count := min(bs, src.Size-off)
-		id := blockID(len(ids))
-		_, err := bb.StageBlockFromURL(ctx, id, srcURL, &blockblob.StageBlockFromURLOptions{
+	count := int((src.Size + bs - 1) / bs)
+	ids := make([]string, count)
+	var done atomic.Int64
+	err = inParallel(ctx, count, o.concurrency(), func(ctx context.Context, i int) error {
+		off := int64(i) * bs
+		n := min(bs, src.Size-off)
+		ids[i] = blockID(i)
+		_, err := bb.StageBlockFromURL(ctx, ids[i], srcURL, &blockblob.StageBlockFromURLOptions{
 			CopySourceAuthorization: auth,
-			Range:                   blob.HTTPRange{Offset: off, Count: count},
+			Range:                   blob.HTTPRange{Offset: off, Count: n},
 		})
 		if err != nil {
 			return fmt.Errorf("stage block at offset %d: %w", off, err)
 		}
-		ids = append(ids, id)
-		done += count
 		if o.Progress != nil {
-			o.Progress(done)
+			o.Progress(done.Add(n))
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	_, err = bb.CommitBlockList(ctx, ids, &blockblob.CommitBlockListOptions{
+		Metadata:         o.metadata(),
 		AccessConditions: o.accessConditions(),
 		Tier:             o.tier(),
 		HTTPHeaders:      o.httpHeaders(dst.Key),
@@ -831,14 +920,12 @@ func (s *Store) streamCopy(ctx context.Context, src *store.Node, dst *uri.URL, o
 	_, err = c.UploadStream(ctx, dst.Container, dst.Key, counted, &blockblob.UploadStreamOptions{
 		BlockSize:        o.blockSize(src.Size),
 		Concurrency:      o.concurrency(),
+		Metadata:         o.metadata(),
 		HTTPHeaders:      o.httpHeaders(dst.Key),
 		AccessConditions: o.accessConditions(),
 		AccessTier:       o.tier(),
 	})
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 // countingReader reports cumulative bytes pulled from the source, which for a

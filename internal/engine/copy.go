@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -83,11 +84,13 @@ func (e *Engine) upload(ctx context.Context, t *task, pt *progress.Task) error {
 		return err
 	}
 	if e.opt.AttributesOnly {
-		// There is nothing to set on a blob that does not exist, so this
-		// degenerates to creating an empty one.
+		// The attributes, not the data: an existing blob keeps its content and
+		// has its metadata and headers replaced. Only when nothing is there
+		// does this degenerate to creating an empty blob, as cp creates an
+		// empty file.
 		opts := e.transferOptions()
-		opts.Progress = pt.Set
-		return e.az.UploadStream(ctx, strings.NewReader(""), t.dst, opts)
+		opts.Metadata = e.uploadMetadata(t.src)
+		return e.az.PutAttrs(ctx, t.dst, opts)
 	}
 	opts := e.transferOptions()
 	opts.Progress = pt.Set
@@ -105,6 +108,9 @@ func (e *Engine) upload(ctx context.Context, t *task, pt *progress.Task) error {
 func (e *Engine) download(ctx context.Context, t *task, pt *progress.Task) error {
 	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 	switch {
+	case e.opt.AttributesOnly:
+		// The contents stay as they are; only the attributes are wanted.
+		flags = os.O_WRONLY | os.O_CREATE
 	case e.opt.Resume:
 		// Truncating would destroy the very bytes the resume record vouches
 		// for. The ranges still to come are written where they belong.
@@ -158,16 +164,52 @@ func (e *Engine) copyRemote(ctx context.Context, t *task, pt *progress.Task) err
 	}
 	opts := e.transferOptions()
 	opts.Progress = pt.Set
+	// Only some of the copy routes carry properties and metadata across on
+	// their own — the asynchronous Copy Blob does, staging blocks does not —
+	// so the source's are carried explicitly and every route preserves them.
+	// Anything the user set on the command line still wins.
+	if opts.ContentType == "" {
+		opts.ContentType = t.src.ContentType
+	}
+	if opts.ContentEncoding == "" {
+		opts.ContentEncoding = t.src.ContentEncoding
+	}
+	if opts.ContentDisposition == "" {
+		opts.ContentDisposition = t.src.ContentDisposition
+	}
+	if opts.ContentLanguage == "" {
+		opts.ContentLanguage = t.src.ContentLanguage
+	}
+	if opts.CacheControl == "" {
+		opts.CacheControl = t.src.CacheControl
+	}
+	// The source's metadata is on the node only when the scan fetched it
+	// (-a, --preserve or --copy-metadata); without that, the routes where the
+	// service copies metadata itself still preserve it, and the staged and
+	// streamed routes keep only what the service carries.
+	opts.Metadata = t.src.Metadata
+	if len(e.opt.Metadata) > 0 {
+		// --metadata merges over what the source carries, exactly as an
+		// upload merges it over the preserved attributes.
+		merged := make(map[string]string, len(t.src.Metadata)+len(e.opt.Metadata))
+		maps.Copy(merged, t.src.Metadata)
+		maps.Copy(merged, e.opt.Metadata)
+		opts.Metadata = merged
+	}
 	return e.az.Copy(ctx, t.src, t.dst, opts)
 }
 
 // copyLocal handles the filesystem-to-filesystem case, including the link and
 // attribute-only variants cp offers.
-func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) error {
+func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (retErr error) {
 	srcPath, dstPath := t.src.URL.Path, t.dst.Path
 
 	switch {
 	case e.opt.SymbolicLink:
+		// cp refuses a relative source unless the link lands in the current
+		// directory, because the link text would dangle. Making the target
+		// absolute instead produces a working link in exactly the cases cp
+		// errors on, and the identical link everywhere else.
 		return e.replace(t, func() error {
 			target := srcPath
 			if !filepath.IsAbs(target) {
@@ -185,10 +227,16 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) erro
 		return e.replace(t, func() error { return local.CopySymlink(srcPath, dstPath) })
 	}
 
-	// Files that were hard-linked in the source stay linked in the copy.
+	// Files that were hard-linked in the source stay linked in the copy. The
+	// first task for an identity claims it and copies; the rest wait for that
+	// copy and link to it.
 	if e.opt.Preserve.Links {
-		if done, err := e.relinkExisting(t); done || err != nil {
+		linked, c, err := e.awaitHardLink(ctx, t)
+		if linked || err != nil {
 			return err
+		}
+		if c != nil {
+			defer func() { e.settleLink(c, t.dst.Path, retErr == nil) }()
 		}
 	}
 
@@ -227,8 +275,82 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) erro
 	}
 
 	e.applyAttrs(t)
-	e.rememberLink(t)
 	return nil
+}
+
+// linkFuture is the promise the first copy of a hard-linked file makes to the
+// others: done closes once the copy has settled, and path names the file to
+// link to when ok says it landed.
+type linkFuture struct {
+	done chan struct{}
+	path string
+	ok   bool
+}
+
+// linkClaim is the claimant's handle on its own promise.
+type linkClaim struct {
+	id  local.FileID
+	fut *linkFuture
+}
+
+// awaitHardLink decides how this task takes part in hard-link preservation.
+// It returns linked=true when the destination is already in place as a link,
+// a claim when this task is the one that must copy the data, and neither for
+// a file with a single name.
+func (e *Engine) awaitHardLink(ctx context.Context, t *task) (linked bool, claim *linkClaim, err error) {
+	info, statErr := os.Lstat(t.src.URL.Path)
+	if statErr != nil {
+		return false, nil, nil // let the copy itself report the problem
+	}
+	id, nlink, ok := local.IDOf(t.src.URL.Path, info)
+	if !ok || nlink < 2 {
+		return false, nil, nil
+	}
+
+	e.hardLinksMu.Lock()
+	fut := e.hardLinks[id]
+	if fut == nil {
+		fut = &linkFuture{done: make(chan struct{})}
+		e.hardLinks[id] = fut
+		e.hardLinksMu.Unlock()
+		return false, &linkClaim{id: id, fut: fut}, nil
+	}
+	e.hardLinksMu.Unlock()
+
+	// Tasks are handed to workers in the order they were queued, so the
+	// claimant is already running (or finished) by the time this one starts:
+	// waiting on it cannot deadlock, and a cancelled run unblocks everybody.
+	select {
+	case <-fut.done:
+	case <-ctx.Done():
+		return false, nil, ctx.Err()
+	}
+	if !fut.ok {
+		// The first copy failed; copying the data is the best that is left.
+		return false, nil, nil
+	}
+	if err := e.replace(t, func() error { return os.Link(fut.path, t.dst.Path) }); err != nil {
+		e.log.Warn("cannot preserve hard link, copying instead",
+			"source", t.src.URL.Display(), "first_copy", fut.path, "error", err)
+		return false, nil, nil
+	}
+	return true, nil, nil
+}
+
+// settleLink resolves a claim. A failed copy gives the identity back, so a
+// retry of this task — or a later name of the same file — can claim it afresh;
+// anyone already waiting copies the data themselves.
+func (e *Engine) settleLink(c *linkClaim, path string, ok bool) {
+	if ok {
+		c.fut.path, c.fut.ok = path, true
+	} else {
+		e.hardLinksMu.Lock()
+		if e.hardLinks[c.id] == c.fut {
+			delete(e.hardLinks, c.id)
+		}
+		e.hardLinksMu.Unlock()
+	}
+	close(c.fut.done)
 }
 
 // replace performs an operation that cannot overwrite in place, removing an
@@ -293,50 +415,6 @@ func (e *Engine) forceRetryable(err error) bool {
 		return true
 	}
 	return false
-}
-
-// relinkExisting recreates a hard link when this source inode has already been
-// copied. It returns true when the destination is now in place.
-func (e *Engine) relinkExisting(t *task) (bool, error) {
-	info, err := os.Lstat(t.src.URL.Path)
-	if err != nil {
-		return false, nil
-	}
-	id, nlink, ok := local.IDOf(t.src.URL.Path, info)
-	if !ok || nlink < 2 {
-		return false, nil
-	}
-	e.hardLinksMu.Lock()
-	first, seen := e.hardLinks[id]
-	e.hardLinksMu.Unlock()
-	if !seen {
-		return false, nil
-	}
-	if err := e.replace(t, func() error { return os.Link(first, t.dst.Path) }); err != nil {
-		e.log.Warn("cannot preserve hard link, copying instead",
-			"source", t.src.URL.Display(), "first_copy", first, "error", err)
-		return false, nil
-	}
-	return true, nil
-}
-
-func (e *Engine) rememberLink(t *task) {
-	if !e.opt.Preserve.Links {
-		return
-	}
-	info, err := os.Lstat(t.src.URL.Path)
-	if err != nil {
-		return
-	}
-	id, nlink, ok := local.IDOf(t.src.URL.Path, info)
-	if !ok || nlink < 2 {
-		return
-	}
-	e.hardLinksMu.Lock()
-	if _, exists := e.hardLinks[id]; !exists {
-		e.hardLinks[id] = t.dst.Path
-	}
-	e.hardLinksMu.Unlock()
 }
 
 // applyAttrs copies the requested attributes onto a local destination.
@@ -415,21 +493,43 @@ func (e *Engine) backupName(path string) (string, error) {
 }
 
 func hasNumberedBackups(path string) bool {
-	matches, err := filepath.Glob(path + ".~*~")
-	return err == nil && len(matches) > 0
+	n, err := highestNumberedBackup(path)
+	return err == nil && n > 0
 }
 
 func nextNumbered(path string) (string, error) {
-	highest := 0
-	matches, err := filepath.Glob(path + ".~*~")
+	n, err := highestNumberedBackup(path)
 	if err != nil {
 		return "", err
 	}
-	for _, m := range matches {
-		num := strings.TrimSuffix(strings.TrimPrefix(m, path+".~"), "~")
+	return fmt.Sprintf("%s.~%d~", path, n+1), nil
+}
+
+// highestNumberedBackup reads the directory and matches names by hand rather
+// than globbing for them: the path being backed up may itself contain glob
+// metacharacters ("report[1].pdf"), which filepath.Glob would interpret.
+func highestNumberedBackup(path string) (int, error) {
+	dir, base := filepath.Split(path)
+	if dir == "" {
+		dir = "."
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	highest := 0
+	for _, e := range entries {
+		rest, ok := strings.CutPrefix(e.Name(), base+".~")
+		if !ok {
+			continue
+		}
+		num, ok := strings.CutSuffix(rest, "~")
+		if !ok {
+			continue
+		}
 		if n, err := strconv.Atoi(num); err == nil && n > highest {
 			highest = n
 		}
 	}
-	return fmt.Sprintf("%s.~%d~", path, highest+1), nil
+	return highest, nil
 }

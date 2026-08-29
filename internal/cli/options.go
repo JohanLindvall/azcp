@@ -150,6 +150,7 @@ type Options struct {
 	ContentLanguage    string
 	CacheControl       string
 	Metadata           map[string]string
+	CopyMetadata       bool
 	Decompress         bool
 	NewerThan          time.Time
 	OlderThan          time.Time
@@ -637,6 +638,8 @@ func (o *Options) apply(f cpflags.Flag) error {
 			o.Metadata = map[string]string{}
 		}
 		return parseMetadata(f.Value, o.Metadata)
+	case "copy-metadata":
+		o.CopyMetadata = true
 	case "decompress":
 		o.Decompress = true
 	case "newer-than":

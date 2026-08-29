@@ -433,7 +433,14 @@ func (s *Store) readDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) 
 	}
 	// Hierarchical listings return prefixes and blobs in separate groups; sort
 	// so callers see one lexical sequence, as they would from a filesystem.
-	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
+	// Ties — a blob and a prefix sharing a name — put the directory first, so
+	// deduplication below keeps it rather than whichever the sort left there.
+	sort.SliceStable(out, func(i, j int) bool {
+		if ni, nj := out[i].Name(), out[j].Name(); ni != nj {
+			return ni < nj
+		}
+		return out[i].IsDir() && !out[j].IsDir()
+	})
 	return dedupeByName(out), nil
 }
 
@@ -735,7 +742,10 @@ func (s *Store) MkdirMarker(ctx context.Context, u *uri.URL) error {
 	return nil
 }
 
-// Remove deletes a blob.
+// Remove deletes a blob. A directory in this namespace is usually just a
+// prefix with nothing of its own to delete, but an empty one is a zero-byte
+// marker blob, and removing the directory means removing the marker — the
+// same way removing an empty local directory removes something real.
 func (s *Store) Remove(ctx context.Context, u *uri.URL) error {
 	if u.Key == "" {
 		return fmt.Errorf("refusing to delete container %q: "+
@@ -745,13 +755,24 @@ func (s *Store) Remove(ctx context.Context, u *uri.URL) error {
 	if err != nil {
 		return err
 	}
-	if _, err := cc.NewBlobClient(u.Key).Delete(ctx, nil); err != nil {
-		if isNotFound(err) {
-			return notExist(u, err)
-		}
+	err = deleteBlob(ctx, cc, u.Key)
+	if err == nil {
+		return nil
+	}
+	if !isNotFound(err) {
 		return err
 	}
-	return nil
+	if !strings.HasSuffix(u.Key, "/") {
+		if merr := deleteBlob(ctx, cc, u.Key+"/"); merr == nil || !isNotFound(merr) {
+			return merr
+		}
+	}
+	return notExist(u, err)
+}
+
+func deleteBlob(ctx context.Context, cc *container.Client, key string) error {
+	_, err := cc.NewBlobClient(key).Delete(ctx, nil)
+	return err
 }
 
 // ---------------------------------------------------------------------------

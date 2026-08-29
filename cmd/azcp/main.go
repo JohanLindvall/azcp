@@ -124,8 +124,8 @@ func run(argv []string) int {
 			if opt.DryRun {
 				verb = "Would remove"
 			}
-			fmt.Fprintf(os.Stderr, "  %s %d destination entrie(s) the source does not have\n",
-				verb, n)
+			fmt.Fprintf(os.Stderr, "  %s %d destination %s the source does not have\n",
+				verb, n, plural(n, "entry", "entries"))
 		}
 	}
 	reportLogged(opt)
@@ -254,6 +254,13 @@ func writeJSONSummary(prog *progress.Reporter, eng *engine.Engine, opt *cli.Opti
 	}
 	enc := json.NewEncoder(os.Stdout)
 	_ = enc.Encode(summary)
+}
+
+func plural(n int64, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 func colorSupported() bool {

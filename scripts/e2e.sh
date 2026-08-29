@@ -41,7 +41,7 @@ echo
 
 # --- a tree worth copying ---------------------------------------------------
 SRC="$WORK/src"
-mkdir -p "$SRC"/{a/b/c,logs/2024,logs/2023,empty}
+mkdir -p "$SRC"/{a/b/c,logs/2024,logs/2023,empty,hollow/inner}
 echo "hello" > "$SRC/file.txt"
 echo "deep"  > "$SRC/a/b/c/deep.txt"
 echo "note"  > "$SRC/logs/note.md"
@@ -67,6 +67,11 @@ fi
 [ -d "$WORK/down/tree/empty" ] && ok "empty directory round-trips" \
                                || bad "empty directory was lost"
 
+# A directory holding only an empty directory needs no marker of its own — the
+# leaf's marker sits beneath it — but the shape must still round-trip.
+[ -d "$WORK/down/tree/hollow/inner" ] && ok "a nested empty directory round-trips" \
+                                      || bad "a nested empty directory was lost"
+
 # --- wildcards over blob names ----------------------------------------------
 mkdir -p "$WORK/glob"
 "$AZCP" "$AZ/tree/**/*.log" "$WORK/glob" >/dev/null
@@ -89,6 +94,8 @@ if diff -q <(sums "$SRC") <(sums "$WORK/s2s/copy") >/dev/null; then
 else
   bad "blob-to-blob copy differs"
 fi
+[ -d "$WORK/s2s/copy/hollow/inner" ] && ok "a nested empty directory survives blob-to-blob" \
+                                     || bad "blob-to-blob lost the nested empty directory"
 
 # The emulator does not implement the from-URL operations, so this also proves
 # the fallback to the asynchronous Copy Blob route works.
@@ -135,10 +142,10 @@ mkdir -p "$WORK/pruned"
                                || ok "--exclude prunes a whole subtree"
 
 mkdir -p "$WORK/only"
-"$AZCP" -r --include '*.gz' "$AZ/tree" "$WORK/only" >/dev/null
-check "--include selects" "$(find "$WORK/only" -type f -name '*.gz' | wc -l)" \
-                          "$(find "$SRC" -type f -name '*.gz' | wc -l)"
-check "--include excludes the rest" "$(find "$WORK/only" -type f ! -name '*.gz' | wc -l)" "0"
+"$AZCP" -r --include '*.log' "$AZ/tree" "$WORK/only" >/dev/null
+check "--include selects" "$(find "$WORK/only" -type f -name '*.log' | wc -l)" \
+                          "$(find "$SRC" -type f -name '*.log' | wc -l)"
+check "--include excludes the rest" "$(find "$WORK/only" -type f ! -name '*.log' | wc -l)" "0"
 
 # --- integrity --------------------------------------------------------------
 "$AZCP" --put-md5 "$SRC/big.bin" "$AZ/tree/md5.bin" >/dev/null
@@ -175,6 +182,13 @@ check "-a preserves the mode through blob storage" \
 [ -L "$ATTR/back/attrs/link.txt" ] && ok "-a round-trips a symbolic link" \
                                    || bad "the symbolic link did not come back"
 
+# The same tree fetched without -a: --copy-metadata is what lets a blob that
+# records a symbolic link come back as one instead of as an empty file.
+mkdir -p "$ATTR/plain"
+"$AZCP" -r --copy-metadata "$AZ/attrs" "$ATTR/plain" >/dev/null
+[ -L "$ATTR/plain/attrs/link.txt" ] && ok "--copy-metadata downloads a recorded symlink as one" \
+                                    || bad "a recorded symlink flattened to an empty file"
+
 # --- content encoding -------------------------------------------------------
 printf 'compressed payload\n' | gzip -9 > "$WORK/page.gz"
 "$AZCP" --content-encoding=gzip "$WORK/page.gz" "$AZ/page.gz" >/dev/null
@@ -189,6 +203,27 @@ check "--decompress expands and drops the extension" \
 # --- metadata ---------------------------------------------------------------
 "$AZCP" --metadata "batch=nightly,source=e2e" "$SRC/file.txt" "$AZ/meta.txt" >/dev/null
 ok "--metadata is accepted on upload"
+
+# --- attributes-only ---------------------------------------------------------
+echo "original blob" > "$WORK/attronly.txt"
+"$AZCP" "$WORK/attronly.txt" "$AZ/attronly.txt" >/dev/null
+echo "changed locally" > "$WORK/attronly.txt"
+"$AZCP" --attributes-only --metadata stage=e2e "$WORK/attronly.txt" "$AZ/attronly.txt" >/dev/null
+"$AZCP" "$AZ/attronly.txt" "$WORK/attronly-back.txt" >/dev/null
+check "--attributes-only leaves blob content alone" \
+  "$(cat "$WORK/attronly-back.txt")" "original blob"
+
+echo "keep me" > "$WORK/attronly-dl.txt"
+"$AZCP" --attributes-only "$AZ/attronly.txt" "$WORK/attronly-dl.txt" >/dev/null
+check "--attributes-only leaves local content alone" \
+  "$(cat "$WORK/attronly-dl.txt")" "keep me"
+
+# --- attributes survive a blob-to-blob copy ----------------------------------
+"$AZCP" -r --copy-metadata "$AZ/attrs" "$AZ/attrs-copy" >/dev/null
+mkdir -p "$ATTR/copyback"
+"$AZCP" -a "$AZ/attrs-copy" "$ATTR/copyback" >/dev/null
+check "-a metadata survives a blob-to-blob copy" \
+  "$(stat -c '%a' "$ATTR/copyback/attrs-copy/mode.txt" 2>/dev/null)" "4750"
 
 # --- resume -----------------------------------------------------------------
 "$AZCP" --resume "$SRC/big.bin" "$AZ/resume.bin" >/dev/null
@@ -209,6 +244,16 @@ if "$AZCP" "$AZ/synced/stray.txt" "$WORK/stray-check" >/dev/null 2>&1; then
 else
   ok "--delete removes what the source does not have"
 fi
+
+# An empty directory at the destination is a marker blob; --delete removes it.
+mkdir -p "$WORK/sync/vanish"
+"$AZCP" -rT "$WORK/sync" "$AZ/synced" >/dev/null
+rmdir "$WORK/sync/vanish"
+"$AZCP" -rT --delete "$WORK/sync" "$AZ/synced" >/dev/null
+mkdir -p "$WORK/sync-back"
+"$AZCP" -rT "$AZ/synced" "$WORK/sync-back" >/dev/null
+[ -d "$WORK/sync-back/vanish" ] && bad "--delete left an empty directory's marker behind" \
+                                || ok "--delete removes an empty directory's marker"
 
 # --- machine-readable output ------------------------------------------------
 summary=$("$AZCP" --output=json "$SRC/file.txt" "$AZ/json.txt" 2>/dev/null | tail -1)

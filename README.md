@@ -317,6 +317,15 @@ reported when you do not. Directory modes are not kept: a directory that is not
 empty has no object of its own to hang metadata on, and inventing one for every
 directory would litter the container.
 
+Reading each blob's metadata back makes every listing response larger, so it is
+opt-in: `--preserve` and `--decompress` imply it, and `--copy-metadata` asks
+for it by name. That flag is what makes a plain `-r` download turn a recorded
+symbolic link back into one (without it, the link arrives as the empty blob
+that records it), and what lets a blob-to-blob copy carry metadata on every
+route — without it, metadata survives only where the service copies it itself,
+which covers whole-blob copies but not blobs large enough to be staged in
+blocks.
+
 ## Verifying a copy
 
 `--put-md5` records a checksum of the whole file on each uploaded blob, and
@@ -547,8 +556,9 @@ could not be preserved — and `--log-file` sends them to a file instead,
 
 `azcp --help` lists everything, and `cp`'s options mean what they mean in `cp`:
 `-a -b -d -f -i -H -l -L -n -P -p -R -r -s -S -t -T -u -v -x -Z`,
-`--attributes-only --backup --copy-contents --parents --preserve --no-preserve
---reflink --remove-destination --sparse --strip-trailing-slashes --update`.
+`--attributes-only --backup --copy-contents --debug --parents --preserve
+--no-preserve --reflink --remove-destination --sparse --strip-trailing-slashes
+--update`.
 
 Added by `azcp`:
 
@@ -573,6 +583,7 @@ Added by `azcp`:
 | `--newer-than`, `--older-than` | bound by modification time |
 | `--decompress` | expand gzip, deflate or zstd blobs on download |
 | `--metadata=K=V` | store metadata on uploaded blobs |
+| `--copy-metadata` | read blob metadata while scanning (see [Archiving a tree](#archiving-a-tree)) |
 | `--content-encoding`, `--content-disposition`, `--content-language`, `--cache-control` | blob headers |
 | `--output=FORMAT` | `text` or `json` |
 | `--benchmark[=NxSIZE]` | measure throughput and clean up |

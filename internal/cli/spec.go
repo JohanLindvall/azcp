@@ -189,6 +189,10 @@ var specs = []cpflags.Spec{
 	{Long: "metadata", Arg: cpflags.RequiredArg, Meta: "K=V",
 		Help: "store metadata on each uploaded blob; repeatable, or " +
 			"comma-separated"},
+	{Long: "copy-metadata", Arg: cpflags.NoArg,
+		Help: "read each blob's metadata while scanning, so a recorded " +
+			"symlink downloads as a symlink and a blob-to-blob copy keeps " +
+			"metadata on every route; implied by --preserve and --decompress"},
 	{Long: "decompress", Arg: cpflags.NoArg,
 		Help: "on download, expand blobs whose content encoding says they are " +
 			"compressed, dropping a trailing .gz"},

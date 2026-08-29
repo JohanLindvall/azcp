@@ -72,12 +72,13 @@ func (e *Engine) Benchmark(ctx context.Context) (*BenchmarkResult, error) {
 	e.prog.SetPhase("Benchmarking (upload)")
 	e.prog.Plan(int64(len(names)), total)
 	start := time.Now()
-	if err := e.benchEach(ctx, names, func(ctx context.Context, u *uri.URL, pt *progress.Task) error {
-		opts := e.transferOptions()
-		opts.Progress = pt.Set
-		return e.az.UploadAt(ctx, bytes.NewReader(payload), int64(len(payload)),
-			u.Base(), u, opts)
-	}); err != nil {
+	if err := e.benchEach(ctx, names, progress.DirUpload,
+		func(ctx context.Context, u *uri.URL, pt *progress.Task) error {
+			opts := e.transferOptions()
+			opts.Progress = pt.Set
+			return e.az.UploadAt(ctx, bytes.NewReader(payload), int64(len(payload)),
+				u, opts)
+		}); err != nil {
 		return nil, err
 	}
 	res.Uploaded = time.Since(start)
@@ -85,13 +86,14 @@ func (e *Engine) Benchmark(ctx context.Context) (*BenchmarkResult, error) {
 	e.prog.SetPhase("Benchmarking (download)")
 	e.prog.Plan(int64(len(names)), total)
 	start = time.Now()
-	if err := e.benchEach(ctx, names, func(ctx context.Context, u *uri.URL, pt *progress.Task) error {
-		node := &store.Node{URL: u, Kind: store.KindFile, Size: int64(len(payload))}
-		opts := e.transferOptions()
-		opts.Progress = pt.Set
-		opts.CheckMD5 = 0 // nothing to check against; the data is generated
-		return e.az.DownloadDiscard(ctx, node, opts)
-	}); err != nil {
+	if err := e.benchEach(ctx, names, progress.DirDownload,
+		func(ctx context.Context, u *uri.URL, pt *progress.Task) error {
+			node := &store.Node{URL: u, Kind: store.KindFile, Size: int64(len(payload))}
+			opts := e.transferOptions()
+			opts.Progress = pt.Set
+			opts.CheckMD5 = 0 // nothing to check against; the data is generated
+			return e.az.DownloadDiscard(ctx, node, opts)
+		}); err != nil {
 		return nil, err
 	}
 	res.Downloaded = time.Since(start)
@@ -108,7 +110,7 @@ func (e *Engine) Benchmark(ctx context.Context) (*BenchmarkResult, error) {
 }
 
 // benchEach runs one operation per file, --jobs at a time.
-func (e *Engine) benchEach(ctx context.Context, names []*uri.URL,
+func (e *Engine) benchEach(ctx context.Context, names []*uri.URL, dir progress.Direction,
 	op func(context.Context, *uri.URL, *progress.Task) error) error {
 
 	var (
@@ -128,7 +130,7 @@ func (e *Engine) benchEach(ctx context.Context, names []*uri.URL,
 		go func(u *uri.URL) {
 			defer wg.Done()
 			defer func() { <-semaphore }()
-			pt := e.prog.Begin(u.Base(), e.opt.BenchSize, progress.DirUpload)
+			pt := e.prog.Begin(u.Base(), e.opt.BenchSize, dir)
 			err := op(ctx, u, pt)
 			pt.Done(err)
 			if err != nil {

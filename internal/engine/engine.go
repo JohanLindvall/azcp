@@ -5,6 +5,7 @@
 package engine
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -59,10 +60,13 @@ type Engine struct {
 	failed  atomic.Int64
 	skipped atomic.Int64
 
-	// hardLinks maps a source file identity to the first destination written
-	// for it, so that files hard-linked in the source stay linked in the copy.
+	// hardLinks maps a source file identity to the copy that will provide the
+	// destination all its other names link to. The first task to arrive for an
+	// identity claims it and copies the data; later tasks wait for that copy
+	// and link to it, which is what keeps files hard-linked in the source
+	// hard-linked in the copy even though tasks run in parallel.
 	hardLinksMu sync.Mutex
-	hardLinks   map[local.FileID]string
+	hardLinks   map[local.FileID]*linkFuture
 
 	// rootDev is the filesystem the top-level source being planned lives on.
 	// --one-file-system compares against it to recognise a mount point.
@@ -80,7 +84,11 @@ type Engine struct {
 
 	// promptMu serialises interactive prompts and the answers to them.
 	promptMu sync.Mutex
-	// answerAll remembers a "yes to everything" style response.
+	// promptIn buffers stdin across prompts, so an answer typed (or piped)
+	// ahead for the next question is not thrown away with the buffer.
+	promptIn *bufio.Reader
+	// cancelAll remembers that nobody is there to answer, so every later
+	// prompt resolves to "leave it alone" without asking.
 	cancelAll bool
 }
 
@@ -98,7 +106,7 @@ func New(cfg Config) (*Engine, error) {
 		log:         cfg.Log,
 		prog:        cfg.Progress,
 		stdin:       cfg.Stdin,
-		hardLinks:   map[local.FileID]string{},
+		hardLinks:   map[local.FileID]*linkFuture{},
 		visitedDirs: map[local.FileID]bool{},
 		retry: retryx.Policy{
 			MaxAttempts: maxWholeFileAttempts(o.Retries),
@@ -128,7 +136,14 @@ func New(cfg Config) (*Engine, error) {
 		UserAgent:       cli.Program + "/" + cli.VersionString(),
 		PeakRequests:    o.PeakRequests(),
 		BytesPerSecond:  o.BandwidthLimit,
-		IncludeMetadata: e.preservesToBlob() || o.Decompress,
+		// Reading each blob's metadata during a scan costs a larger listing
+		// response, so it is asked for only when something will read it:
+		// --preserve and --decompress need it and imply it, and
+		// --copy-metadata requests it by name — which is what lets a
+		// recorded symlink download as a symlink without -a, lets the time
+		// filters see a preserved mtime, and lets a blob-to-blob copy carry
+		// metadata on the routes the service does not copy it for.
+		IncludeMetadata: e.preservesToBlob() || o.Decompress || o.CopyMetadata,
 	})
 	return e, nil
 }
@@ -268,8 +283,7 @@ func (e *Engine) recordFailure(f Failure) {
 // runTask moves one file, retrying failures that look transient.
 func (e *Engine) runTask(ctx context.Context, t *task) {
 	pt := e.prog.Begin(t.display, t.src.Size, direction(t.src.URL, t.dst))
-	var err error
-	attemptErr := retryx.Do(ctx, e.retry,
+	err := retryx.Do(ctx, e.retry,
 		func(attempt int, delay time.Duration, cause error) {
 			pt.Retrying(attempt, e.retry.MaxAttempts, delay)
 			e.log.Warn("transfer failed, retrying",
@@ -286,7 +300,6 @@ func (e *Engine) runTask(ctx context.Context, t *task) {
 			pt.Set(0)
 			return e.transfer(ctx, t, pt)
 		})
-	err = attemptErr
 	if interrupted(ctx, err) {
 		// Cancelling a run ends every transfer still in flight at once. None
 		// of that is a failure, and counting it as one turns "stop" into a

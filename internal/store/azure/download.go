@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sync"
 	"sync/atomic"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
@@ -40,25 +39,7 @@ func (s *Store) downloadRanges(ctx context.Context, src *store.Node, f io.Writer
 	blockSize := o.blockSize(src.Size)
 	count := int((src.Size + blockSize - 1) / blockSize)
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var (
-		wg        sync.WaitGroup
-		mu        sync.Mutex
-		firstErr  error
-		fetched   atomic.Int64
-		semaphore = make(chan struct{}, o.concurrency())
-	)
-	fail := func(err error) {
-		mu.Lock()
-		if firstErr == nil {
-			firstErr = err
-			cancel()
-		}
-		mu.Unlock()
-	}
-
+	var fetched atomic.Int64
 	// Ranges already on disk from an earlier run are counted as progress so
 	// the display reflects the whole file, not just this attempt's share.
 	if resume != nil {
@@ -68,74 +49,55 @@ func (s *Store) downloadRanges(ctx context.Context, src *store.Node, f io.Writer
 		}
 	}
 
-	for i := range count {
+	return inParallel(ctx, count, o.concurrency(), func(ctx context.Context, i int) error {
 		if resume != nil && resume.has(i) {
-			continue
+			return nil
 		}
-		select {
-		case semaphore <- struct{}{}:
-		case <-ctx.Done():
-			wg.Wait()
-			if firstErr != nil {
-				return firstErr
-			}
-			return ctx.Err()
+		offset := int64(i) * blockSize
+		n := min(blockSize, src.Size-offset)
+
+		resp, err := bc.DownloadStream(ctx, &blob.DownloadStreamOptions{
+			Range: blob.HTTPRange{Offset: offset, Count: n},
+		})
+		if err != nil {
+			return fmt.Errorf("reading bytes %d-%d: %w", offset, offset+n-1, err)
 		}
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			defer func() { <-semaphore }()
-
-			offset := int64(i) * blockSize
-			n := min(blockSize, src.Size-offset)
-
-			resp, err := bc.DownloadStream(ctx, &blob.DownloadStreamOptions{
-				Range: blob.HTTPRange{Offset: offset, Count: n},
-			})
-			if err != nil {
-				fail(fmt.Errorf("reading bytes %d-%d: %w", offset, offset+n-1, err))
-				return
-			}
-			body := resp.NewRetryReader(ctx, &blob.RetryReaderOptions{
-				MaxRetries: s.cfg.MaxRetries,
-				OnFailedRead: func(failures int32, lastErr error, rng blob.HTTPRange, willRetry bool) {
-					if ctx.Err() != nil {
-						// The run is being cancelled, which fails every range
-						// still in flight at once. One line each turns Ctrl-C
-						// into a screenful of things that went wrong.
-						return
-					}
-					s.log.Warn("range read failed",
-						"blob", src.URL.Display(), "offset", rng.Offset,
-						"failures", failures, "will_retry", willRetry, "error", lastErr)
-				},
-			})
-			written, err := io.Copy(&sectionWriter{w: f, off: offset, limit: n}, body)
-			body.Close()
-			if err != nil {
-				fail(fmt.Errorf("writing bytes %d-%d: %w", offset, offset+n-1, err))
-				return
-			}
-			if written != n {
-				fail(fmt.Errorf("short read at offset %d: got %d of %d bytes",
-					offset, written, n))
-				return
-			}
-			// Recorded only once the bytes are on disk, so a resumed run never
-			// trusts a range that was still in flight.
-			if resume != nil {
-				if err := resume.mark(i); err != nil {
-					s.log.Warn("cannot record download progress",
-						"blob", src.URL.Display(), "error", err)
+		body := resp.NewRetryReader(ctx, &blob.RetryReaderOptions{
+			MaxRetries: s.cfg.MaxRetries,
+			OnFailedRead: func(failures int32, lastErr error, rng blob.HTTPRange, willRetry bool) {
+				if ctx.Err() != nil {
+					// The run is being cancelled, which fails every range
+					// still in flight at once. One line each turns Ctrl-C
+					// into a screenful of things that went wrong.
+					return
 				}
+				s.log.Warn("range read failed",
+					"blob", src.URL.Display(), "offset", rng.Offset,
+					"failures", failures, "will_retry", willRetry, "error", lastErr)
+			},
+		})
+		written, err := io.Copy(&sectionWriter{w: f, off: offset, limit: n}, body)
+		body.Close()
+		if err != nil {
+			return fmt.Errorf("writing bytes %d-%d: %w", offset, offset+n-1, err)
+		}
+		if written != n {
+			return fmt.Errorf("short read at offset %d: got %d of %d bytes",
+				offset, written, n)
+		}
+		// Recorded only once the bytes are on disk, so a resumed run never
+		// trusts a range that was still in flight.
+		if resume != nil {
+			if err := resume.mark(i); err != nil {
+				s.log.Warn("cannot record download progress",
+					"blob", src.URL.Display(), "error", err)
 			}
-			if o.Progress != nil {
-				o.Progress(fetched.Add(n))
-			}
-		}(i)
-	}
-	wg.Wait()
-	return firstErr
+		}
+		if o.Progress != nil {
+			o.Progress(fetched.Add(n))
+		}
+		return nil
+	})
 }
 
 // sectionWriter writes into a fixed window of a file, refusing to run past it.

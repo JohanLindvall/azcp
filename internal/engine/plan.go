@@ -289,6 +289,7 @@ func (e *Engine) plan(ctx context.Context, src *store.Node, dst *uri.URL,
 	if e.filter.active() && !src.IsDir() &&
 		(!e.filter.allow(rel) || !e.filter.withinWindow(blobMTime(src))) {
 		e.log.Debug("filtered out", "path", src.URL.Display(), "relative", rel)
+		e.prog.Saw(1)
 		e.markSkipped()
 		return nil
 	}
@@ -316,6 +317,7 @@ func (e *Engine) plan(ctx context.Context, src *store.Node, dst *uri.URL,
 		return e.planDir(ctx, src, dst, out, display, rel)
 
 	case src.Kind == store.KindOther:
+		e.prog.Saw(1)
 		e.note("skipping %s: %s cannot be copied",
 			quote(src.URL.Display()), src.Kind.String())
 		e.markSkipped()
@@ -412,7 +414,7 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 			continue
 		}
 		childRel := joinRel(rel, child.Name())
-		e.recordKept(dst.Join(child.Name()), childRel)
+		e.recordKept(dst.Join(child.Name()))
 		// An excluded directory is pruned rather than walked and discarded.
 		if child.IsDir() && !e.filter.descend(childRel) {
 			e.log.Debug("pruning excluded directory", "path", child.URL.Display())
@@ -442,7 +444,7 @@ const maxCopyDepth = 512
 // leaves it alone. The path is recorded whether or not the entry is ultimately
 // copied: a file skipped because it was already up to date is still a file the
 // source has.
-func (e *Engine) recordKept(dst *uri.URL, rel string) {
+func (e *Engine) recordKept(dst *uri.URL) {
 	if e.pruner == nil {
 		return
 	}
@@ -452,7 +454,6 @@ func (e *Engine) recordKept(dst *uri.URL, rel string) {
 			return
 		}
 	}
-	_ = rel
 }
 
 // joinRel appends an element to a copy-root-relative path.
@@ -487,9 +488,12 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 
 	base := src.URL.PathPart()
 	made := map[string]bool{}
-	// Directories still thought to be empty, kept only when the destination is
-	// blob storage, which needs a marker blob to represent one.
-	empty := map[string]*uri.URL{}
+	// Tracked only when the destination is blob storage, which needs a marker
+	// blob to represent an empty directory.
+	var empty *emptyDirs
+	if dst.IsRemote() {
+		empty = newEmptyDirs()
+	}
 
 	onError := func(u *uri.URL, err error) error {
 		if interrupted(ctx, err) {
@@ -508,12 +512,13 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 			return nil
 		}
 		filterRel := joinRel(rootRel, rel)
-		e.recordKept(dst.Join(strings.Split(rel, "/")...), rel)
+		e.recordKept(dst.Join(strings.Split(rel, "/")...))
 		if n.IsDir() {
 			if !e.filter.descend(filterRel) {
 				return nil
 			}
 		} else if !e.filter.allow(filterRel) || !e.filter.withinWindow(blobMTime(n)) {
+			e.prog.Saw(1)
 			e.markSkipped()
 			return nil
 		}
@@ -521,21 +526,11 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 
 		if n.IsDir() {
 			e.ensureDir(ctx, target, made)
-			if dst.IsRemote() {
-				empty[target.PathPart()] = target
-			}
+			empty.dir(target)
 			return nil
 		}
 		e.ensureDir(ctx, target.Dir(), made)
-		if dst.IsRemote() {
-			// Every directory on the way to a blob demonstrably has content.
-			for d := target.Dir(); d.PathPart() != ""; d = d.Dir() {
-				if _, ok := empty[d.PathPart()]; !ok {
-					break
-				}
-				delete(empty, d.PathPart())
-			}
-		}
+		empty.file(target)
 		return e.emit(ctx, n, target, out, display+"/"+rel)
 	})
 	if err != nil {
@@ -544,8 +539,8 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 
 	// Blob storage has no empty directories; give the ones that stayed empty
 	// the marker every Azure tool uses so the shape survives the copy.
-	if dst.IsRemote() && !e.opt.DryRun {
-		for _, u := range empty {
+	if !e.opt.DryRun {
+		for _, u := range empty.leaves() {
 			if merr := e.az.MkdirMarker(ctx, u); merr != nil {
 				e.log.Warn("cannot record empty directory",
 					"path", u.Display(), "error", merr)
@@ -553,6 +548,65 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 		}
 	}
 	return nil
+}
+
+// emptyDirs works out which destination directories will end a remote copy
+// with nothing at all beneath them. Only those need an empty-directory marker
+// blob: anything under a prefix — a blob, or a deeper directory's own marker —
+// already makes the prefix behave as a directory, so writing markers up the
+// chain would spend a request per level saying what the leaf already says.
+//
+// It relies on the walk's order, ancestors before their contents: every
+// directory is registered before anything beneath it arrives to clear it.
+// A nil tracker (a local destination needs no markers) accepts every call and
+// has no leaves.
+type emptyDirs struct {
+	byPath map[string]*uri.URL
+}
+
+func newEmptyDirs() *emptyDirs { return &emptyDirs{byPath: map[string]*uri.URL{}} }
+
+// dir records a directory as empty until something arrives beneath it. Its
+// ancestors stop being empty now: whatever this directory ends up holding —
+// contents or its own marker — will sit under every one of them.
+func (e *emptyDirs) dir(u *uri.URL) {
+	if e == nil {
+		return
+	}
+	e.occupied(u)
+	e.byPath[u.PathPart()] = u
+}
+
+// file marks every directory on the way to a blob as having content.
+func (e *emptyDirs) file(u *uri.URL) {
+	if e == nil {
+		return
+	}
+	e.occupied(u)
+}
+
+// occupied clears u's ancestors. The climb stops at the first directory
+// already cleared, because whatever cleared it climbed on from there: an
+// entry's absence always means the whole chain above it is absent too.
+func (e *emptyDirs) occupied(u *uri.URL) {
+	for d := u.Dir(); d.PathPart() != ""; d = d.Dir() {
+		if _, ok := e.byPath[d.PathPart()]; !ok {
+			return
+		}
+		delete(e.byPath, d.PathPart())
+	}
+}
+
+// leaves returns the directories that stayed empty.
+func (e *emptyDirs) leaves() []*uri.URL {
+	if e == nil {
+		return nil
+	}
+	out := make([]*uri.URL, 0, len(e.byPath))
+	for _, u := range e.byPath {
+		out = append(out, u)
+	}
+	return out
 }
 
 // ensureDir creates a destination directory once. A large tree would otherwise
@@ -703,12 +757,14 @@ func (e *Engine) promptOverwrite(dst *uri.URL) (bool, error) {
 	if e.cancelAll {
 		return false, nil
 	}
+	if e.promptIn == nil {
+		e.promptIn = bufio.NewReader(e.stdin)
+	}
 	var line string
 	var readErr error
 	logx.WithTerminal(func() {
 		fmt.Fprintf(os.Stderr, "%s: overwrite %s? ", cli.Program, quote(dst.Display()))
-		r := bufio.NewReader(e.stdin)
-		line, readErr = r.ReadString('\n')
+		line, readErr = e.promptIn.ReadString('\n')
 	})
 	if readErr != nil {
 		// No one is there to answer; treat that as "leave it alone" rather

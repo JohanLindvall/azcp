@@ -292,7 +292,11 @@ local emulator, which is exactly why it went unnoticed.
 
 **Attributes ride in blob metadata.** `store/posixmeta.go` defines the keys and
 the encoding; `engine/attrs.go` writes them on upload and restores them on
-download. The order in `restoreAttrs` is not arbitrary: a successful chown
+download. Reading metadata back during a scan costs a larger listing response,
+so it is opt-in: `--preserve` and `--decompress` imply it, `--copy-metadata`
+asks for it by name, and without any of them a recorded symlink downloads as
+the empty blob that records it and a staged blob-to-blob copy carries no
+metadata. The order in `restoreAttrs` is not arbitrary: a successful chown
 clears the setuid and setgid bits, so ownership has to be applied before the
 mode or those bits are silently lost. The local path in `local.ApplyAttrs`
 already had this right; the blob path did not, and a test caught it.
@@ -375,7 +379,7 @@ matching semantics must keep it passing — bash is the specification.
 is the closest thing to an end-to-end test that needs no credentials. Add cases
 there when changing `cp` semantics.
 
-`scripts/e2e.sh` covers the blob paths against the emulator — 33 checks; it is the only
+`scripts/e2e.sh` covers the blob paths against the emulator — 40 checks; it is the only
 test that exercises upload, download, blob-to-blob copy and remote wildcards
 together. Add to it when changing anything in `store/azure`.
 
