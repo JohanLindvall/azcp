@@ -241,10 +241,18 @@ const (
 )
 
 type prettyHandler struct {
-	w      io.Writer
-	level  slog.Level
-	color  bool
-	attrs  []slog.Attr
+	w     io.Writer
+	level slog.Level
+	color bool
+	// attrs keeps each attribute with the groups that were open when it was
+	// added: an attribute attached before WithGroup must not be qualified by
+	// a group opened after it.
+	attrs  []boundAttr
+	groups []string
+}
+
+type boundAttr struct {
+	attr   slog.Attr
 	groups []string
 }
 
@@ -252,7 +260,10 @@ func (h *prettyHandler) Enabled(_ context.Context, l slog.Level) bool { return l
 
 func (h *prettyHandler) WithAttrs(as []slog.Attr) slog.Handler {
 	c := *h
-	c.attrs = append(append([]slog.Attr(nil), h.attrs...), as...)
+	c.attrs = append([]boundAttr(nil), h.attrs...)
+	for _, a := range as {
+		c.attrs = append(c.attrs, boundAttr{attr: a, groups: h.groups})
+	}
 	return &c
 }
 
@@ -279,7 +290,7 @@ func (h *prettyHandler) Handle(_ context.Context, r slog.Record) error {
 	b.WriteString(r.Message)
 
 	for _, a := range h.attrs {
-		h.appendAttr(&b, a, h.groups)
+		h.appendAttr(&b, a.attr, a.groups)
 	}
 	r.Attrs(func(a slog.Attr) bool {
 		h.appendAttr(&b, a, h.groups)
