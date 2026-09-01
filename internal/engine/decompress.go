@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	// klauspost's decoders are drop-in replacements for the standard
@@ -45,7 +46,7 @@ func decompressFile(path, encoding string) (string, error) {
 
 	// Written beside the destination and renamed over it, so an interrupted
 	// expansion cannot leave a half-expanded file in place of the real one.
-	tmp, err := os.CreateTemp(dirOf(path), ".azcp-decompress-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".azcp-decompress-*")
 	if err != nil {
 		r.Close()
 		in.Close()
@@ -118,11 +119,4 @@ func decoder(r io.Reader, encoding string) (io.ReadCloser, error) {
 		return d.IOReadCloser(), nil
 	}
 	return nil, fmt.Errorf("unknown content encoding %q", encoding)
-}
-
-func dirOf(path string) string {
-	if i := strings.LastIndexAny(path, `/\`); i >= 0 {
-		return path[:i]
-	}
-	return "."
 }

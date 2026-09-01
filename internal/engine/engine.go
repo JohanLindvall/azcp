@@ -6,6 +6,7 @@ package engine
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,7 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,8 +58,7 @@ type Engine struct {
 	uriOK      uri.Options
 	stdin      io.Reader
 
-	failed  atomic.Int64
-	skipped atomic.Int64
+	failed atomic.Int64
 
 	// hardLinks maps a source file identity to the copy that will provide the
 	// destination all its other names link to. The first task to arrive for an
@@ -201,10 +201,8 @@ func (e *Engine) Run(ctx context.Context) (int64, error) {
 	// little beyond keeping them alive.
 	tasks := make(chan *task, max(e.opt.Jobs*4, 8192))
 	var wg sync.WaitGroup
-	for i := 0; i < e.opt.Jobs; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range e.opt.Jobs {
+		wg.Go(func() {
 			for t := range tasks {
 				if ctx.Err() != nil {
 					// Drain without working, so the scanner is never blocked
@@ -218,7 +216,7 @@ func (e *Engine) Run(ctx context.Context) (int64, error) {
 					cancel()
 				}
 			}
-		}()
+		})
 	}
 
 	e.prog.SetScanning(true)
@@ -238,9 +236,6 @@ func (e *Engine) Run(ctx context.Context) (int64, error) {
 	}
 	return e.failed.Load(), nil
 }
-
-// Skipped reports how many files were deliberately not copied.
-func (e *Engine) Skipped() int64 { return e.skipped.Load() }
 
 // Deleted reports how many destination entries --delete removed.
 func (e *Engine) Deleted() int64 { return e.deleted }
@@ -380,7 +375,7 @@ func (e *Engine) applyDeferredDirs() {
 		return
 	}
 	dirs := e.deferredDirs
-	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i].path) > len(dirs[j].path) })
+	slices.SortFunc(dirs, func(a, b deferredDir) int { return cmp.Compare(len(b.path), len(a.path)) })
 	for _, d := range dirs {
 		for _, err := range local.ApplyAttrs(d.path, d.path, d.info, e.opt.Preserve, false) {
 			e.log.Warn("cannot preserve directory attributes", "path", d.path, "error", err)

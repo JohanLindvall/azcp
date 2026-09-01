@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -83,18 +84,16 @@ func (e *Engine) upload(ctx context.Context, t *task, pt *progress.Task) error {
 	if err := e.az.MkdirAll(ctx, t.dst, 0); err != nil {
 		return err
 	}
+	opts := e.transferOptions()
+	opts.Progress = pt.Set
+	opts.Metadata = e.uploadMetadata(t.src)
 	if e.opt.AttributesOnly {
 		// The attributes, not the data: an existing blob keeps its content and
 		// has its metadata and headers replaced. Only when nothing is there
 		// does this degenerate to creating an empty blob, as cp creates an
 		// empty file.
-		opts := e.transferOptions()
-		opts.Metadata = e.uploadMetadata(t.src)
 		return e.az.PutAttrs(ctx, t.dst, opts)
 	}
-	opts := e.transferOptions()
-	opts.Progress = pt.Set
-	opts.Metadata = e.uploadMetadata(t.src)
 
 	// A symbolic link has no content beyond where it points, so it is stored
 	// as an empty blob whose metadata says what it is.
@@ -168,21 +167,11 @@ func (e *Engine) copyRemote(ctx context.Context, t *task, pt *progress.Task) err
 	// their own — the asynchronous Copy Blob does, staging blocks does not —
 	// so the source's are carried explicitly and every route preserves them.
 	// Anything the user set on the command line still wins.
-	if opts.ContentType == "" {
-		opts.ContentType = t.src.ContentType
-	}
-	if opts.ContentEncoding == "" {
-		opts.ContentEncoding = t.src.ContentEncoding
-	}
-	if opts.ContentDisposition == "" {
-		opts.ContentDisposition = t.src.ContentDisposition
-	}
-	if opts.ContentLanguage == "" {
-		opts.ContentLanguage = t.src.ContentLanguage
-	}
-	if opts.CacheControl == "" {
-		opts.CacheControl = t.src.CacheControl
-	}
+	opts.ContentType = cmp.Or(opts.ContentType, t.src.ContentType)
+	opts.ContentEncoding = cmp.Or(opts.ContentEncoding, t.src.ContentEncoding)
+	opts.ContentDisposition = cmp.Or(opts.ContentDisposition, t.src.ContentDisposition)
+	opts.ContentLanguage = cmp.Or(opts.ContentLanguage, t.src.ContentLanguage)
+	opts.CacheControl = cmp.Or(opts.CacheControl, t.src.CacheControl)
 	// The source's metadata is on the node only when the scan fetched it
 	// (-a, --preserve or --copy-metadata); without that, the routes where the
 	// service copies metadata itself still preserve it, and the staged and
@@ -467,11 +456,11 @@ func (e *Engine) checkUnsupported(dest *uri.URL) error {
 	}
 	switch {
 	case e.opt.HardLink:
-		return fmt.Errorf("--link is not possible with blob storage")
+		return errors.New("--link is not possible with blob storage")
 	case e.opt.SymbolicLink:
-		return fmt.Errorf("--symbolic-link is not possible with blob storage")
+		return errors.New("--symbolic-link is not possible with blob storage")
 	case e.opt.Backup != cli.BackupNone && dest.IsRemote():
-		return fmt.Errorf("--backup is not supported for blob destinations")
+		return errors.New("--backup is not supported for blob destinations")
 	}
 	return nil
 }
@@ -489,7 +478,7 @@ func (e *Engine) backupName(path string) (string, error) {
 		}
 		return path + e.opt.Suffix, nil
 	}
-	return "", fmt.Errorf("no backup requested")
+	return "", errors.New("no backup requested")
 }
 
 func hasNumberedBackups(path string) bool {

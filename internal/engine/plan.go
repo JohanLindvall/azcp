@@ -3,6 +3,7 @@ package engine
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -52,43 +53,37 @@ func (e *Engine) scan(ctx context.Context, out chan<- *task) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		target, err := e.targetFor(ctx, dest, destIsDir, src.node)
+		target, err := e.targetFor(ctx, dest, destIsDir, src)
 		if err != nil {
 			e.fail("%v", err)
 			continue
 		}
-		if err := e.guardSelfCopy(src.node, target); err != nil {
+		if err := e.guardSelfCopy(src, target); err != nil {
 			e.fail("%v", err)
 			continue
 		}
-		e.rootDev, e.hasRootDev = local.DeviceOf(src.node.Sys)
+		e.rootDev, e.hasRootDev = local.DeviceOf(src.Sys)
 		// Filter patterns are relative to what is being copied, not to how it
 		// was spelled: --exclude 'build/**' prunes src/build whether the
 		// source was written as ./src, /abs/path/src or azure://acct/c/src.
 		// A named file is still matchable by its own name.
 		rootRel := ""
-		if !src.node.IsDir() {
-			rootRel = src.node.URL.Base()
+		if !src.IsDir() {
+			rootRel = src.URL.Base()
 		}
-		if err := e.plan(ctx, src.node, target, out, src.node.URL.Base(), rootRel, true); err != nil {
+		if err := e.plan(ctx, src, target, out, src.URL.Base(), rootRel, true); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// source is one resolved command-line source argument.
-type source struct {
-	node *store.Node
-	arg  string
-}
-
 // expandSources turns the source arguments into nodes, applying brace
 // expansion and wildcard matching. A pattern that matches nothing, or a path
 // that does not exist, is reported the way cp reports it and the scan carries
 // on with the remaining arguments.
-func (e *Engine) expandSources(ctx context.Context) ([]source, error) {
-	var out []source
+func (e *Engine) expandSources(ctx context.Context) ([]*store.Node, error) {
+	var out []*store.Node
 	for _, arg := range e.opt.Sources {
 		raw := arg
 		if e.opt.StripTrailingSlashes {
@@ -108,9 +103,7 @@ func (e *Engine) expandSources(ctx context.Context) ([]source, error) {
 				e.fail("%v", err)
 				continue
 			}
-			for _, n := range nodes {
-				out = append(out, source{node: n, arg: expanded})
-			}
+			out = append(out, nodes...)
 		}
 	}
 	return out, ctx.Err()
@@ -196,7 +189,7 @@ func (e *Engine) destIsDirectory(dest *uri.URL, node *store.Node, nsources int) 
 	}
 	if e.opt.Parents {
 		if node == nil || !node.IsDir() {
-			return false, fmt.Errorf("with --parents, the destination must be a directory")
+			return false, errors.New("with --parents, the destination must be a directory")
 		}
 		return true, nil
 	}
@@ -512,7 +505,8 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 			return nil
 		}
 		filterRel := joinRel(rootRel, rel)
-		e.recordKept(dst.Join(strings.Split(rel, "/")...))
+		target := dst.Join(strings.Split(rel, "/")...)
+		e.recordKept(target)
 		if n.IsDir() {
 			if !e.filter.descend(filterRel) {
 				return nil
@@ -522,7 +516,6 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 			e.markSkipped()
 			return nil
 		}
-		target := dst.Join(strings.Split(rel, "/")...)
 
 		if n.IsDir() {
 			e.ensureDir(ctx, target, made)
@@ -650,7 +643,7 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 		dn, err := e.storeFor(dst).Stat(ctx, dst, false)
 		switch {
 		case err == nil:
-			proceed, backup, derr := e.decideOverwrite(ctx, src, dn)
+			proceed, backup, derr := e.decideOverwrite(src, dn)
 			if derr != nil {
 				e.fail("%v", derr)
 				return nil
@@ -708,7 +701,7 @@ func (e *Engine) needsDestCheck() bool {
 }
 
 // decideOverwrite applies -n, -i, -u and -b to an existing destination.
-func (e *Engine) decideOverwrite(ctx context.Context, src, dst *store.Node) (bool, string, error) {
+func (e *Engine) decideOverwrite(src, dst *store.Node) (bool, string, error) {
 	if unfinishedDownload(src, dst) {
 		// Not a destination to be weighed against the source: it is this copy,
 		// stopped part-way. Left alone it stays broken, and it is the one thing
@@ -780,10 +773,9 @@ func (e *Engine) promptOverwrite(dst *uri.URL) (bool, error) {
 	}
 }
 
-func (e *Engine) markSkipped() {
-	e.skipped.Add(1)
-	e.prog.Skipped(1)
-}
+// markSkipped counts a file deliberately left alone, where the closing summary
+// and the JSON report both read it from.
+func (e *Engine) markSkipped() { e.prog.Skipped(1) }
 
 // fail reports a problem with one source or destination and counts it, so the
 // command exits non-zero without stopping.

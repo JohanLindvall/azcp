@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/JohanLindvall/azcp/internal/logx"
 	"github.com/JohanLindvall/azcp/internal/progress"
 	"github.com/JohanLindvall/azcp/internal/store"
+	"github.com/JohanLindvall/azcp/internal/store/azure"
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
@@ -43,7 +45,7 @@ func (e *Engine) Benchmark(ctx context.Context) (*BenchmarkResult, error) {
 		return nil, err
 	}
 	if !dst.IsRemote() {
-		return nil, fmt.Errorf("--benchmark needs a blob destination, not a local path")
+		return nil, errors.New("--benchmark needs a blob destination, not a local path")
 	}
 	if err := e.az.MkdirAll(ctx, dst, 0); err != nil {
 		return nil, err
@@ -91,7 +93,7 @@ func (e *Engine) Benchmark(ctx context.Context) (*BenchmarkResult, error) {
 			node := &store.Node{URL: u, Kind: store.KindFile, Size: int64(len(payload))}
 			opts := e.transferOptions()
 			opts.Progress = pt.Set
-			opts.CheckMD5 = 0 // nothing to check against; the data is generated
+			opts.CheckMD5 = azure.MD5Off // nothing to check against; the data is generated
 			return e.az.DownloadDiscard(ctx, node, opts)
 		}); err != nil {
 		return nil, err
@@ -166,7 +168,7 @@ func (e *Engine) benchCleanup(names []*uri.URL) {
 	e.log.Debug("benchmark data removed", "blobs", removed)
 }
 
-// ReportBenchmark writes the result for a person to read.
+// Report writes the result for a person to read.
 func (r *BenchmarkResult) Report() {
 	logx.Printf("\n  %d files of %s — %s in each direction\n",
 		r.Files, humanize.Bytes(r.FileSize), humanize.Bytes(r.Bytes))

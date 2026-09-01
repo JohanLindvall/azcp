@@ -31,12 +31,16 @@ type filter struct {
 	newerThan time.Time
 	olderThan time.Time
 
-	includes []*glob.Pattern
-	excludes []*glob.Pattern
-	// nameOnly[i] records that the corresponding pattern has no separator and
-	// so applies to the base name.
-	includeNameOnly []bool
-	excludeNameOnly []bool
+	includes []pattern
+	excludes []pattern
+}
+
+// pattern is one compiled --include or --exclude entry.
+type pattern struct {
+	glob *glob.Pattern
+	// nameOnly records that the pattern has no separator and so applies to
+	// the base name, at any depth.
+	nameOnly bool
 }
 
 // newFilter compiles the --include and --exclude patterns. Brace expansion is
@@ -44,29 +48,27 @@ type filter struct {
 func newFilter(includes, excludes []string, newerThan, olderThan time.Time) (*filter, error) {
 	f := &filter{newerThan: newerThan, olderThan: olderThan}
 	var err error
-	if f.includes, f.includeNameOnly, err = compilePatterns(includes, "--include"); err != nil {
+	if f.includes, err = compilePatterns(includes, "--include"); err != nil {
 		return nil, err
 	}
-	if f.excludes, f.excludeNameOnly, err = compilePatterns(excludes, "--exclude"); err != nil {
+	if f.excludes, err = compilePatterns(excludes, "--exclude"); err != nil {
 		return nil, err
 	}
 	return f, nil
 }
 
-func compilePatterns(raw []string, flag string) ([]*glob.Pattern, []bool, error) {
-	var out []*glob.Pattern
-	var nameOnly []bool
+func compilePatterns(raw []string, flag string) ([]pattern, error) {
+	var out []pattern
 	for _, r := range raw {
 		for _, expanded := range glob.ExpandBraces(r) {
 			p, err := glob.Compile(expanded)
 			if err != nil {
-				return nil, nil, fmt.Errorf("bad pattern %q for %s: %w", expanded, flag, err)
+				return nil, fmt.Errorf("bad pattern %q for %s: %w", expanded, flag, err)
 			}
-			out = append(out, p)
-			nameOnly = append(nameOnly, !strings.Contains(expanded, "/"))
+			out = append(out, pattern{glob: p, nameOnly: !strings.Contains(expanded, "/")})
 		}
 	}
-	return out, nameOnly, nil
+	return out, nil
 }
 
 // active reports whether any filtering was asked for at all, so the common case
@@ -99,7 +101,7 @@ func (f *filter) excluded(rel string) bool {
 	if f == nil {
 		return false
 	}
-	return matchAny(f.excludes, f.excludeNameOnly, rel)
+	return matchAny(f.excludes, rel)
 }
 
 // included reports whether an entry survives --include. With no --include given
@@ -109,7 +111,7 @@ func (f *filter) included(rel string) bool {
 	if f == nil || len(f.includes) == 0 {
 		return true
 	}
-	return matchAny(f.includes, f.includeNameOnly, rel)
+	return matchAny(f.includes, rel)
 }
 
 // allow is the whole decision for a file: excluded wins over included, as it
@@ -128,7 +130,7 @@ func (f *filter) descend(rel string) bool {
 	return !f.excluded(rel)
 }
 
-func matchAny(pats []*glob.Pattern, nameOnly []bool, rel string) bool {
+func matchAny(pats []pattern, rel string) bool {
 	if rel == "" {
 		return false
 	}
@@ -136,12 +138,12 @@ func matchAny(pats []*glob.Pattern, nameOnly []bool, rel string) bool {
 	if i := strings.LastIndexByte(rel, '/'); i >= 0 {
 		base = rel[i+1:]
 	}
-	for i, p := range pats {
+	for _, p := range pats {
 		subject := rel
-		if nameOnly[i] {
+		if p.nameOnly {
 			subject = base
 		}
-		if p.Match(subject) {
+		if p.glob.Match(subject) {
 			return true
 		}
 	}

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"maps"
 	"os"
 	"time"
 
@@ -20,9 +21,7 @@ func (e *Engine) uploadMetadata(src *store.Node) map[string]string {
 		return nil
 	}
 	m := make(map[string]string, len(e.opt.Metadata)+5)
-	for k, v := range e.opt.Metadata {
-		m[k] = v
-	}
+	maps.Copy(m, e.opt.Metadata)
 	if !e.preservesToBlob() || src.URL.IsRemote() {
 		return m
 	}
@@ -51,9 +50,7 @@ func (e *Engine) uploadMetadata(src *store.Node) map[string]string {
 		// A link's own mode is meaningless; what matters is where it points.
 		p.HasMode = false
 	}
-	for k, v := range p.Encode() {
-		m[k] = v
-	}
+	maps.Copy(m, p.Encode())
 	if len(m) == 0 {
 		return nil
 	}

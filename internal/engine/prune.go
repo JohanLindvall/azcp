@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"cmp"
 	"context"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 
@@ -77,8 +79,9 @@ func (e *Engine) prune(ctx context.Context) int64 {
 	}
 
 	var removed int64
-	for key, root := range e.pruner.roots {
-		keep := e.pruner.keep[key]
+	// Roots in a fixed order, so a --dry-run reads the same way twice.
+	for _, key := range slices.Sorted(maps.Keys(e.pruner.roots)) {
+		root, keep := e.pruner.roots[key], e.pruner.keep[key]
 		var extra []*store.Node
 
 		onError := func(u *uri.URL, err error) error {
@@ -107,10 +110,8 @@ func (e *Engine) prune(ctx context.Context) int64 {
 		}
 
 		// Deepest first, so a directory is empty by the time it is removed.
-		sort.Slice(extra, func(i, j int) bool {
-			return strings.Count(extra[i].URL.PathPart(), "/") >
-				strings.Count(extra[j].URL.PathPart(), "/")
-		})
+		depth := func(n *store.Node) int { return strings.Count(n.URL.PathPart(), "/") }
+		slices.SortStableFunc(extra, func(a, b *store.Node) int { return cmp.Compare(depth(b), depth(a)) })
 		for _, n := range extra {
 			if e.opt.DryRun {
 				logx.Printf("would remove %s\n", quote(n.URL.Display()))
