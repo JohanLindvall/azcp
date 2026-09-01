@@ -4,6 +4,7 @@
 package humanize
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -98,6 +99,14 @@ func Count(n int64) string {
 	return out
 }
 
+// Plural picks the form of a noun that agrees with n: "1 file", "2 files".
+func Plural(n int64, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
 // Elide shortens s to at most width display cells, cutting out the middle and
 // leaving a horizontal ellipsis. The tail is favoured because the interesting
 // part of a path (the file name) lives there.
@@ -141,7 +150,7 @@ func Width(s string) int { return utf8.RuneCountInString(s) }
 func ParseSize(s string) (int64, error) {
 	t := strings.TrimSpace(s)
 	if t == "" {
-		return 0, fmt.Errorf("empty size")
+		return 0, errors.New("empty size")
 	}
 	i := 0
 	for i < len(t) && (t[i] >= '0' && t[i] <= '9' || t[i] == '.') {

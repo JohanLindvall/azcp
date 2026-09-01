@@ -164,10 +164,7 @@ func IsTransient(err error) bool {
 	// net.OpError that is not a timeout and carries no errno (for example a
 	// broken TLS session) is still a connection-level fault worth one retry.
 	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		return true
-	}
-	return false
+	return errors.As(err, &opErr)
 }
 
 // RetryableStatus reports whether an HTTP status justifies another attempt.

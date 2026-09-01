@@ -15,6 +15,7 @@ import (
 
 	"github.com/JohanLindvall/azcp/internal/cli"
 	"github.com/JohanLindvall/azcp/internal/engine"
+	"github.com/JohanLindvall/azcp/internal/humanize"
 	"github.com/JohanLindvall/azcp/internal/logx"
 	"github.com/JohanLindvall/azcp/internal/progress"
 )
@@ -32,13 +33,10 @@ func main() { os.Exit(run(os.Args[1:])) }
 func run(argv []string) int {
 	opt, err := cli.Parse(argv)
 	if err != nil {
-		var ue *cli.UsageError
-		if errors.As(err, &ue) {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", cli.Program, err)
-			fmt.Fprintf(os.Stderr, "Try '%s --help' for more information.\n", cli.Program)
-			return exitUsage
-		}
 		fmt.Fprintf(os.Stderr, "%s: %v\n", cli.Program, err)
+		if isUsage(err) {
+			fmt.Fprintf(os.Stderr, "Try '%s --help' for more information.\n", cli.Program)
+		}
 		return exitUsage
 	}
 	switch {
@@ -106,12 +104,10 @@ func run(argv []string) int {
 	logx.SetGuard(nil)
 
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {
-		var ue *cli.UsageError
-		if errors.As(runErr, &ue) {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", cli.Program, runErr)
+		fmt.Fprintf(os.Stderr, "%s: %v\n", cli.Program, runErr)
+		if isUsage(runErr) {
 			return exitUsage
 		}
-		fmt.Fprintf(os.Stderr, "%s: %v\n", cli.Program, runErr)
 		return exitFail
 	}
 
@@ -125,7 +121,7 @@ func run(argv []string) int {
 				verb = "Would remove"
 			}
 			fmt.Fprintf(os.Stderr, "  %s %d destination %s the source does not have\n",
-				verb, n, plural(n, "entry", "entries"))
+				verb, n, humanize.Plural(n, "entry", "entries"))
 		}
 	}
 	reportLogged(opt)
@@ -256,11 +252,11 @@ func writeJSONSummary(prog *progress.Reporter, eng *engine.Engine, opt *cli.Opti
 	_ = enc.Encode(summary)
 }
 
-func plural(n int64, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
+// isUsage reports whether err is a problem with the command line, which exits
+// with status 2 rather than 1.
+func isUsage(err error) bool {
+	var ue *cli.UsageError
+	return errors.As(err, &ue)
 }
 
 func colorSupported() bool {

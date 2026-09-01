@@ -572,6 +572,7 @@ Added by `azcp`:
 | `--timeout=DUR` | bound on a single request |
 | `--max-errors=N` | stop after N failures (default: never) |
 | `--progress=WHEN` | `auto`, `always`, `never` |
+| `--no-progress` | same as `--progress=never` |
 | `--progress-interval=DUR` | how often the display repaints (default 1s) |
 | `--exclude=PATTERN` | skip matching entries; repeatable |
 | `--include=PATTERN` | copy only matching entries; repeatable |

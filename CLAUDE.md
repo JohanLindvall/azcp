@@ -379,6 +379,12 @@ matching semantics must keep it passing — bash is the specification.
 is the closest thing to an end-to-end test that needs no credentials. Add cases
 there when changing `cp` semantics.
 
+`internal/store/expand_test.go` has an in-memory `Store` that counts the
+requests made of it. The README's claims about request economy — one stat for
+a plain path, one listing per wildcard element, one walk for `**` — are pinned
+there, so a change to the walker that costs a round trip shows up as a failing
+test rather than in someone's bill.
+
 `scripts/e2e.sh` covers the blob paths against the emulator — 40 checks; it is the only
 test that exercises upload, download, blob-to-blob copy and remote wildcards
 together. Add to it when changing anything in `store/azure`.
@@ -400,5 +406,11 @@ build tag in `tokencache_persist.go` with an in-memory stand-in beside it.
   by the engine, so store-level errors return the cause unadorned.
 - New options: extensions get long names; short forms are reserved for `cp`'s
   own, with `-j` the sole exception since `cp` does not define it.
+- An option that takes one of a fixed set of words goes through `choose` in
+  `cli/options.go`, with its values listed once in the order `--help` gives
+  them; the rejection message is derived from that list, not written by hand.
+- A default lives in `cli.Defaults()` and nowhere else, and it is what `--help`
+  and the README say it is. `--check-md5` once claimed `fail` while defaulting
+  to `off`; `TestCheckMD5DefaultsToFail` keeps it honest.
 - Anything accepted but not implemented must say so at warn level. Silently
   doing less than asked is worse than refusing.

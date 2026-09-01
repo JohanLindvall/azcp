@@ -102,25 +102,16 @@ func Parse(s string, opt Options) (*URL, error) {
 	scheme := strings.ToLower(m[1])
 	rest := s[len(m[0]):]
 
-	u := &URL{Scheme: SchemeAzure, Secure: true, raw: s}
-	switch scheme {
-	case "http":
-		u.Secure = false
-	case "https", "azure", "az":
-	}
+	// Only a plain http:// asks for cleartext; azure:// and az:// mean TLS.
+	u := &URL{Scheme: SchemeAzure, Secure: scheme != "http", raw: s}
 
 	// Split off the SAS query before touching the path, so a "?" inside a blob
 	// name would have to be percent-encoded (as it must be in any URL).
-	if i := strings.IndexByte(rest, '?'); i >= 0 {
-		u.SAS = strings.TrimPrefix(rest[i+1:], "?")
-		rest = rest[:i]
-	}
+	var sas string
+	rest, sas, _ = strings.Cut(rest, "?")
+	u.SAS = strings.TrimPrefix(sas, "?")
 
-	host := rest
-	pathPart := ""
-	if i := strings.IndexByte(rest, '/'); i >= 0 {
-		host, pathPart = rest[:i], rest[i+1:]
-	}
+	host, pathPart, _ := strings.Cut(rest, "/")
 	if host == "" {
 		return nil, fmt.Errorf("%s: missing storage account", s)
 	}
@@ -144,7 +135,7 @@ func Parse(s string, opt Options) (*URL, error) {
 		pathPart = remainder
 	case strings.Contains(host, "."):
 		u.Host = host
-		u.Account = host[:strings.IndexByte(host, '.')]
+		u.Account, _, _ = strings.Cut(host, ".")
 		if (scheme == "http" || scheme == "https") && !strings.Contains(host, ".blob.") &&
 			!strings.HasSuffix(host, "."+suffix) {
 			return nil, fmt.Errorf("%s: not an Azure Blob Storage endpoint "+
@@ -165,11 +156,8 @@ func Parse(s string, opt Options) (*URL, error) {
 }
 
 func splitFirst(p string) (first, rest string) {
-	p = strings.TrimPrefix(p, "/")
-	if i := strings.IndexByte(p, '/'); i >= 0 {
-		return p[:i], p[i+1:]
-	}
-	return p, ""
+	first, rest, _ = strings.Cut(strings.TrimPrefix(p, "/"), "/")
+	return first, rest
 }
 
 func isIPLiteral(host string) bool {

@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 	"log/slog"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/JohanLindvall/azcp/internal/glob"
@@ -47,8 +47,8 @@ func Expand(ctx context.Context, s Store, u *uri.URL, opts ExpandOptions) ([]*No
 	if err := w.walk(ctx, start, rest); err != nil {
 		return nil, err
 	}
-	sort.Slice(w.out, func(i, j int) bool {
-		return w.out[i].URL.PathPart() < w.out[j].URL.PathPart()
+	slices.SortFunc(w.out, func(a, b *Node) int {
+		return strings.Compare(a.URL.PathPart(), b.URL.PathPart())
 	})
 	return w.out, nil
 }

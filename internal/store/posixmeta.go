@@ -22,11 +22,13 @@ const (
 	// MetaMode is the file mode, in octal, including the setuid, setgid and
 	// sticky bits.
 	MetaMode = "azcp_mode"
-	// MetaUID and MetaGID are the numeric owner and group.
+	// MetaUID is the numeric owner.
 	MetaUID = "azcp_uid"
+	// MetaGID is the numeric group.
 	MetaGID = "azcp_gid"
-	// MetaMTime and MetaATime are RFC 3339 with nanoseconds.
+	// MetaMTime is the modification time, RFC 3339 with nanoseconds.
 	MetaMTime = "azcp_mtime"
+	// MetaATime is the access time, RFC 3339 with nanoseconds.
 	MetaATime = "azcp_atime"
 	// MetaSymlink is the link target. A blob carrying it is a symbolic link,
 	// stored as a zero-length blob because the target is the whole content.
@@ -110,10 +112,6 @@ func DecodePosixMeta(m map[string]string) PosixMeta {
 	p.SymlinkDest = get(MetaSymlink)
 	return p
 }
-
-// modeMask is the permission bits plus setuid, setgid and sticky, expressed the
-// way a filesystem stores them rather than the way Go's FileMode does.
-const modeMask = fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky
 
 // modeBits converts Go's FileMode into the traditional twelve bits, so the
 // stored value is the one `stat` would show.

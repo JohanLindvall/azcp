@@ -3,7 +3,7 @@ package progress
 import (
 	"bytes"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 	"time"
 
@@ -205,10 +205,7 @@ func (r *Reporter) taskLine(width int, t *Task) string {
 		right = fmt.Sprintf(" %s %4s %10s", strings.Repeat("·", barW),
 			humanize.Bytes(got), rateStr)
 	}
-	nameW := width - humanize.Width(stripANSI(right)) - 5
-	if nameW < 8 {
-		nameW = 8
-	}
+	nameW := max(width-humanize.Width(stripANSI(right))-5, 8)
 	return fmt.Sprintf("  %s %s%s", r.pal.accent(glyph),
 		humanize.Pad(t.name, nameW), r.pal.dim(right))
 }
@@ -218,18 +215,8 @@ var blocks = [...]rune{' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'}
 
 func barCells(width int, frac float64) (full int, partial rune) {
 	total := frac * float64(width)
-	full = int(total)
-	if full > width {
-		full = width
-	}
-	rem := total - float64(full)
-	idx := int(rem * 8)
-	if idx < 0 {
-		idx = 0
-	}
-	if idx > 7 {
-		idx = 7
-	}
+	full = min(int(total), width)
+	idx := min(max(int((total-float64(full))*8), 0), len(blocks)-1)
 	return full, blocks[idx]
 }
 
@@ -343,7 +330,7 @@ func (r *Reporter) rate(doneB int64) float64 {
 
 // Summary writes the closing report. It is printed after the live region is
 // gone, so it stays in the scrollback.
-func (r *Reporter) Summary(w *os.File, dryRun bool) {
+func (r *Reporter) Summary(w io.Writer, dryRun bool) {
 	// With no live display there was no terminal to summarise for, and cp is
 	// silent on success; staying quiet keeps scripts that check stderr happy.
 	if !r.enabled {
@@ -366,7 +353,7 @@ func (r *Reporter) Summary(w *os.File, dryRun bool) {
 		mark = r.pal.bad("✖")
 	}
 	fmt.Fprintf(w, "%s %s %s %s · %s in %s%s\n", mark, verb,
-		humanize.Count(done), plural(done, "file", "files"),
+		humanize.Count(done), humanize.Plural(done, "file", "files"),
 		humanize.Bytes(bytes), humanize.Duration(elapsed), rate)
 
 	var notes []string
@@ -381,16 +368,9 @@ func (r *Reporter) Summary(w *os.File, dryRun bool) {
 	}
 	if retries > 0 {
 		notes = append(notes, fmt.Sprintf("%s transient %s retried",
-			humanize.Count(retries), plural(retries, "error", "errors")))
+			humanize.Count(retries), humanize.Plural(retries, "error", "errors")))
 	}
 	if len(notes) > 0 {
 		fmt.Fprintf(w, "  %s\n", r.pal.dim(strings.Join(notes, ", ")))
 	}
-}
-
-func plural(n int64, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
 }

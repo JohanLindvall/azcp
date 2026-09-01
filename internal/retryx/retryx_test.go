@@ -146,3 +146,33 @@ func TestDelayBounds(t *testing.T) {
 		}
 	}
 }
+
+// Describe collapses an Azure failure to what identifies it; anything else
+// keeps its own words, which for a filesystem error already name the path.
+func TestDescribe(t *testing.T) {
+	cases := map[string]error{
+		"HTTP 503 ServerBusy": respErr(503, "ServerBusy", nil),
+		"HTTP 500":            respErr(500, "", nil),
+		"HTTP 429 X":          fmt.Errorf("after 3 attempts: %w", respErr(429, "X", nil)),
+		"disk full":           errors.New("disk full"),
+	}
+	for want, err := range cases {
+		if got := Describe(err); got != want {
+			t.Errorf("Describe(%v) = %q, want %q", err, got, want)
+		}
+	}
+}
+
+// The status list is the Azure SDK's own, so substituting this predicate for
+// the SDK's changes nothing about which requests are retried.
+func TestRetryableStatus(t *testing.T) {
+	cases := map[int]bool{
+		408: true, 429: true, 500: true, 502: true, 503: true, 504: true,
+		200: false, 400: false, 401: false, 403: false, 404: false, 409: false, 501: false,
+	}
+	for code, want := range cases {
+		if got := RetryableStatus(code); got != want {
+			t.Errorf("RetryableStatus(%d) = %v, want %v", code, got, want)
+		}
+	}
+}

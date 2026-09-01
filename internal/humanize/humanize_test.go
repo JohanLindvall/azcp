@@ -88,3 +88,11 @@ func TestRate(t *testing.T) {
 		}
 	}
 }
+
+func TestPlural(t *testing.T) {
+	for n, want := range map[int64]string{0: "files", 1: "file", 2: "files", -1: "files"} {
+		if got := Plural(n, "file", "files"); got != want {
+			t.Errorf("Plural(%d) = %q, want %q", n, got, want)
+		}
+	}
+}

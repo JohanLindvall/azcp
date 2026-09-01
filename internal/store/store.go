@@ -18,10 +18,14 @@ import (
 type Kind int
 
 const (
+	// KindFile is a regular file or a blob.
 	KindFile Kind = iota
+	// KindDir is a directory, a container, a prefix or the account root.
 	KindDir
+	// KindSymlink is a symbolic link, local or recorded in blob metadata.
 	KindSymlink
-	KindOther // fifo, socket, device — copied only with --force or skipped
+	// KindOther is a fifo, socket or device, which is skipped.
+	KindOther
 )
 
 func (k Kind) String() string {
@@ -67,8 +71,13 @@ type Node struct {
 	Sys any
 }
 
-func (n *Node) IsDir() bool     { return n != nil && n.Kind == KindDir }
+// IsDir reports whether n is a directory. A nil node is not.
+func (n *Node) IsDir() bool { return n != nil && n.Kind == KindDir }
+
+// IsRegular reports whether n is a regular file or a blob. A nil node is not.
 func (n *Node) IsRegular() bool { return n != nil && n.Kind == KindFile }
+
+// IsSymlink reports whether n is a symbolic link. A nil node is not.
 func (n *Node) IsSymlink() bool { return n != nil && n.Kind == KindSymlink }
 
 // Name returns the node's last path element.

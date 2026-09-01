@@ -9,6 +9,7 @@ package progress
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,7 +26,9 @@ type Mode int
 const (
 	// ModeAuto draws only when the output is an interactive terminal.
 	ModeAuto Mode = iota
+	// ModeAlways draws whatever the output is.
 	ModeAlways
+	// ModeNever draws nothing, and prints no closing summary either.
 	ModeNever
 )
 
@@ -46,9 +49,13 @@ func ParseMode(s string) (Mode, error) {
 type Direction int
 
 const (
+	// DirLocal is a copy between two local paths.
 	DirLocal Direction = iota
+	// DirUpload is a copy into blob storage.
 	DirUpload
+	// DirDownload is a copy out of blob storage.
 	DirDownload
+	// DirRemote is a copy between two blobs.
 	DirRemote
 )
 
@@ -187,9 +194,7 @@ func (r *Reporter) Start() {
 		return
 	}
 	r.write(hideCursor)
-	r.wg.Add(1)
-	go func() {
-		defer r.wg.Done()
+	r.wg.Go(func() {
 		t := time.NewTicker(r.interval)
 		defer t.Stop()
 		for {
@@ -204,7 +209,7 @@ func (r *Reporter) Start() {
 				r.paint.Unlock()
 			}
 		}
-	}()
+	})
 }
 
 // Stop erases the live region and restores the cursor. It is safe to call more
@@ -401,11 +406,8 @@ func (t *Task) Interrupted() {
 func (r *Reporter) remove(t *Task) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for i, a := range r.active {
-		if a == t {
-			r.active = append(r.active[:i], r.active[i+1:]...)
-			return
-		}
+	if i := slices.Index(r.active, t); i >= 0 {
+		r.active = slices.Delete(r.active, i, i+1)
 	}
 }
 
