@@ -271,6 +271,7 @@ const (
 
 func writeOpts(w io.Writer, list []cpflags.Spec) {
 	const gutter = helpGutter
+	indent := strings.Repeat(" ", gutter)
 	for _, s := range list {
 		var left strings.Builder
 		left.WriteString("  ")
@@ -296,7 +297,6 @@ func writeOpts(w io.Writer, list []cpflags.Spec) {
 		} else if s.Arg == cpflags.RequiredArg {
 			left.WriteString(" " + meta(s))
 		}
-		indent := strings.Repeat(" ", gutter)
 		lines := wrapText(s.Help, helpWidth-gutter)
 		pad := gutter - left.Len()
 		if pad < 1 {

@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/JohanLindvall/azcp/internal/cpflags"
 	"github.com/JohanLindvall/azcp/internal/humanize"
 	"github.com/JohanLindvall/azcp/internal/progress"
+	"github.com/JohanLindvall/azcp/internal/retryx"
 	"github.com/JohanLindvall/azcp/internal/store/azure"
 	"github.com/JohanLindvall/azcp/internal/store/local"
 	"github.com/JohanLindvall/azcp/internal/uri"
@@ -23,8 +26,11 @@ const (
 	// DerefAuto follows links unless the copy is recursive, which is what cp
 	// does when none of -H, -L or -P is given.
 	DerefAuto Deref = iota
+	// DerefCmdline follows only the links named on the command line (-H).
 	DerefCmdline
+	// DerefAlways follows every link (-L).
 	DerefAlways
+	// DerefNever copies links as links (-P).
 	DerefNever
 )
 
@@ -32,9 +38,13 @@ const (
 type Update int
 
 const (
+	// UpdateAll replaces every existing destination.
 	UpdateAll Update = iota
+	// UpdateNone leaves every existing destination alone, silently.
 	UpdateNone
+	// UpdateNoneFail leaves every existing destination alone and fails.
 	UpdateNoneFail
+	// UpdateOlder replaces a destination only when the source is newer (-u).
 	UpdateOlder
 )
 
@@ -42,9 +52,13 @@ const (
 type Backup int
 
 const (
+	// BackupNone makes no backups.
 	BackupNone Backup = iota
+	// BackupSimple appends the suffix (--suffix, default "~").
 	BackupSimple
+	// BackupNumbered appends ".~N~", counting up from what is there.
 	BackupNumbered
+	// BackupExisting numbers where numbered backups exist, else appends.
 	BackupExisting
 )
 
@@ -52,7 +66,9 @@ const (
 type Output int
 
 const (
+	// OutputText is cp's own output, plus the live display and summary.
 	OutputText Output = iota
+	// OutputJSON writes one object per line, ending with a summary.
 	OutputJSON
 )
 
@@ -64,9 +80,51 @@ const (
 	// name an existing file. It is the safe default: a file literally called
 	// "a[1].txt" still copies.
 	GlobAuto GlobMode = iota
+	// GlobAlways expands any argument containing metacharacters.
 	GlobAlways
+	// GlobNever takes every argument literally.
 	GlobNever
 )
+
+// Every value an enumerated option accepts, in the order --help and error
+// messages list them.
+var (
+	reflinkModes = []choice[local.Reflink]{
+		{"always", local.ReflinkAlways}, {"auto", local.ReflinkAuto}, {"never", local.ReflinkNever}}
+	sparseModes = []choice[local.Sparse]{
+		{"always", local.SparseAlways}, {"auto", local.SparseAuto}, {"never", local.SparseNever}}
+	updateModes = []choice[Update]{
+		{"all", UpdateAll}, {"none", UpdateNone}, {"none-fail", UpdateNoneFail}, {"older", UpdateOlder}}
+	outputModes = []choice[Output]{{"text", OutputText}, {"json", OutputJSON}}
+	globModes   = []choice[GlobMode]{{"auto", GlobAuto}, {"always", GlobAlways}, {"never", GlobNever}}
+)
+
+// choice pairs a spelling accepted on the command line with what it selects.
+type choice[T any] struct {
+	name  string
+	value T
+}
+
+// choose resolves v against what flag accepts, or says what it wanted.
+func choose[T any](flag, v string, choices []choice[T]) (T, error) {
+	names := make([]string, len(choices))
+	for i, c := range choices {
+		if c.name == v {
+			return c.value, nil
+		}
+		names[i] = c.name
+	}
+	var zero T
+	return zero, fmt.Errorf("invalid argument %q for '%s' (want %s)", v, flag, orList(names))
+}
+
+// orList renders names as "a, b or c".
+func orList(names []string) string {
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
+}
 
 // Options is the fully resolved configuration for one invocation.
 type Options struct {
@@ -166,15 +224,18 @@ func Defaults() *Options {
 		Jobs:             8,
 		PartSize:         8 << 20,
 		PartConcurrency:  4,
-		Retries:          6,
-		RetryDelay:       300 * time.Millisecond,
-		RetryMaxDelay:    30 * time.Second,
+		Retries:          retryx.Default.MaxAttempts,
+		RetryDelay:       retryx.Default.BaseDelay,
+		RetryMaxDelay:    retryx.Default.MaxDelay,
 		ProgressInterval: progress.DefaultInterval,
 		BenchFiles:       10,
 		BenchSize:        64 << 20,
 		LogLevel:         "warn",
 		LogFormat:        "text",
 		Auth:             azure.AuthAuto,
+		// What --help and the README promise: a blob that carries a checksum
+		// is verified, and a mismatch fails the transfer.
+		CheckMD5: azure.MD5Fail,
 	}
 }
 
@@ -200,7 +261,7 @@ func parseBenchSpec(spec string) (int, int64, error) {
 // valid identifiers, so a name that could not be stored is refused here rather
 // than by the service halfway through a transfer.
 func parseMetadata(spec string, into map[string]string) error {
-	for _, pair := range strings.Split(spec, ",") {
+	for pair := range strings.SplitSeq(spec, ",") {
 		pair = strings.TrimSpace(pair)
 		if pair == "" {
 			continue
@@ -237,7 +298,7 @@ func validMetadataName(k string) bool {
 func ParseTimeSpec(s string, now time.Time) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return time.Time{}, fmt.Errorf("empty time")
+		return time.Time{}, errors.New("empty time")
 	}
 	for _, layout := range []string{
 		time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02",
@@ -290,15 +351,7 @@ func defaultJobs(network bool) int {
 
 // TouchesNetwork reports whether either side of the copy is a remote URL.
 func (o *Options) TouchesNetwork() bool {
-	if uri.IsRemoteArg(o.Dest) {
-		return true
-	}
-	for _, s := range o.Sources {
-		if uri.IsRemoteArg(s) {
-			return true
-		}
-	}
-	return false
+	return uri.IsRemoteArg(o.Dest) || slices.ContainsFunc(o.Sources, uri.IsRemoteArg)
 }
 
 // PeakRequests is how many requests the run can have outstanding at once, used
@@ -421,31 +474,11 @@ func (o *Options) apply(f cpflags.Flag) error {
 	case "recursive", "R", "r":
 		o.Recursive = true
 	case "reflink":
-		switch v := valueOr(f, "always"); v {
-		case "always":
-			o.Reflink = local.ReflinkAlways
-		case "auto":
-			o.Reflink = local.ReflinkAuto
-		case "never":
-			o.Reflink = local.ReflinkNever
-		default:
-			return fmt.Errorf("invalid argument %q for '--reflink' "+
-				"(want always, auto or never)", v)
-		}
+		return setChoice(&o.Reflink, f, valueOr(f, "always"), reflinkModes)
 	case "remove-destination":
 		o.RemoveDestination = true
 	case "sparse":
-		switch f.Value {
-		case "always":
-			o.Sparse = local.SparseAlways
-		case "auto":
-			o.Sparse = local.SparseAuto
-		case "never":
-			o.Sparse = local.SparseNever
-		default:
-			return fmt.Errorf("invalid argument %q for '--sparse' "+
-				"(want always, auto or never)", f.Value)
-		}
+		return setChoice(&o.Sparse, f, f.Value, sparseModes)
 	case "strip-trailing-slashes":
 		o.StripTrailingSlashes = true
 	case "symbolic-link", "s":
@@ -463,20 +496,7 @@ func (o *Options) apply(f cpflags.Flag) error {
 	case "u":
 		o.Update = UpdateOlder
 	case "update":
-		v := valueOr(f, "older")
-		switch v {
-		case "all":
-			o.Update = UpdateAll
-		case "none":
-			o.Update = UpdateNone
-		case "none-fail":
-			o.Update = UpdateNoneFail
-		case "older":
-			o.Update = UpdateOlder
-		default:
-			return fmt.Errorf("invalid argument %q for '--update' "+
-				"(want all, none, none-fail or older)", v)
-		}
+		return setChoice(&o.Update, f, valueOr(f, "older"), updateModes)
 	case "verbose", "v":
 		o.Verbose = true
 	case "one-file-system", "x":
@@ -486,53 +506,24 @@ func (o *Options) apply(f cpflags.Flag) error {
 
 	// --- extensions ---------------------------------------------------------
 	case "jobs", "j":
-		n, err := positiveInt(f.Value, "--jobs")
-		if err != nil {
+		if err := setPositive(&o.Jobs, f); err != nil {
 			return err
 		}
-		o.Jobs, o.jobsSet = n, true
+		o.jobsSet = true
 	case "part-size":
-		n, err := humanize.ParseSize(f.Value)
-		if err != nil {
-			return fmt.Errorf("invalid argument for '--part-size': %w", err)
-		}
-		o.PartSize = n
+		return setSize(&o.PartSize, f)
 	case "part-concurrency":
-		n, err := positiveInt(f.Value, "--part-concurrency")
-		if err != nil {
-			return err
-		}
-		o.PartConcurrency = n
+		return setPositive(&o.PartConcurrency, f)
 	case "retries":
-		n, err := positiveInt(f.Value, "--retries")
-		if err != nil {
-			return err
-		}
-		o.Retries = n
+		return setPositive(&o.Retries, f)
 	case "retry-delay":
-		d, err := time.ParseDuration(f.Value)
-		if err != nil {
-			return fmt.Errorf("invalid argument for '--retry-delay': %w", err)
-		}
-		o.RetryDelay = d
+		return setDuration(&o.RetryDelay, f)
 	case "retry-max-delay":
-		d, err := time.ParseDuration(f.Value)
-		if err != nil {
-			return fmt.Errorf("invalid argument for '--retry-max-delay': %w", err)
-		}
-		o.RetryMaxDelay = d
+		return setDuration(&o.RetryMaxDelay, f)
 	case "bwlimit":
-		n, err := humanize.ParseSize(f.Value)
-		if err != nil {
-			return fmt.Errorf("invalid argument for '--bwlimit': %w", err)
-		}
-		o.BandwidthLimit = n
+		return setSize(&o.BandwidthLimit, f)
 	case "timeout":
-		d, err := time.ParseDuration(f.Value)
-		if err != nil {
-			return fmt.Errorf("invalid argument for '--timeout': %w", err)
-		}
-		o.Timeout = d
+		return setDuration(&o.Timeout, f)
 	case "max-errors":
 		n, err := strconv.Atoi(f.Value)
 		if err != nil || n < 0 {
@@ -549,23 +540,14 @@ func (o *Options) apply(f cpflags.Flag) error {
 	case "no-progress":
 		o.Progress = progress.ModeNever
 	case "progress-interval":
-		d, err := time.ParseDuration(f.Value)
-		if err != nil {
-			return fmt.Errorf("invalid argument for '--progress-interval': %w", err)
+		if err := setDuration(&o.ProgressInterval, f); err != nil {
+			return err
 		}
-		if d < 20*time.Millisecond {
-			return fmt.Errorf("--progress-interval must be at least 20ms")
+		if o.ProgressInterval < 20*time.Millisecond {
+			return errors.New("--progress-interval must be at least 20ms")
 		}
-		o.ProgressInterval = d
 	case "output":
-		switch strings.ToLower(f.Value) {
-		case "text":
-			o.Output = OutputText
-		case "json":
-			o.Output = OutputJSON
-		default:
-			return fmt.Errorf("invalid argument %q for '--output' (want text or json)", f.Value)
-		}
+		return setChoice(&o.Output, f, strings.ToLower(f.Value), outputModes)
 	case "benchmark":
 		o.Benchmark = true
 		if f.HasValue && f.Value != "" {
@@ -592,17 +574,7 @@ func (o *Options) apply(f cpflags.Flag) error {
 	case "dry-run":
 		o.DryRun = true
 	case "glob":
-		switch f.Value {
-		case "auto":
-			o.Glob = GlobAuto
-		case "always":
-			o.Glob = GlobAlways
-		case "never":
-			o.Glob = GlobNever
-		default:
-			return fmt.Errorf("invalid argument %q for '--glob' "+
-				"(want auto, always or never)", f.Value)
-		}
+		return setChoice(&o.Glob, f, f.Value, globModes)
 	case "auth":
 		m, err := azure.ParseAuthMode(f.Value)
 		if err != nil {
@@ -674,16 +646,47 @@ func valueOr(f cpflags.Flag, dflt string) string {
 	return dflt
 }
 
-func positiveInt(s, what string) (int, error) {
-	n, err := strconv.Atoi(s)
-	if err != nil || n < 1 {
-		return 0, fmt.Errorf("invalid argument %q for '%s' (want a positive number)", s, what)
+// The set* helpers read one option's value into its field, naming the option
+// in the message when the value will not do.
+
+func setChoice[T any](dst *T, f cpflags.Flag, v string, choices []choice[T]) error {
+	got, err := choose(f.Name(), v, choices)
+	if err != nil {
+		return err
 	}
-	return n, nil
+	*dst = got
+	return nil
+}
+
+func setPositive(dst *int, f cpflags.Flag) error {
+	n, err := strconv.Atoi(f.Value)
+	if err != nil || n < 1 {
+		return fmt.Errorf("invalid argument %q for '%s' (want a positive number)", f.Value, f.Name())
+	}
+	*dst = n
+	return nil
+}
+
+func setDuration(dst *time.Duration, f cpflags.Flag) error {
+	d, err := time.ParseDuration(f.Value)
+	if err != nil {
+		return fmt.Errorf("invalid argument for '%s': %w", f.Name(), err)
+	}
+	*dst = d
+	return nil
+}
+
+func setSize(dst *int64, f cpflags.Flag) error {
+	n, err := humanize.ParseSize(f.Value)
+	if err != nil {
+		return fmt.Errorf("invalid argument for '%s': %w", f.Name(), err)
+	}
+	*dst = n
+	return nil
 }
 
 func applyPreserve(p *local.Preserve, list string, on bool) (explicitContext bool, err error) {
-	for _, item := range strings.Split(list, ",") {
+	for item := range strings.SplitSeq(list, ",") {
 		switch strings.TrimSpace(item) {
 		case "":
 		case "mode":

@@ -15,7 +15,9 @@ import (
 type ArgKind int
 
 const (
+	// NoArg options are switches.
 	NoArg ArgKind = iota
+	// RequiredArg values may be attached ("-j4", "--jobs=4") or the next word.
 	RequiredArg
 	// OptionalArg values must be attached ("-bt", "--backup=simple"). A
 	// detached word is an operand, matching getopt_long.
@@ -60,16 +62,6 @@ type Result struct {
 	// earlier --no-preserve exactly as cp does.
 	Flags    []Flag
 	Operands []string
-}
-
-// Has reports whether an option appeared at all.
-func (r *Result) Has(long string) bool {
-	for _, f := range r.Flags {
-		if f.Spec.Long == long {
-			return true
-		}
-	}
-	return false
 }
 
 // Parse interprets argv (not including the program name).
@@ -122,12 +114,7 @@ func Parse(specs []Spec, argv []string) (*Result, error) {
 
 // parseLong handles one --option, returning how many extra argv entries it ate.
 func parseLong(specs []Spec, argv []string, i int, res *Result) (int, error) {
-	body := argv[i][2:]
-	name, val := body, ""
-	hasVal := false
-	if j := strings.IndexByte(body, '='); j >= 0 {
-		name, val, hasVal = body[:j], body[j+1:], true
-	}
+	name, val, hasVal := strings.Cut(argv[i][2:], "=")
 	sp, err := matchLong(specs, name)
 	if err != nil {
 		return 0, err
