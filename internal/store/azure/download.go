@@ -23,11 +23,10 @@ import (
 func (s *Store) downloadRanges(ctx context.Context, src *store.Node, f io.WriterAt,
 	o TransferOptions, resume *resumeFile) error {
 
-	c, err := s.client(ctx, src.URL)
+	bc, err := s.blobClient(ctx, src.URL)
 	if err != nil {
 		return err
 	}
-	bc := c.ServiceClient().NewContainerClient(src.URL.Container).NewBlobClient(src.URL.Key)
 
 	// A real file is sized up front so ranges can be written where they
 	// belong; the benchmark's discarding writer has nothing to size.

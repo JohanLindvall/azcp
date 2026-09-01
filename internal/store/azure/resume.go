@@ -194,5 +194,5 @@ func (s *Store) stagedBlocks(ctx context.Context, bb *blockblob.Client) (map[str
 // blockID renders a block index as the fixed-width, base64 identifier the
 // service requires. Every block in one blob must encode to the same length.
 func blockID(i int) string {
-	return base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("azcp-blk-%08d", i)))
+	return base64.StdEncoding.EncodeToString(fmt.Appendf(nil, "azcp-blk-%08d", i))
 }

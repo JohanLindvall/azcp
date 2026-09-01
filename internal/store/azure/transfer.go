@@ -112,15 +112,19 @@ func (o TransferOptions) httpHeadersWithMD5(name string, sum []byte) *blob.HTTPH
 	if len(sum) > 0 {
 		h.BlobContentMD5, set = sum, true
 	}
-	for value, field := range map[string]**string{
-		o.ContentEncoding:    &h.BlobContentEncoding,
-		o.ContentDisposition: &h.BlobContentDisposition,
-		o.ContentLanguage:    &h.BlobContentLanguage,
-		o.CacheControl:       &h.BlobCacheControl,
+	// A list rather than a map keyed by value: two headers given the same
+	// text — "--content-language en --content-encoding en" — must both be set.
+	for _, hdr := range []struct {
+		value string
+		field **string
+	}{
+		{o.ContentEncoding, &h.BlobContentEncoding},
+		{o.ContentDisposition, &h.BlobContentDisposition},
+		{o.ContentLanguage, &h.BlobContentLanguage},
+		{o.CacheControl, &h.BlobCacheControl},
 	} {
-		if value != "" {
-			v := value
-			*field, set = &v, true
+		if hdr.value != "" {
+			*hdr.field, set = to.Ptr(hdr.value), true
 		}
 	}
 	if !set {
@@ -142,8 +146,7 @@ func (o TransferOptions) metadata() map[string]*string {
 	}
 	m := make(map[string]*string, len(o.Metadata))
 	for k, v := range o.Metadata {
-		val := v
-		m[k] = &val
+		m[k] = to.Ptr(v)
 	}
 	return m
 }
@@ -258,13 +261,13 @@ func (s *Store) upload(ctx context.Context, srcPath string, dst *uri.URL, o Tran
 
 	// Anything that does not fill more than one block goes up in a single
 	// request, which is both fewer round trips and less to go wrong.
-	if size <= o.blockSize(size) {
+	if blockSize := o.blockSize(size); size <= blockSize {
 		c, err := s.client(ctx, dst)
 		if err != nil {
 			return err
 		}
 		_, err = c.UploadFile(ctx, dst.Container, dst.Key, f, &blockblob.UploadFileOptions{
-			BlockSize:        o.blockSize(size),
+			BlockSize:        blockSize,
 			Concurrency:      uint16(o.concurrency()),
 			Progress:         o.Progress,
 			HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, sum),
@@ -289,11 +292,10 @@ func (s *Store) upload(ctx context.Context, srcPath string, dst *uri.URL, o Tran
 func (s *Store) uploadBlocks(ctx context.Context, f io.ReaderAt, size int64,
 	sum []byte, dst *uri.URL, o TransferOptions) error {
 
-	c, err := s.client(ctx, dst)
+	bb, err := s.blockBlobClient(ctx, dst)
 	if err != nil {
 		return err
 	}
-	bb := c.ServiceClient().NewContainerClient(dst.Container).NewBlockBlobClient(dst.Key)
 
 	blockSize := o.blockSize(size)
 	count := int((size + blockSize - 1) / blockSize)
@@ -366,43 +368,23 @@ func (s *Store) UploadAt(ctx context.Context, src io.ReaderAt, size int64,
 	})
 }
 
-// UploadStream writes an arbitrary reader to a blob. It is used when the source
-// size is not known ahead of time, such as when reading from a pipe. Note that
-// a stream cannot be replayed, so the sign-in retry only helps when the failure
-// came before anything was read.
-func (s *Store) UploadStream(ctx context.Context, r io.Reader, dst *uri.URL, o TransferOptions) error {
-	return s.withSignIn(ctx, func() error {
-		c, err := s.client(ctx, dst)
-		if err != nil {
-			return err
-		}
-		_, err = c.UploadStream(ctx, dst.Container, dst.Key, r, &blockblob.UploadStreamOptions{
-			BlockSize:        o.blockSize(0),
-			Concurrency:      o.concurrency(),
-			Metadata:         o.metadata(),
-			HTTPHeaders:      o.httpHeaders(dst.Key),
-			AccessConditions: o.accessConditions(),
-			AccessTier:       o.tier(),
-		})
-		return err
-	})
-}
-
 // PutAttrs applies metadata, headers and tier to a blob without touching its
 // content, which is what --attributes-only means: cp leaves an existing
 // destination's data exactly as it found it. Only when nothing is there does
 // it degenerate to creating an empty blob, as cp creates an empty file.
 func (s *Store) PutAttrs(ctx context.Context, dst *uri.URL, o TransferOptions) error {
 	return s.withSignIn(ctx, func() error {
-		c, err := s.client(ctx, dst)
+		bc, err := s.blobClient(ctx, dst)
 		if err != nil {
 			return err
 		}
-		bc := c.ServiceClient().NewContainerClient(dst.Container).NewBlobClient(dst.Key)
 		props, err := bc.GetProperties(ctx, nil)
 		if isNotFound(err) {
-			bb := c.ServiceClient().NewContainerClient(dst.Container).NewBlockBlobClient(dst.Key)
-			_, err := bb.Upload(ctx, streaming.NopCloser(strings.NewReader("")),
+			bb, err := s.blockBlobClient(ctx, dst)
+			if err != nil {
+				return err
+			}
+			_, err = bb.Upload(ctx, streaming.NopCloser(strings.NewReader("")),
 				&blockblob.UploadOptions{
 					Metadata:         o.metadata(),
 					HTTPHeaders:      o.httpHeaders(dst.Key),
@@ -453,11 +435,10 @@ func (s *Store) PutAttrs(ctx context.Context, dst *uri.URL, o TransferOptions) e
 // symbolic link, which has no content beyond its target, is represented.
 func (s *Store) PutMarker(ctx context.Context, dst *uri.URL, o TransferOptions) error {
 	return s.withSignIn(ctx, func() error {
-		c, err := s.client(ctx, dst)
+		bb, err := s.blockBlobClient(ctx, dst)
 		if err != nil {
 			return err
 		}
-		bb := c.ServiceClient().NewContainerClient(dst.Container).NewBlockBlobClient(dst.Key)
 		_, err = bb.Upload(ctx, streaming.NopCloser(strings.NewReader("")),
 			&blockblob.UploadOptions{
 				Metadata:         o.metadata(),
@@ -524,13 +505,7 @@ func (s *Store) download(ctx context.Context, src *store.Node, f *os.File, o Tra
 // OpenRead returns a reader over a blob that transparently re-issues the range
 // request if the connection drops mid-stream.
 func (s *Store) OpenRead(ctx context.Context, src *store.Node) (io.ReadCloser, error) {
-	var r io.ReadCloser
-	err := s.withSignIn(ctx, func() error {
-		var e error
-		r, e = s.openRead(ctx, src)
-		return e
-	})
-	return r, err
+	return withSignInValue(ctx, s, func() (io.ReadCloser, error) { return s.openRead(ctx, src) })
 }
 
 func (s *Store) openRead(ctx context.Context, src *store.Node) (io.ReadCloser, error) {
@@ -668,7 +643,7 @@ func (s *Store) asyncCopyViable(src, dst *uri.URL) bool {
 
 // asyncCopy asks the service to copy the blob and waits for it to finish.
 func (s *Store) asyncCopy(ctx context.Context, src *store.Node, dst *uri.URL, o TransferOptions) error {
-	c, err := s.client(ctx, dst)
+	dstBlob, err := s.blobClient(ctx, dst)
 	if err != nil {
 		return err
 	}
@@ -679,7 +654,6 @@ func (s *Store) asyncCopy(ctx context.Context, src *store.Node, dst *uri.URL, o 
 		srcURL += "?" + sas
 	}
 
-	dstBlob := c.ServiceClient().NewContainerClient(dst.Container).NewBlobClient(dst.Key)
 	started, err := dstBlob.StartCopyFromURL(ctx, srcURL, &blob.StartCopyFromURLOptions{
 		// nil means the service copies the source's own metadata, which is
 		// what a copy with nothing overridden should do.
@@ -837,11 +811,10 @@ func (s *Store) copySource(ctx context.Context, src, dst *uri.URL) (string, *str
 func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 	auth *string, dst *uri.URL, o TransferOptions) error {
 
-	c, err := s.client(ctx, dst)
+	bb, err := s.blockBlobClient(ctx, dst)
 	if err != nil {
 		return err
 	}
-	bb := c.ServiceClient().NewContainerClient(dst.Container).NewBlockBlobClient(dst.Key)
 
 	if src.Size <= maxSyncCopyBytes {
 		_, err := bb.UploadBlobFromURL(ctx, srcURL, &blockblob.UploadBlobFromURLOptions{
@@ -908,10 +881,9 @@ func (s *Store) streamCopy(ctx context.Context, src *store.Node, dst *uri.URL, o
 	}
 	defer r.Close()
 
-	var seen int64
 	counted := io.Reader(r)
 	if o.Progress != nil {
-		counted = &countingReader{r: r, total: &seen, report: o.Progress}
+		counted = &countingReader{r: r, report: o.Progress}
 	}
 	c, err := s.client(ctx, dst)
 	if err != nil {
@@ -932,15 +904,15 @@ func (s *Store) streamCopy(ctx context.Context, src *store.Node, dst *uri.URL, o
 // stream-through copy is the honest measure of progress.
 type countingReader struct {
 	r      io.Reader
-	total  *int64
+	total  int64
 	report func(int64)
 }
 
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	if n > 0 {
-		*c.total += int64(n)
-		c.report(*c.total)
+		c.total += int64(n)
+		c.report(c.total)
 	}
 	return n, err
 }

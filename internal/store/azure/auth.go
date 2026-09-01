@@ -279,23 +279,25 @@ func (c *Credentials) signInAs(ctx context.Context, mode AuthMode) (azcore.Token
 				TenantID: c.TenantID,
 				Cache:    c.tokenCache(),
 			})
-		if err == nil {
+		switch {
+		case err != nil && mode == AuthBrowser:
+			return nil, "", err
+		case err != nil:
+			c.logger().Debug("browser sign-in unavailable", "error", err)
+		default:
 			// A browser opening by itself is alarming without a word of
 			// explanation, so this is announced rather than logged.
 			logx.Errf("azcp: opening a browser to sign in to Azure…\n")
-			if rec, aerr := c.authenticate(ctx, cred); aerr == nil {
+			rec, aerr := c.authenticate(ctx, cred)
+			if aerr == nil {
 				c.saveRecord(rec)
 				return cred, "browser", nil
-			} else if mode == AuthBrowser {
-				return nil, "", aerr
-			} else {
-				c.logger().Warn("browser sign-in did not complete, asking for a device code instead",
-					"error", aerr)
 			}
-		} else if mode == AuthBrowser {
-			return nil, "", err
-		} else {
-			c.logger().Debug("browser sign-in unavailable", "error", err)
+			if mode == AuthBrowser {
+				return nil, "", aerr
+			}
+			c.logger().Warn("browser sign-in did not complete, asking for a device code instead",
+				"error", aerr)
 		}
 	}
 	cred, err := c.deviceCode()
@@ -326,10 +328,7 @@ func browserAvailable() bool {
 }
 
 func (c *Credentials) resolve(ctx context.Context) (azcore.TokenCredential, string, error) {
-	log := c.Log
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
-	}
+	log := c.logger()
 
 	switch c.Mode {
 	case AuthAnonymous:
@@ -350,13 +349,11 @@ func (c *Credentials) resolve(ctx context.Context) (azcore.TokenCredential, stri
 		TenantID: c.TenantID,
 	})
 	if err == nil {
-		if perr := probe(ctx, def); perr == nil {
+		if err = probe(ctx, def); err == nil {
 			log.Debug("authenticated with the ambient Azure identity")
 			return def, "default azure credential", nil
-		} else {
-			log.Debug("ambient Azure identity unavailable", "error", perr)
-			err = perr
 		}
+		log.Debug("ambient Azure identity unavailable", "error", err)
 	}
 
 	if c.Mode == AuthIdentity {
@@ -375,12 +372,12 @@ func (c *Credentials) resolve(ctx context.Context) (azcore.TokenCredential, stri
 	if c.Interactive {
 		log.Info("no ambient Azure credential found, signing in")
 		c.escalated = true
-		if cred, kind, serr := c.signIn(ctx); serr == nil {
+		cred, kind, serr := c.signIn(ctx)
+		if serr == nil {
 			log.Info("signed in to Azure", "method", kind)
 			return cred, kind, nil
-		} else {
-			log.Warn("sign-in did not succeed, continuing anonymously", "error", serr)
 		}
+		log.Warn("sign-in did not succeed, continuing anonymously", "error", serr)
 	}
 
 	log.Warn("no Azure credential found; continuing anonymously, "+

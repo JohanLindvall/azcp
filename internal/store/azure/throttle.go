@@ -68,10 +68,7 @@ func (l *limiter) take(ctx context.Context, n int) (int, error) {
 		deficit := float64(n) - l.tokens
 		l.mu.Unlock()
 
-		wait := time.Duration(deficit / l.rate * float64(time.Second))
-		if wait < time.Millisecond {
-			wait = time.Millisecond
-		}
+		wait := max(time.Duration(deficit/l.rate*float64(time.Second)), time.Millisecond)
 		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():

@@ -63,6 +63,17 @@ func (s *Store) withSignIn(ctx context.Context, fn func() error) error {
 	}
 }
 
+// withSignInValue is withSignIn for an operation that produces something.
+func withSignInValue[T any](ctx context.Context, s *Store, fn func() (T, error)) (T, error) {
+	var v T
+	err := s.withSignIn(ctx, func() error {
+		var e error
+		v, e = fn()
+		return e
+	})
+	return v, err
+}
+
 // refreshAuth answers a rejection and reports whether the operation is worth
 // trying again. gen is the credential generation the failed attempt ran under:
 // if the credential has moved on since, the retry needs nothing more than that,

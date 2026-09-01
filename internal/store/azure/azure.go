@@ -15,7 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +26,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/service"
 
@@ -111,11 +112,8 @@ func New(cfg Config) *Store {
 	}
 }
 
+// Scheme identifies the namespace, matching uri.SchemeAzure.
 func (s *Store) Scheme() string { return uri.SchemeAzure }
-
-// Credentials exposes the credential resolver so the transfer path can obtain
-// a bearer token for server-side copies.
-func (s *Store) Credentials() *Credentials { return s.creds }
 
 func (s *Store) clientOptions() *azblob.ClientOptions {
 	return &azblob.ClientOptions{ClientOptions: azcore.ClientOptions{
@@ -279,6 +277,24 @@ func (s *Store) serviceClient(ctx context.Context, u *uri.URL) (*service.Client,
 	return c.ServiceClient(), nil
 }
 
+// blobClient addresses the blob at u for the operations every blob supports.
+func (s *Store) blobClient(ctx context.Context, u *uri.URL) (*blob.Client, error) {
+	cc, err := s.containerClient(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	return cc.NewBlobClient(u.Key), nil
+}
+
+// blockBlobClient addresses the blob at u for staging and committing blocks.
+func (s *Store) blockBlobClient(ctx context.Context, u *uri.URL) (*blockblob.Client, error) {
+	cc, err := s.containerClient(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	return cc.NewBlockBlobClient(u.Key), nil
+}
+
 // ---------------------------------------------------------------------------
 // Naming operations
 // ---------------------------------------------------------------------------
@@ -287,13 +303,7 @@ func (s *Store) serviceClient(ctx context.Context, u *uri.URL) (*service.Client,
 // that is not a blob is probed once more as a prefix before being reported
 // missing.
 func (s *Store) Stat(ctx context.Context, u *uri.URL, _ bool) (*store.Node, error) {
-	var n *store.Node
-	err := s.withSignIn(ctx, func() error {
-		var e error
-		n, e = s.stat(ctx, u)
-		return e
-	})
-	return n, err
+	return withSignInValue(ctx, s, func() (*store.Node, error) { return s.stat(ctx, u) })
 }
 
 func (s *Store) stat(ctx context.Context, u *uri.URL) (*store.Node, error) {
@@ -301,7 +311,7 @@ func (s *Store) stat(ctx context.Context, u *uri.URL) (*store.Node, error) {
 	case u.Container == "":
 		// The account root always exists as far as the tool is concerned; it
 		// behaves as a directory containing the containers.
-		return &store.Node{URL: u, Kind: store.KindDir, Mode: fs.ModeDir | 0o755}, nil
+		return dirNode(u), nil
 
 	case u.Key == "":
 		cc, err := s.containerClient(ctx, u)
@@ -315,20 +325,18 @@ func (s *Store) stat(ctx context.Context, u *uri.URL) (*store.Node, error) {
 			}
 			return nil, err
 		}
-		n := &store.Node{URL: u, Kind: store.KindDir, Mode: fs.ModeDir | 0o755}
-		if props.LastModified != nil {
-			n.ModTime = *props.LastModified
-		}
+		n := dirNode(u)
+		n.ModTime = deref(props.LastModified)
 		return n, nil
 	}
 
 	// A trailing slash is an explicit statement that the user means a prefix.
 	if !u.TrailingSlash {
-		cc, err := s.containerClient(ctx, u)
+		bc, err := s.blobClient(ctx, u)
 		if err != nil {
 			return nil, err
 		}
-		props, err := cc.NewBlobClient(u.Key).GetProperties(ctx, nil)
+		props, err := bc.GetProperties(ctx, nil)
 		if err == nil {
 			return blobNode(u, &props), nil
 		}
@@ -343,7 +351,7 @@ func (s *Store) stat(ctx context.Context, u *uri.URL) (*store.Node, error) {
 		return nil, err
 	}
 	if !empty {
-		return &store.Node{URL: u, Kind: store.KindDir, Mode: fs.ModeDir | 0o755}, nil
+		return dirNode(u), nil
 	}
 	return nil, notExist(u, nil)
 }
@@ -359,9 +367,6 @@ func (s *Store) prefixEmpty(ctx context.Context, u *uri.URL) (bool, error) {
 	pager := cc.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{
 		Prefix: &prefix, MaxResults: &one,
 	})
-	if !pager.More() {
-		return true, nil
-	}
 	page, err := pager.NextPage(ctx)
 	if err != nil {
 		if isNotFound(err) {
@@ -375,13 +380,7 @@ func (s *Store) prefixEmpty(ctx context.Context, u *uri.URL) (bool, error) {
 // ReadDir lists the immediate children of a container or prefix. Containers are
 // listed when u addresses the account root.
 func (s *Store) ReadDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) {
-	var out []*store.Node
-	err := s.withSignIn(ctx, func() error {
-		var e error
-		out, e = s.readDir(ctx, u)
-		return e
-	})
-	return out, err
+	return withSignInValue(ctx, s, func() ([]*store.Node, error) { return s.readDir(ctx, u) })
 }
 
 func (s *Store) readDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) {
@@ -417,11 +416,7 @@ func (s *Store) readDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) 
 				continue
 			}
 			name := strings.TrimSuffix(*p.Name, "/")
-			out = append(out, &store.Node{
-				URL:  u.WithPathPart(u.Container + "/" + name),
-				Kind: store.KindDir,
-				Mode: fs.ModeDir | 0o755,
-			})
+			out = append(out, dirNode(u.WithPathPart(u.Container+"/"+name)))
 		}
 		for _, b := range page.Segment.BlobItems {
 			if b.Name == nil || *b.Name == prefix {
@@ -435,11 +430,18 @@ func (s *Store) readDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) 
 	// so callers see one lexical sequence, as they would from a filesystem.
 	// Ties — a blob and a prefix sharing a name — put the directory first, so
 	// deduplication below keeps it rather than whichever the sort left there.
-	sort.SliceStable(out, func(i, j int) bool {
-		if ni, nj := out[i].Name(), out[j].Name(); ni != nj {
-			return ni < nj
+	slices.SortStableFunc(out, func(a, b *store.Node) int {
+		if c := strings.Compare(a.Name(), b.Name()); c != 0 {
+			return c
 		}
-		return out[i].IsDir() && !out[j].IsDir()
+		switch {
+		case a.IsDir() == b.IsDir():
+			return 0
+		case a.IsDir():
+			return -1
+		default:
+			return 1
+		}
 	})
 	return dedupeByName(out), nil
 }
@@ -460,18 +462,14 @@ func (s *Store) listContainers(ctx context.Context, u *uri.URL) ([]*store.Node, 
 			if c.Name == nil {
 				continue
 			}
-			n := &store.Node{
-				URL:  u.WithPathPart(*c.Name),
-				Kind: store.KindDir,
-				Mode: fs.ModeDir | 0o755,
-			}
-			if c.Properties != nil && c.Properties.LastModified != nil {
-				n.ModTime = *c.Properties.LastModified
+			n := dirNode(u.WithPathPart(*c.Name))
+			if c.Properties != nil {
+				n.ModTime = deref(c.Properties.LastModified)
 			}
 			out = append(out, n)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
+	slices.SortFunc(out, func(a, b *store.Node) int { return strings.Compare(a.Name(), b.Name()) })
 	return out, nil
 }
 
@@ -642,11 +640,7 @@ func (s *Store) walkContainer(ctx context.Context, u *uri.URL, fn func(*store.No
 					continue
 				}
 				seenDirs[dir] = true
-				if err := fn(&store.Node{
-					URL:  u.WithPathPart(u.Container + "/" + dir),
-					Kind: store.KindDir,
-					Mode: fs.ModeDir | 0o755,
-				}); err != nil {
+				if err := fn(dirNode(u.WithPathPart(u.Container + "/" + dir))); err != nil {
 					return err
 				}
 			}
@@ -779,69 +773,86 @@ func deleteBlob(ctx context.Context, cc *container.Client, key string) error {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func blobNode(u *uri.URL, props *blob.GetPropertiesResponse) *store.Node {
-	n := &store.Node{URL: u, Kind: store.KindFile, Mode: 0o644}
-	n.Metadata = flatten(props.Metadata)
-	n.ContentEncoding = deref(props.ContentEncoding)
-	n.ContentDisposition = deref(props.ContentDisposition)
-	n.ContentLanguage = deref(props.ContentLanguage)
-	n.CacheControl = deref(props.CacheControl)
-	if props.ContentLength != nil {
-		n.Size = *props.ContentLength
+// dirNode is the node for a container, a prefix or the account root. Blob
+// storage records nothing about a directory, so every one looks the same.
+func dirNode(u *uri.URL) *store.Node {
+	return &store.Node{URL: u, Kind: store.KindDir, Mode: fs.ModeDir | 0o755}
+}
+
+// blobProps is what this tool reads of a blob's properties. A listing item and
+// a properties call describe the same blob with two differently typed structs,
+// so each is reduced to this before becoming a node.
+type blobProps struct {
+	size               *int64
+	modTime            *time.Time
+	contentType        *string
+	contentEncoding    *string
+	contentDisposition *string
+	contentLanguage    *string
+	cacheControl       *string
+	etag               *azcore.ETag
+	md5                []byte
+	accessTier         string
+	metadata           map[string]*string
+}
+
+// fileNode builds the node for the blob called name. A zero-byte blob whose
+// name ends in "/" is how every Azure tool spells an empty directory.
+func fileNode(u *uri.URL, name string, p blobProps) *store.Node {
+	n := &store.Node{
+		URL:                u,
+		Kind:               store.KindFile,
+		Mode:               0o644,
+		Size:               deref(p.size),
+		ModTime:            deref(p.modTime),
+		ContentType:        deref(p.contentType),
+		ContentEncoding:    deref(p.contentEncoding),
+		ContentDisposition: deref(p.contentDisposition),
+		ContentLanguage:    deref(p.contentLanguage),
+		CacheControl:       deref(p.cacheControl),
+		ETag:               string(deref(p.etag)),
+		MD5:                p.md5,
+		AccessTier:         p.accessTier,
+		Metadata:           flatten(p.metadata),
 	}
-	if props.LastModified != nil {
-		n.ModTime = *props.LastModified
-	}
-	if props.ContentType != nil {
-		n.ContentType = *props.ContentType
-	}
-	if props.ETag != nil {
-		n.ETag = string(*props.ETag)
-	}
-	if props.AccessTier != nil {
-		n.AccessTier = *props.AccessTier
-	}
-	n.MD5 = props.ContentMD5
-	// A zero-byte blob whose name ends in "/" is how every Azure tool spells an
-	// empty directory.
-	if n.Size == 0 && strings.HasSuffix(u.Key, "/") {
-		n.Kind = store.KindDir
-		n.Mode = fs.ModeDir | 0o755
+	if n.Size == 0 && strings.HasSuffix(name, "/") {
+		n.Kind, n.Mode = store.KindDir, fs.ModeDir|0o755
 	}
 	return n
 }
 
+func blobNode(u *uri.URL, props *blob.GetPropertiesResponse) *store.Node {
+	return fileNode(u, u.Key, blobProps{
+		size:               props.ContentLength,
+		modTime:            props.LastModified,
+		contentType:        props.ContentType,
+		contentEncoding:    props.ContentEncoding,
+		contentDisposition: props.ContentDisposition,
+		contentLanguage:    props.ContentLanguage,
+		cacheControl:       props.CacheControl,
+		etag:               props.ETag,
+		md5:                props.ContentMD5,
+		accessTier:         deref(props.AccessTier),
+		metadata:           props.Metadata,
+	})
+}
+
 func itemNode(base *uri.URL, b *container.BlobItem) *store.Node {
 	u := base.WithPathPart(base.Container + "/" + *b.Name)
-	n := &store.Node{URL: u, Kind: store.KindFile, Mode: 0o644}
-	n.Metadata = flatten(b.Metadata)
-	if p := b.Properties; p != nil {
-		n.ContentEncoding = deref(p.ContentEncoding)
-		n.ContentDisposition = deref(p.ContentDisposition)
-		n.ContentLanguage = deref(p.ContentLanguage)
-		n.CacheControl = deref(p.CacheControl)
-		if p.ContentLength != nil {
-			n.Size = *p.ContentLength
-		}
-		if p.LastModified != nil {
-			n.ModTime = *p.LastModified
-		}
-		if p.ContentType != nil {
-			n.ContentType = *p.ContentType
-		}
-		if p.ETag != nil {
-			n.ETag = string(*p.ETag)
-		}
-		if p.AccessTier != nil {
-			n.AccessTier = string(*p.AccessTier)
-		}
-		n.MD5 = p.ContentMD5
+	p := blobProps{metadata: b.Metadata}
+	if bp := b.Properties; bp != nil {
+		p.size = bp.ContentLength
+		p.modTime = bp.LastModified
+		p.contentType = bp.ContentType
+		p.contentEncoding = bp.ContentEncoding
+		p.contentDisposition = bp.ContentDisposition
+		p.contentLanguage = bp.ContentLanguage
+		p.cacheControl = bp.CacheControl
+		p.etag = bp.ETag
+		p.md5 = bp.ContentMD5
+		p.accessTier = string(deref(bp.AccessTier))
 	}
-	if n.Size == 0 && strings.HasSuffix(*b.Name, "/") {
-		n.Kind = store.KindDir
-		n.Mode = fs.ModeDir | 0o755
-	}
-	return n
+	return fileNode(u, *b.Name, p)
 }
 
 // flatten turns the SDK's map of pointers into a plain one; a nil value and an
@@ -859,11 +870,13 @@ func flatten(m map[string]*string) map[string]string {
 	return out
 }
 
-func deref(s *string) string {
-	if s == nil {
-		return ""
+// deref reads through an optional field the SDK models as a pointer, taking
+// the zero value for absent.
+func deref[T any](p *T) (v T) {
+	if p != nil {
+		v = *p
 	}
-	return *s
+	return v
 }
 
 func dedupeByName(in []*store.Node) []*store.Node {
