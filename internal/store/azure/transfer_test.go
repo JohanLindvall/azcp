@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"strings"
 	"testing"
@@ -63,8 +64,13 @@ func TestGuessContentType(t *testing.T) {
 			t.Errorf("%s: no content type guessed", name)
 		}
 	}
-	if got := guessContentType("x.zst"); got != "application/zstd" {
-		t.Errorf("x.zst guessed %q", got)
+	// The platform's table takes precedence — Windows registers .zst as
+	// application/x-compressed — so the fallback is only observable where the
+	// platform has no opinion.
+	if mime.TypeByExtension(".zst") == "" {
+		if got := guessContentType("x.zst"); got != "application/zstd" {
+			t.Errorf("x.zst guessed %q", got)
+		}
 	}
 }
 
