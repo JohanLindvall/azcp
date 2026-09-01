@@ -34,10 +34,7 @@ func kernelCopy(ctx context.Context, dst, src *os.File, size int64, opts *CopyOp
 		if err := ctx.Err(); err != nil {
 			return total, true, err
 		}
-		want := size - total
-		if want > chunk {
-			want = chunk
-		}
+		want := min(size-total, chunk)
 		n, err := unix.CopyFileRange(int(src.Fd()), nil, int(dst.Fd()), nil, int(want), 0)
 		if err != nil {
 			if total == 0 && isCopyRangeUnsupported(err) {

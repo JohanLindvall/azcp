@@ -3,6 +3,7 @@ package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -28,6 +29,7 @@ func New(log *slog.Logger, follow bool) *Store {
 	return &Store{log: log, Follow: follow}
 }
 
+// Scheme identifies the namespace, matching uri.SchemeFile.
 func (s *Store) Scheme() string { return uri.SchemeFile }
 
 // Stat describes the node at u.
@@ -145,10 +147,7 @@ func (s *Store) walk(ctx context.Context, dir *uri.URL,
 		if err := fn(e); err != nil {
 			return err
 		}
-		descend := e.IsDir()
-		if !descend && s.Follow && e.IsSymlink() && e.Mode.IsDir() {
-			descend = true
-		}
+		descend := e.IsDir() || (s.Follow && e.IsSymlink() && e.Mode.IsDir())
 		if !descend {
 			continue
 		}
@@ -201,26 +200,18 @@ func (s *Store) Remove(_ context.Context, u *uri.URL) error {
 	return nil
 }
 
-// wrap normalises errors so callers can use store.IsNotExist.
+// wrap normalises errors so callers can use store.IsNotExist. The os package
+// already reports most failures as a PathError, which unwraps to the errno
+// IsNotExist looks for; a LinkError is reshaped to match, and anything else is
+// given the path it was about.
 func wrap(path string, err error) error {
-	if err == nil {
-		return nil
-	}
 	var pe *os.PathError
-	if ok := asPathError(err, &pe); ok {
+	if errors.As(err, &pe) {
 		return pe
 	}
+	var le *os.LinkError
+	if errors.As(err, &le) {
+		return &os.PathError{Op: le.Op, Path: le.Old, Err: le.Err}
+	}
 	return &os.PathError{Op: "stat", Path: path, Err: err}
-}
-
-func asPathError(err error, out **os.PathError) bool {
-	if pe, ok := err.(*os.PathError); ok {
-		*out = pe
-		return true
-	}
-	if le, ok := err.(*os.LinkError); ok {
-		*out = &os.PathError{Op: le.Op, Path: le.Old, Err: le.Err}
-		return true
-	}
-	return false
 }

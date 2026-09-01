@@ -21,8 +21,9 @@
 package glob
 
 import (
+	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -222,9 +223,7 @@ func hasMetaIn(s string, braces bool) bool {
 	return false
 }
 
-// Unescape removes backslash escapes from a string that will not be matched.
-func Unescape(s string) string { return unescape(s) }
-
+// unescape removes backslash escapes from a string that will not be matched.
 func unescape(s string) string {
 	if !strings.ContainsRune(s, '\\') {
 		return s
@@ -271,7 +270,27 @@ func (starNode) node()  {}
 func (classNode) node() {}
 func (extNode) node()   {}
 
-type sequence struct{ nodes []node }
+type sequence struct {
+	nodes []node
+	// backtracks records that matching can reach the same (node, offset) pair
+	// by more than one route — a second star, or an extglob group alongside
+	// one — which is when memoising the search pays for itself. The common
+	// "*.txt" has one route to everything and is matched without allocating.
+	backtracks bool
+}
+
+// finish computes what the matcher needs to know about a parsed sequence.
+func (s *sequence) finish() *sequence {
+	branching := 0
+	for _, n := range s.nodes {
+		switch n.(type) {
+		case starNode, extNode:
+			branching++
+		}
+	}
+	s.backtracks = branching > 1
+	return s
+}
 
 func parseSequence(s string) (*sequence, error) {
 	seq, pos, err := parseNodes(s, 0, false)
@@ -309,14 +328,12 @@ func parseNodes(s string, pos int, inGroup bool) (*sequence, int, error) {
 			}
 		case inGroup && (c == '|' || c == ')'):
 			flush()
-			return seq, pos, nil
+			return seq.finish(), pos, nil
 		case c == '*' || c == '?':
 			// '*' and '?' are ambiguous: alone they are wildcards, but
 			// followed by '(' they open an extglob group.
 			if pos+1 < len(s) && s[pos+1] == '(' {
-				if ext, next, err := parseExt(s, pos); err != nil {
-					return nil, 0, err
-				} else if ext != nil {
+				if ext, next := parseExt(s, pos); ext != nil {
 					flush()
 					seq.nodes = append(seq.nodes, *ext)
 					pos = next
@@ -340,10 +357,7 @@ func parseNodes(s string, pos int, inGroup bool) (*sequence, int, error) {
 				pos++
 			}
 		case (c == '+' || c == '@' || c == '!') && pos+1 < len(s) && s[pos+1] == '(':
-			ext, next, err := parseExt(s, pos)
-			if err != nil {
-				return nil, 0, err
-			}
+			ext, next := parseExt(s, pos)
 			if ext == nil { // no closing paren: treat as literal text
 				lit.WriteByte(c)
 				pos++
@@ -358,30 +372,30 @@ func parseNodes(s string, pos int, inGroup bool) (*sequence, int, error) {
 		}
 	}
 	if inGroup {
-		return nil, 0, fmt.Errorf("unterminated group")
+		return nil, 0, errors.New("unterminated group")
 	}
 	flush()
-	return seq, pos, nil
+	return seq.finish(), pos, nil
 }
 
 // parseExt parses an extglob group starting at s[pos] (the operator). It
-// returns a nil node, with no error, when there is no closing paren, so the
-// caller can fall back to treating the operator as a literal character.
-func parseExt(s string, pos int) (*extNode, int, error) {
+// returns a nil node when there is no closing paren, so the caller can fall
+// back to treating the operator as a literal character.
+func parseExt(s string, pos int) (*extNode, int) {
 	op := s[pos]
 	p := pos + 2 // skip operator and "("
 	ext := &extNode{op: op}
 	for {
 		alt, next, err := parseNodes(s, p, true)
 		if err != nil {
-			return nil, 0, nil //nolint:nilerr // unterminated group -> literal
+			return nil, 0 // an unterminated group is literal text
 		}
 		ext.alts = append(ext.alts, alt)
 		if next >= len(s) {
-			return nil, 0, nil
+			return nil, 0
 		}
 		if s[next] == ')' {
-			return ext, next + 1, nil
+			return ext, next + 1
 		}
 		p = next + 1 // skip "|"
 	}
@@ -451,10 +465,15 @@ func (c classNode) matches(r rune) bool {
 }
 
 func (s *sequence) match(str string) bool {
-	memo := make(map[[2]int]bool)
+	var memo map[[2]int]bool
+	if s.backtracks {
+		memo = make(map[[2]int]bool)
+	}
 	return matchNodes(s.nodes, 0, str, 0, memo)
 }
 
+// matchNodes matches nodes[i:] against s[p:]. memo, when the sequence needs
+// one, remembers the outcome for every (i, p) already tried.
 func matchNodes(nodes []node, i int, s string, p int, memo map[[2]int]bool) bool {
 	if i == len(nodes) {
 		return p == len(s)
@@ -501,7 +520,9 @@ func matchNodes(nodes []node, i int, s string, p int, memo map[[2]int]bool) bool
 			}
 		}
 	}
-	memo[key] = res
+	if memo != nil {
+		memo[key] = res
+	}
 	return res
 }
 
@@ -546,7 +567,7 @@ func (n extNode) ends(s string, p int) []int {
 		for k := range seen {
 			out = append(out, k)
 		}
-		sort.Ints(out)
+		slices.Sort(out)
 		return out
 	}
 

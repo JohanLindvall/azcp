@@ -1,6 +1,7 @@
 package local
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,18 +15,24 @@ import (
 type Reflink int
 
 const (
-	ReflinkAuto   Reflink = iota // try, fall back to a data copy
-	ReflinkNever                 // always copy data
-	ReflinkAlways                // fail if the filesystem cannot clone
+	// ReflinkAuto tries a clone and falls back to copying the data.
+	ReflinkAuto Reflink = iota
+	// ReflinkNever always copies the data.
+	ReflinkNever
+	// ReflinkAlways fails when the filesystem cannot clone.
+	ReflinkAlways
 )
 
 // Sparse selects hole handling.
 type Sparse int
 
 const (
-	SparseAuto   Sparse = iota // preserve holes when the source is sparse
-	SparseNever                // write every byte, holes included
-	SparseAlways               // punch a hole for every run of zeros
+	// SparseAuto preserves holes when the source is sparse.
+	SparseAuto Sparse = iota
+	// SparseNever writes every byte, holes included.
+	SparseNever
+	// SparseAlways leaves a hole for every run of zeros.
+	SparseAlways
 )
 
 // CopyOptions configures a single file copy.
@@ -204,11 +211,18 @@ func bufSize(opts *CopyOptions) int {
 	return defaultBufSize
 }
 
+// zeros is what a chunk is compared against, a block at a time: bytes.Equal is
+// the runtime's vectorised memory compare, where a byte loop over half a
+// megabyte is not, and the sparse path runs this over every chunk it reads.
+var zeros [defaultBufSize]byte
+
 func isAllZero(b []byte) bool {
-	for _, c := range b {
-		if c != 0 {
+	for len(b) > 0 {
+		n := min(len(b), len(zeros))
+		if !bytes.Equal(b[:n], zeros[:n]) {
 			return false
 		}
+		b = b[n:]
 	}
 	return true
 }
@@ -273,18 +287,10 @@ func ApplyAttrs(srcPath, dstPath string, fi fs.FileInfo, p Preserve, isSymlink b
 	return errs
 }
 
+// specialBits keeps the setuid, setgid and sticky bits of a mode, which Perm
+// drops and chmod must be told about again.
 func specialBits(m fs.FileMode) fs.FileMode {
-	var out fs.FileMode
-	if m&fs.ModeSetuid != 0 {
-		out |= fs.ModeSetuid
-	}
-	if m&fs.ModeSetgid != 0 {
-		out |= fs.ModeSetgid
-	}
-	if m&fs.ModeSticky != 0 {
-		out |= fs.ModeSticky
-	}
-	return out
+	return m & (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
 }
 
 // FileID identifies a file uniquely on a filesystem; the engine uses it to
