@@ -44,11 +44,15 @@ preferred routes.
 
 ## CI and releases
 
-`ci.yml` runs the tests natively on all six platforms a release covers, because
-the copy semantics are full of things that differ per operating system —
-symbolic links, file modes, device identity, path separators — and
-cross-compiling proves none of it. Formatting, vet, the race detector, the
-cross-compile check and the emulator-backed end-to-end suite run once on Linux.
+`ci.yml` runs the tests natively on Linux and Windows, both architectures each,
+because the copy semantics are full of things that differ per operating system
+— symbolic links, file modes, device identity, path separators — and
+cross-compiling proves none of it. macOS is deliberately not in that matrix: its
+runners cost a multiple of the others, and its copy path shares `plat_unix.go`
+with Linux, so what goes untested is `clonefile` and the spelling of the stat
+timestamp fields in `plat_darwin.go`. Touch those and run the tests on a Mac.
+Formatting, vet, the race detector, the cross-compile check (which still
+covers darwin) and the emulator-backed end-to-end suite run once on Linux.
 
 `release.yml` fires on a `v*` tag. It re-runs the tests rather than trusting
 that main was green, then builds each platform on its own runner. That last

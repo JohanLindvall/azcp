@@ -37,10 +37,14 @@ jobs:
       - name: Race detector
         run: go test -race ./...
 
-  # The tests themselves on every platform a release is built for. The copy
-  # semantics are full of things that differ per operating system — symbolic
-  # links, file modes, device identity, path separators — so they are worth
-  # running natively rather than only cross-compiling.
+  # The tests themselves, natively, on the platforms whose runners are cheap.
+  # The copy semantics are full of things that differ per operating system —
+  # symbolic links, file modes, device identity, path separators — so they are
+  # worth running for real rather than only cross-compiling. macOS is left out
+  # on cost: its runners are billed at a multiple of these, and its copy path
+  # shares plat_unix.go with Linux, so only clonefile and the timestamp field
+  # names go untested here. The cross job still compiles it, and the release
+  # workflow still builds it on a macOS runner for the keychain.
   test:
     name: test ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -50,8 +54,6 @@ jobs:
         os:
           - ubuntu-latest      # linux/amd64
           - ubuntu-24.04-arm   # linux/arm64
-          - macos-latest       # darwin/arm64
-          - macos-15-intel     # darwin/amd64
           - windows-latest     # windows/amd64
           - windows-11-arm     # windows/arm64
     steps:
