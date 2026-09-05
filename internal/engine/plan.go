@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -717,9 +718,12 @@ func (e *Engine) decideOverwrite(src, dst *store.Node) (bool, string, error) {
 	case cli.UpdateNoneFail:
 		return false, "", fmt.Errorf("not replacing %s", quote(dst.URL.Display()))
 	case cli.UpdateOlder:
-		// Blob timestamps have millisecond resolution, so an equal time means
-		// "not newer" and the file is left alone.
-		if !src.ModTime.After(dst.ModTime) {
+		// Compared on the timestamps -p restores, so a blob carrying its
+		// file's original mtime is measured against that rather than against
+		// the moment it was uploaded — otherwise `-au` out of blob storage
+		// copies everything again on every run. Blob timestamps have
+		// millisecond resolution, so an equal time means "not newer".
+		if !blobMTime(src).After(blobMTime(dst)) {
 			return false, "", nil
 		}
 	}
@@ -790,13 +794,6 @@ func (e *Engine) fail(format string, args ...any) {
 		logx.Printf("%s\n", jsonLine(map[string]any{"event": "error", "error": msg}))
 		return
 	}
-	// The cp-style line below is the user-facing report. Emitting a log record
-	// at error level as well would print the same problem twice whenever the
-	// log is going to this very terminal.
-	if logx.SharesTerminal() {
-		e.log.Debug("copy problem", "detail", msg)
-	} else {
-		e.log.Error("copy problem", "detail", msg)
-	}
+	e.log.Log(context.Background(), reportLevel(slog.LevelError), "copy problem", "detail", msg)
 	logx.Errf("%s: %s\n", cli.Program, msg)
 }

@@ -307,6 +307,11 @@ func IDOf(path string, fi fs.FileInfo) (FileID, int, bool) { return fileIdentity
 // the platform records them at all.
 func OwnerOf(fi fs.FileInfo) (uid, gid int, ok bool) { return ownerOf(fi) }
 
+// Lchown sets the owner and group of path without following a symlink. Where
+// the platform has no numeric owners to set it does nothing, rather than
+// failing on every file a -a download restores.
+func Lchown(path string, uid, gid int) error { return lchown(path, uid, gid) }
+
 // AccessTimeOf returns the last access time, falling back to the modification
 // time where the platform does not record one.
 func AccessTimeOf(fi fs.FileInfo) time.Time { return accessTimeOf(fi) }

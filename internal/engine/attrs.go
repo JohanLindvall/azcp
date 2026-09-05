@@ -70,7 +70,7 @@ func (e *Engine) restoreAttrs(t *task) {
 	// Ownership first: a successful chown clears the setuid and setgid bits,
 	// so setting the mode afterwards is the only way they survive.
 	if e.opt.Preserve.Ownership && p.HasOwner {
-		if err := os.Lchown(path, p.UID, p.GID); err != nil {
+		if err := local.Lchown(path, p.UID, p.GID); err != nil {
 			// Restoring ownership needs privilege the caller usually lacks;
 			// worth saying, not worth failing the copy over.
 			e.log.Warn("cannot restore ownership",

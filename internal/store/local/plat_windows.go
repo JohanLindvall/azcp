@@ -49,8 +49,11 @@ func accessTimeOf(fi fs.FileInfo) time.Time {
 }
 
 // ownerOf reports nothing: Windows security descriptors are not uid/gid pairs,
-// and pretending otherwise would set the wrong thing.
+// and pretending otherwise would set the wrong thing. lchown has nothing to
+// set for the same reason.
 func ownerOf(fs.FileInfo) (int, int, bool) { return 0, 0, false }
+
+func lchown(string, int, int) error { return nil }
 
 // deviceOfSys reports nothing, so --one-file-system does not apply here. The
 // volume serial is available only by opening the file, which is too expensive

@@ -306,13 +306,7 @@ func (e *Engine) runTask(ctx context.Context, t *task) {
 
 	if err != nil {
 		e.failed.Add(1)
-		level := slog.LevelError
-		if logx.SharesTerminal() {
-			// The cp-style line below already tells the user; keep the
-			// structured record for --log-level=debug and for log files.
-			level = slog.LevelDebug
-		}
-		e.log.Log(ctx, level, "cannot copy",
+		e.log.Log(ctx, reportLevel(slog.LevelError), "cannot copy",
 			"source", t.src.URL.Display(),
 			"destination", t.dst.Display(),
 			"error", brief(err))
@@ -414,10 +408,17 @@ func plainf(format string, args ...any) error {
 // when the log is going to the same terminal.
 func (e *Engine) note(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	if logx.SharesTerminal() {
-		e.log.Debug("skipped", "detail", msg)
-	} else {
-		e.log.Warn("skipped", "detail", msg)
-	}
+	e.log.Log(context.Background(), reportLevel(slog.LevelWarn), "skipped", "detail", msg)
 	logx.Errf("%s: %s\n", cli.Program, msg)
+}
+
+// reportLevel is the level to log a problem at when a cp-style line is printed
+// for it as well. Where the log shares the terminal the record would only
+// repeat the line just above it, so it drops to debug — still there for
+// --log-level=debug, and at full strength in a log file.
+func reportLevel(level slog.Level) slog.Level {
+	if logx.SharesTerminal() {
+		return slog.LevelDebug
+	}
+	return level
 }
