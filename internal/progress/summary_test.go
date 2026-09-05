@@ -6,22 +6,6 @@ import (
 	"testing"
 )
 
-func TestParseMode(t *testing.T) {
-	cases := map[string]Mode{
-		"": ModeAuto, "auto": ModeAuto, "Always": ModeAlways, "yes": ModeAlways,
-		"never": ModeNever, " no ": ModeNever,
-	}
-	for in, want := range cases {
-		got, err := ParseMode(in)
-		if err != nil || got != want {
-			t.Errorf("ParseMode(%q) = %v, %v; want %v", in, got, err, want)
-		}
-	}
-	if _, err := ParseMode("sometimes"); err == nil {
-		t.Error("an unknown mode was accepted")
-	}
-}
-
 // The closing line reads as a sentence, agrees in number, and says what did
 // not go to plan.
 func TestSummaryReadsNaturally(t *testing.T) {

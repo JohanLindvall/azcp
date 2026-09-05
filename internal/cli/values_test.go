@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JohanLindvall/azcp/internal/progress"
 	"github.com/JohanLindvall/azcp/internal/store/azure"
 	"github.com/JohanLindvall/azcp/internal/store/local"
 )
@@ -35,6 +36,15 @@ func TestEnumeratedValues(t *testing.T) {
 	if got := mustParse(t, "--output=JSON", "a", "b").Output; got != OutputJSON {
 		t.Errorf("--output=JSON = %v; the value is case-insensitive", got)
 	}
+	if got := mustParse(t, "--check-md5=REQUIRE", "a", "b").CheckMD5; got != azure.MD5Require {
+		t.Errorf("--check-md5=REQUIRE = %v", got)
+	}
+	if got := mustParse(t, "--progress= Never ", "a", "b").Progress; got != progress.ModeNever {
+		t.Errorf("--progress=Never = %v", got)
+	}
+	if got := mustParse(t, "--auth=Device", "a", "b").Auth; got != azure.AuthDevice {
+		t.Errorf("--auth=Device = %v", got)
+	}
 }
 
 // A rejected value names the option and lists what it takes, in the order
@@ -46,6 +56,9 @@ func TestRejectedValuesNameTheOption(t *testing.T) {
 		"--update=x":              `invalid argument "x" for '--update' (want all, none, none-fail or older)`,
 		"--output=xml":            `invalid argument "xml" for '--output' (want text or json)`,
 		"--glob=x":                `invalid argument "x" for '--glob' (want auto, always or never)`,
+		"--check-md5=maybe":       `invalid argument "maybe" for '--check-md5' (want off, warn, fail or require)`,
+		"--auth=magic":            `invalid argument "magic" for '--auth' (want auto, identity, browser, device or anonymous)`,
+		"--progress=sometimes":    `invalid argument "sometimes" for '--progress' (want auto, always or never)`,
 		"--jobs=0":                `invalid argument "0" for '--jobs' (want a positive number)`,
 		"-j0":                     `invalid argument "0" for '--jobs' (want a positive number)`,
 		"--retries=-1":            `invalid argument "-1" for '--retries' (want a positive number)`,

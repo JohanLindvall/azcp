@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"slices"
@@ -95,8 +97,15 @@ var (
 		{"always", local.SparseAlways}, {"auto", local.SparseAuto}, {"never", local.SparseNever}}
 	updateModes = []choice[Update]{
 		{"all", UpdateAll}, {"none", UpdateNone}, {"none-fail", UpdateNoneFail}, {"older", UpdateOlder}}
-	outputModes = []choice[Output]{{"text", OutputText}, {"json", OutputJSON}}
-	globModes   = []choice[GlobMode]{{"auto", GlobAuto}, {"always", GlobAlways}, {"never", GlobNever}}
+	outputModes   = []choice[Output]{{"text", OutputText}, {"json", OutputJSON}}
+	globModes     = []choice[GlobMode]{{"auto", GlobAuto}, {"always", GlobAlways}, {"never", GlobNever}}
+	progressModes = []choice[progress.Mode]{
+		{"auto", progress.ModeAuto}, {"always", progress.ModeAlways}, {"never", progress.ModeNever}}
+	authModes = []choice[azure.AuthMode]{
+		{"auto", azure.AuthAuto}, {"identity", azure.AuthIdentity}, {"browser", azure.AuthBrowser},
+		{"device", azure.AuthDevice}, {"anonymous", azure.AuthAnonymous}}
+	md5Modes = []choice[azure.MD5Check]{
+		{"off", azure.MD5Off}, {"warn", azure.MD5Warn}, {"fail", azure.MD5Fail}, {"require", azure.MD5Require}}
 )
 
 // choice pairs a spelling accepted on the command line with what it selects.
@@ -179,6 +188,10 @@ type Options struct {
 	Glob            GlobMode
 	Exclude         []string
 	Include         []string
+	// FilesFrom names a file of further SOURCE operands, one per line; "-" is
+	// standard input. It is how a pipeline hands over a list too long for a
+	// command line, and what an AzCopy --list-of-files becomes.
+	FilesFrom string
 
 	// Presentation
 	Progress         progress.Mode
@@ -390,7 +403,17 @@ func Parse(argv []string) (*Options, error) {
 	if o.ShowHelp || o.ShowVersion {
 		return o, nil
 	}
-	if err := o.resolveOperands(res.Operands); err != nil {
+	operands := res.Operands
+	if o.FilesFrom != "" {
+		listed, err := readFilesFrom(o.FilesFrom)
+		if err != nil {
+			return nil, err
+		}
+		// Listed names are sources, and go in front so that whatever was
+		// typed keeps its place: the destination stays last.
+		operands = append(listed, operands...)
+	}
+	if err := o.resolveOperands(operands); err != nil {
 		return nil, err
 	}
 	if !o.jobsSet {
@@ -532,11 +555,7 @@ func (o *Options) apply(f cpflags.Flag) error {
 		}
 		o.MaxErrors = n
 	case "progress":
-		m, err := progress.ParseMode(f.Value)
-		if err != nil {
-			return err
-		}
-		o.Progress = m
+		return setChoice(&o.Progress, f, lower(f.Value), progressModes)
 	case "no-progress":
 		o.Progress = progress.ModeNever
 	case "progress-interval":
@@ -547,7 +566,7 @@ func (o *Options) apply(f cpflags.Flag) error {
 			return errors.New("--progress-interval must be at least 20ms")
 		}
 	case "output":
-		return setChoice(&o.Output, f, strings.ToLower(f.Value), outputModes)
+		return setChoice(&o.Output, f, lower(f.Value), outputModes)
 	case "benchmark":
 		o.Benchmark = true
 		if f.HasValue && f.Value != "" {
@@ -567,6 +586,8 @@ func (o *Options) apply(f cpflags.Flag) error {
 		o.Exclude = append(o.Exclude, f.Value)
 	case "include":
 		o.Include = append(o.Include, f.Value)
+	case "files-from":
+		o.FilesFrom = f.Value
 	case "delete":
 		o.Delete = true
 	case "resume":
@@ -576,11 +597,7 @@ func (o *Options) apply(f cpflags.Flag) error {
 	case "glob":
 		return setChoice(&o.Glob, f, f.Value, globModes)
 	case "auth":
-		m, err := azure.ParseAuthMode(f.Value)
-		if err != nil {
-			return err
-		}
-		o.Auth = m
+		return setChoice(&o.Auth, f, lower(f.Value), authModes)
 	case "tenant":
 		o.TenantID = f.Value
 	case "endpoint-suffix":
@@ -592,11 +609,7 @@ func (o *Options) apply(f cpflags.Flag) error {
 	case "put-md5":
 		o.PutMD5 = true
 	case "check-md5":
-		m, err := azure.ParseMD5Check(f.Value)
-		if err != nil {
-			return err
-		}
-		o.CheckMD5 = m
+		return setChoice(&o.CheckMD5, f, lower(f.Value), md5Modes)
 	case "content-encoding":
 		o.ContentEncoding = f.Value
 	case "content-disposition":
@@ -645,6 +658,10 @@ func valueOr(f cpflags.Flag, dflt string) string {
 	}
 	return dflt
 }
+
+// lower normalises a value for the options whose words are not case-sensitive
+// — the extensions, that is; cp's own reject "Always" and so do we.
+func lower(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
 
 // The set* helpers read one option's value into its field, naming the option
 // in the message when the value will not do.
@@ -736,6 +753,36 @@ func backupSuffixDefault() string {
 		return s
 	}
 	return "~"
+}
+
+// stdin is what --files-from=- reads. Tests point it elsewhere.
+var stdin io.Reader = os.Stdin
+
+// readFilesFrom reads one operand per line. Blank lines are skipped and a
+// trailing carriage return is dropped, so a list written on Windows works;
+// nothing else is interpreted, because a file name may contain anything.
+func readFilesFrom(name string) ([]string, error) {
+	r := stdin
+	if name != "-" {
+		f, err := os.Open(name)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read the file list: %w", err)
+		}
+		defer f.Close()
+		r = f
+	}
+	var out []string
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for sc.Scan() {
+		if line := strings.TrimSuffix(sc.Text(), "\r"); line != "" {
+			out = append(out, line)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("cannot read the file list %s: %w", name, err)
+	}
+	return out, nil
 }
 
 // resolveOperands splits the positional arguments into sources and a

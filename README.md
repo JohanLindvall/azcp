@@ -113,7 +113,7 @@ AzCopy is verb-first (`azcopy copy SRC DST --recursive`); `azcp` is `cp`
 | `--output-type=json` | `--output=json` | |
 | `--log-level=WARNING` | `--log-level=warn` | `error`, `warn`, `info`, `debug` |
 | `AZCOPY_LOG_LOCATION` | `--log-file` | |
-| `--list-of-files list.txt` | `xargs -a list.txt azcp -t DEST` | |
+| `--list-of-files list.txt` | `--files-from list.txt` | or `--files-from -` to read it from a pipe |
 | `AZCOPY_BUFFER_GB` | *(not needed)* | data is streamed, not buffered whole |
 | `AZCOPY_JOB_PLAN_LOCATION` | *(not needed)* | `--resume` asks the service what arrived |
 
@@ -300,6 +300,17 @@ being copied — not to how you spelled it, so `--exclude 'build/**'` prunes
 `azure://acct/c/src`. An excluded directory is pruned rather than walked and
 discarded. `--exclude` beats `--include` where both match, and both take the
 full pattern language, extended patterns and braces included.
+
+A list of sources too long for a command line, or produced by another tool,
+can be read from a file — one name per line, `-` for standard input:
+
+```
+azcp --files-from=list.txt azure://acct/backup/
+find . -name '*.parquet' -newer stamp | azcp --files-from=- -t azure://acct/lake/
+```
+
+Listed names are sources like any other, URLs and patterns included, and the
+destination is still the last operand or `-t`.
 
 ## Archiving a tree
 
@@ -576,6 +587,7 @@ Added by `azcp`:
 | `--progress-interval=DUR` | how often the display repaints (default 1s) |
 | `--exclude=PATTERN` | skip matching entries; repeatable |
 | `--include=PATTERN` | copy only matching entries; repeatable |
+| `--files-from=FILE` | read further sources from FILE, one per line; `-` is standard input |
 | `--put-md5` | record a checksum on each uploaded blob |
 | `--check-md5=WHEN` | `off`, `warn`, `fail` (default), `require` |
 | `--bwlimit=RATE` | cap throughput, in bytes per second |

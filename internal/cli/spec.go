@@ -153,6 +153,9 @@ var specs = []cpflags.Spec{
 	{Long: "include", Arg: cpflags.RequiredArg, Meta: "PATTERN",
 		Help: "copy only entries matching PATTERN; repeatable. --exclude wins " +
 			"where both match"},
+	{Long: "files-from", Arg: cpflags.RequiredArg, Meta: "FILE",
+		Help: "read further SOURCE names from FILE, one per line; - means " +
+			"standard input"},
 	{Long: "delete", Arg: cpflags.NoArg,
 		Help: "remove destination entries the source does not have, making it " +
 			"match; refuses if anything failed to copy, and never removes " +

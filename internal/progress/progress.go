@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,19 +30,6 @@ const (
 	// ModeNever draws nothing, and prints no closing summary either.
 	ModeNever
 )
-
-// ParseMode maps a --progress value.
-func ParseMode(s string) (Mode, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "auto":
-		return ModeAuto, nil
-	case "always", "yes", "force":
-		return ModeAlways, nil
-	case "never", "no", "none":
-		return ModeNever, nil
-	}
-	return 0, fmt.Errorf("unknown progress mode %q (want auto, always or never)", s)
-}
 
 // Direction picks the glyph shown beside a transfer.
 type Direction int
