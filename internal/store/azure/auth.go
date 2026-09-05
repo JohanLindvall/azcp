@@ -55,24 +55,6 @@ const (
 	AuthAnonymous AuthMode = "anonymous"
 )
 
-// ParseAuthMode validates a --auth value.
-func ParseAuthMode(s string) (AuthMode, error) {
-	switch AuthMode(strings.ToLower(strings.TrimSpace(s))) {
-	case "", AuthAuto:
-		return AuthAuto, nil
-	case AuthIdentity:
-		return AuthIdentity, nil
-	case AuthDevice:
-		return AuthDevice, nil
-	case AuthBrowser:
-		return AuthBrowser, nil
-	case AuthAnonymous:
-		return AuthAnonymous, nil
-	}
-	return "", fmt.Errorf("unknown auth mode %q "+
-		"(want auto, identity, browser, device or anonymous)", s)
-}
-
 // Credentials discovers and caches the credential for the process. Discovery is
 // deliberately silent when it succeeds: the point of transparent login is that
 // a user with `az login` already done, a managed identity, or the standard
@@ -380,7 +362,10 @@ func (c *Credentials) resolve(ctx context.Context) (azcore.TokenCredential, stri
 		log.Warn("sign-in did not succeed, continuing anonymously", "error", serr)
 	}
 
-	log.Warn("no Azure credential found; continuing anonymously, "+
+	// Informational rather than a warning: if the container is public this is
+	// simply what happened, and if it is not, the rejection that follows says
+	// so in words the user can act on. Warning here as well said it twice.
+	log.Info("no Azure credential found; continuing anonymously, "+
 		"which only works for containers that allow public read access",
 		"hint", "run `az login`, or pass a SAS token in the URL")
 	return nil, "anonymous", nil

@@ -1,6 +1,8 @@
 package azure
 
 import (
+	"bytes"
+	"context"
 	"crypto/md5"
 	"errors"
 	"log/slog"
@@ -77,18 +79,24 @@ func TestVerifyDownload(t *testing.T) {
 	})
 }
 
-func TestParseMD5Check(t *testing.T) {
-	cases := map[string]MD5Check{
-		"": MD5Fail, "fail": MD5Fail, "off": MD5Off, "none": MD5Off,
-		"warn": MD5Warn, "log": MD5Warn, "require": MD5Require, "REQUIRE": MD5Require,
+// The hash runs beside the upload and is collected only when the commit needs
+// it; nothing asked for is nothing waited on.
+func TestChecksumRunsInTheBackground(t *testing.T) {
+	path, want := writeTemp(t, "some bytes worth hashing")
+	got, err := startChecksum(context.Background(), path).wait()
+	if err != nil || !bytes.Equal(got, want) {
+		t.Errorf("checksum = %x, %v; want %x", got, err, want)
 	}
-	for in, want := range cases {
-		got, err := ParseMD5Check(in)
-		if err != nil || got != want {
-			t.Errorf("ParseMD5Check(%q) = %v, %v; want %v", in, got, err, want)
-		}
+	var none *checksum
+	if sum, err := none.wait(); sum != nil || err != nil {
+		t.Errorf("an unrequested checksum yielded %x, %v", sum, err)
 	}
-	if _, err := ParseMD5Check("maybe"); err == nil {
-		t.Error("an unknown mode was accepted")
+	if _, err := startChecksum(context.Background(), filepath.Join(t.TempDir(), "gone")).wait(); err == nil {
+		t.Error("a missing file hashed to something")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := startChecksum(ctx, path).wait(); !errors.Is(err, context.Canceled) {
+		t.Errorf("a cancelled hash returned %v", err)
 	}
 }

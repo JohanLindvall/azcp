@@ -331,6 +331,7 @@ func (s *Store) stat(ctx context.Context, u *uri.URL) (*store.Node, error) {
 	}
 
 	// A trailing slash is an explicit statement that the user means a prefix.
+	var cause error
 	if !u.TrailingSlash {
 		bc, err := s.blobClient(ctx, u)
 		if err != nil {
@@ -343,6 +344,7 @@ func (s *Store) stat(ctx context.Context, u *uri.URL) (*store.Node, error) {
 		if !isNotFound(err) {
 			return nil, err
 		}
+		cause = err
 	}
 
 	// Not a blob: is anything filed underneath it?
@@ -353,10 +355,13 @@ func (s *Store) stat(ctx context.Context, u *uri.URL) (*store.Node, error) {
 	if !empty {
 		return dirNode(u), nil
 	}
-	return nil, notExist(u, nil)
+	// With the service's own code kept: "container not found" and "blob not
+	// found" point at different mistakes.
+	return nil, notExist(u, cause)
 }
 
-// prefixEmpty reports whether nothing is filed under u's key as a prefix.
+// prefixEmpty reports whether nothing is filed under u's key as a prefix. A
+// container that is not there is reported as such, not as empty.
 func (s *Store) prefixEmpty(ctx context.Context, u *uri.URL) (bool, error) {
 	cc, err := s.containerClient(ctx, u)
 	if err != nil {
@@ -370,7 +375,7 @@ func (s *Store) prefixEmpty(ctx context.Context, u *uri.URL) (bool, error) {
 	page, err := pager.NextPage(ctx)
 	if err != nil {
 		if isNotFound(err) {
-			return true, nil
+			return true, notExist(u, err)
 		}
 		return false, err
 	}

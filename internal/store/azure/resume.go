@@ -125,7 +125,14 @@ func (r *resumeFile) has(i int) bool {
 	return r.have[i]
 }
 
-// mark records a completed range, on disk before it is believed.
+// mark records a completed range, written before it is believed.
+//
+// Written, not fsynced. The record guards against the process ending — a
+// Ctrl-C, a crash, a lost session — and for that the write suffices: the
+// kernel has both the range and the line that vouches for it. An fsync here
+// would promise nothing more after a power cut, since the data range it
+// refers to is not flushed either, and it would serialise every parallel
+// range of every download behind the disk's write latency.
 func (r *resumeFile) mark(i int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -133,9 +140,6 @@ func (r *resumeFile) mark(i int) error {
 		return nil
 	}
 	if _, err := fmt.Fprintln(r.f, i); err != nil {
-		return err
-	}
-	if err := r.f.Sync(); err != nil {
 		return err
 	}
 	r.have[i] = true

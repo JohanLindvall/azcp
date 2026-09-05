@@ -252,11 +252,14 @@ func (s *Store) upload(ctx context.Context, srcPath string, dst *uri.URL, o Tran
 	}
 	size := fi.Size()
 
-	var sum []byte
+	var sum *checksum
 	if o.PutMD5 {
-		if sum, err = fileMD5(srcPath); err != nil {
-			return fmt.Errorf("cannot checksum %s: %w", srcPath, err)
-		}
+		// Hashed while the blocks are in flight rather than before them: the
+		// extra read of the file costs disk time either way, but this way it
+		// costs no wall-clock. Only the commit has to wait for it.
+		hashCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		sum = startChecksum(hashCtx, srcPath)
 	}
 
 	// Anything that does not fill more than one block goes up in a single
@@ -266,11 +269,15 @@ func (s *Store) upload(ctx context.Context, srcPath string, dst *uri.URL, o Tran
 		if err != nil {
 			return err
 		}
+		md5, err := sum.wait()
+		if err != nil {
+			return fmt.Errorf("cannot checksum %s: %w", srcPath, err)
+		}
 		_, err = c.UploadFile(ctx, dst.Container, dst.Key, f, &blockblob.UploadFileOptions{
 			BlockSize:        blockSize,
 			Concurrency:      uint16(o.concurrency()),
 			Progress:         o.Progress,
-			HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, sum),
+			HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, md5),
 			Metadata:         o.metadata(),
 			AccessConditions: o.accessConditions(),
 			AccessTier:       o.tier(),
@@ -290,7 +297,7 @@ func (s *Store) upload(ctx context.Context, srcPath string, dst *uri.URL, o Tran
 // the link where it hurts: high bandwidth and high latency, where one stream
 // cannot fill the pipe.
 func (s *Store) uploadBlocks(ctx context.Context, f io.ReaderAt, size int64,
-	sum []byte, dst *uri.URL, o TransferOptions) error {
+	sum *checksum, dst *uri.URL, o TransferOptions) error {
 
 	bb, err := s.blockBlobClient(ctx, dst)
 	if err != nil {
@@ -345,9 +352,13 @@ func (s *Store) uploadBlocks(ctx context.Context, f io.ReaderAt, size int64,
 		return err
 	}
 
+	md5, err := sum.wait()
+	if err != nil {
+		return fmt.Errorf("cannot checksum the source: %w", err)
+	}
 	_, err = bb.CommitBlockList(ctx, ids, &blockblob.CommitBlockListOptions{
 		Metadata:         o.metadata(),
-		HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, sum),
+		HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, md5),
 		AccessConditions: o.accessConditions(),
 		Tier:             o.tier(),
 	})
@@ -458,10 +469,10 @@ func (s *Store) Download(ctx context.Context, src *store.Node, f *os.File, o Tra
 		return nil
 	}
 	// The file has to be re-read: ranges arrive out of order, so there is no
-	// point during the transfer at which a running hash would be correct.
-	if err := f.Sync(); err != nil {
-		return err
-	}
+	// point during the transfer at which a running hash would be correct. It
+	// is read back through the page cache, so nothing is flushed first — an
+	// fsync per file would cost more than the hash does on a tree of small
+	// ones, and this is the default path.
 	return s.verifyDownload(f.Name(), src.MD5, o.CheckMD5, src.URL.Display())
 }
 

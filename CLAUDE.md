@@ -357,7 +357,10 @@ file is indistinguishable from a whole one with holes, and a record beside the
 file is the only honest answer. A record describing a different blob is
 discarded rather than continued into. Note that `--resume` must not open the
 destination with `O_TRUNC`, which would destroy the very bytes the record
-vouches for.
+vouches for. The record is written per range but never fsynced: it guards
+against the process ending, not the power, and the data it vouches for is not
+flushed either, so an fsync would cost a disk round trip per range for no added
+promise.
 
 **Blob storage has no directories.** `store/azure` synthesises them: a prefix
 with children behaves as a directory, `WalkAll` emits ancestor prefixes so `**`

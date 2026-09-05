@@ -2,12 +2,13 @@ package azure
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/JohanLindvall/azcp/internal/retryx"
 )
@@ -37,33 +38,57 @@ const (
 	MD5Require
 )
 
-// ParseMD5Check maps a --check-md5 value.
-func ParseMD5Check(s string) (MD5Check, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "off", "no", "none":
-		return MD5Off, nil
-	case "warn", "log":
-		return MD5Warn, nil
-	case "", "fail":
-		return MD5Fail, nil
-	case "require":
-		return MD5Require, nil
-	}
-	return 0, fmt.Errorf("unknown --check-md5 value %q (want off, warn, fail or require)", s)
-}
-
-// fileMD5 hashes a whole file.
-func fileMD5(path string) ([]byte, error) {
+// fileMD5 hashes a whole file. It gives up when ctx does, so a hash started
+// alongside an upload that then fails does not go on reading the disk.
+func fileMD5(ctx context.Context, path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	h := md5.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return nil, err
+	buf := make([]byte, 1<<20)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		n, rerr := f.Read(buf)
+		h.Write(buf[:n])
+		if errors.Is(rerr, io.EOF) {
+			return h.Sum(nil), nil
+		}
+		if rerr != nil {
+			return nil, rerr
+		}
 	}
-	return h.Sum(nil), nil
+}
+
+// checksum is a file's MD5 being computed in the background. Blocks are staged
+// out of order, so the hash needs a read of its own; running it while the
+// blocks are in flight means that read costs disk time but no wall-clock.
+type checksum struct {
+	done chan struct{}
+	sum  []byte
+	err  error
+}
+
+func startChecksum(ctx context.Context, path string) *checksum {
+	c := &checksum{done: make(chan struct{})}
+	go func() {
+		defer close(c.done)
+		c.sum, c.err = fileMD5(ctx, path)
+	}()
+	return c
+}
+
+// wait returns the checksum once it is ready. A nil receiver — no checksum was
+// asked for — yields none, so callers need not know whether one was started.
+func (c *checksum) wait() ([]byte, error) {
+	if c == nil {
+		return nil, nil
+	}
+	<-c.done
+	return c.sum, c.err
 }
 
 // verifyDownload compares what landed on disk with the checksum the service
@@ -80,7 +105,7 @@ func (s *Store) verifyDownload(path string, blobMD5 []byte, mode MD5Check, displ
 		s.log.Debug("blob has no recorded MD5, nothing to check against", "blob", display)
 		return nil
 	}
-	got, err := fileMD5(path)
+	got, err := fileMD5(context.Background(), path)
 	if err != nil {
 		return fmt.Errorf("cannot re-read %s to check it: %w", path, err)
 	}
