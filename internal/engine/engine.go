@@ -77,6 +77,11 @@ type Engine struct {
 	// effect. Only the scanner touches it, and the scanner is one goroutine.
 	visitedDirs map[local.FileID]bool
 
+	// destIdx answers the overwrite rules' question about a local destination
+	// from one listing per directory instead of a stat per file. Like
+	// visitedDirs it belongs to the scanner alone.
+	destIdx *destIndex
+
 	// deferredDirs holds directory attributes to apply once their contents
 	// have been written; setting a read-only mode or an old mtime first would
 	// break the copy or be immediately overwritten.
@@ -108,6 +113,7 @@ func New(cfg Config) (*Engine, error) {
 		stdin:       cfg.Stdin,
 		hardLinks:   map[local.FileID]*linkFuture{},
 		visitedDirs: map[local.FileID]bool{},
+		destIdx:     newDestIndex(),
 		retry: retryx.Policy{
 			MaxAttempts: maxWholeFileAttempts(o.Retries),
 			BaseDelay:   o.RetryDelay,

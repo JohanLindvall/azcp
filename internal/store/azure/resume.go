@@ -28,9 +28,11 @@ import (
 // one with holes. That needs a record beside the file, which is written as each
 // range completes and removed when the file is whole.
 
-// resumeSuffix names the record. It sits beside the destination so that
-// removing the destination removes the reason to keep it.
-const resumeSuffix = ".azcp-part"
+// ResumeSuffix names the record. It sits beside the destination so that
+// removing the destination removes the reason to keep it. It is exported
+// because a caller already listing the destination directory can spot one
+// there, and so answer what IncompleteDownload answers without a stat.
+const ResumeSuffix = ".azcp-part"
 
 // resumeFile records which ranges of a download have landed.
 type resumeFile struct {
@@ -48,7 +50,7 @@ type resumeFile struct {
 // was last touched: to -n and -u it is indistinguishable from a finished copy,
 // and skipping it would leave it that way for good.
 func IncompleteDownload(path string) bool {
-	_, err := os.Stat(path + resumeSuffix)
+	_, err := os.Stat(path + ResumeSuffix)
 	return err == nil
 }
 
@@ -56,7 +58,7 @@ func IncompleteDownload(path string) bool {
 // --resume has just written the whole file, so any record left by an earlier
 // attempt describes something that no longer exists.
 func removeResumeRecord(path string) error {
-	err := os.Remove(path + resumeSuffix)
+	err := os.Remove(path + ResumeSuffix)
 	if err != nil && os.IsNotExist(err) {
 		return nil
 	}
@@ -67,7 +69,7 @@ func removeResumeRecord(path string) error {
 // different blob — a different etag, size or block size — is discarded, because
 // continuing into it would splice two files together.
 func openResumeFile(dst string, src *store.Node, blockSize int64) (*resumeFile, error) {
-	path := dst + resumeSuffix
+	path := dst + ResumeSuffix
 	header := fmt.Sprintf("azcp-resume 1 %s %d %d",
 		strings.Trim(src.ETag, `"`), src.Size, blockSize)
 

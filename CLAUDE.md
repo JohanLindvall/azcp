@@ -186,6 +186,21 @@ They are guarded by `needsDestCheck()`, which skips the destination stat
 entirely when no option depends on it — that is the difference between a fast
 and a slow upload of many small files.
 
+**A rerun asks the directory, not the file.** `-n` and `--update=none` decide on
+whether something is there, and nothing else. `engine/destindex.go` answers that
+from one listing of the destination directory rather than a stat per name, which
+matters because the question is asked on the scanner's goroutine, the one the
+workers wait behind, and because `--resume` doubles it: a second stat for the
+`.azcp-part` record beside the file, which the same listing already reveals.
+Sixty thousand blobs already downloaded cost 120,458 stats before and 458 after.
+The rules that weigh the two sides — `-u` against a timestamp, `-i`, `--backup`
+— still stat, and `existenceDecides()` is what says so; `TestIndexAgreesWithStat`
+holds the two routes to the same answer for every combination, so a decision
+must never be made on a fact a directory listing cannot supply. The index also
+records what the scanner has just queued, since two source arguments naming the
+same relative path would otherwise both be written — and under `--resume`, which
+deliberately does not open the destination exclusively, both at once.
+
 **There are two retry layers and they must not multiply.** The SDK pipeline
 retries each HTTP request `--retries` times; `Store.shouldRetry` is where that
 decision is made and logged. `retryx` sits above it for whole-file restarts and
@@ -253,9 +268,39 @@ not in the logger.
 **A recursive remote copy takes one flat listing, not one per prefix.**
 `planRemoteTree` exists because descending prefix by prefix costs a round trip
 per directory and delays the first transfer until the last directory has been
-listed. It also has to synthesise what the walk gives it: destination
+listed. A listing large enough to be divided is still flat: it becomes a
+handful of them over disjoint key ranges, not one per directory. It also has to synthesise what the walk gives it: destination
 directories created once each, and marker blobs for the directories that turn
 out to be empty.
+
+**A listing that is more than a few pages is divided.** A flat listing's pages
+are strictly sequential — the marker for the next one arrives at the end of the
+last — so a container of a quarter of a million blobs is fifty round trips in
+single file with the whole run waiting behind them. `store/azure/split.go`
+asks, once a listing has been going for `splitAfterTime` (or `splitAfterPages`,
+the backstop for an endpoint too fast to trip the clock), what lies immediately
+beneath the prefix; cuts those names into key ranges at the byte where they
+diverge, so the ranges cover everything and overlap nothing; and lists them at
+once. Measured against `cmblagompoc`, whose 258,000 blobs are almost all in one
+container: 129s to 44s, and the whole account 154s to 45s, which is where the
+link runs out — a listing page is four megabytes of XML, the service will not
+gzip it, and an older `x-ms-version` saves 4%.
+
+The trigger is the whole design. Dividing costs a request to find the ranges
+and one per range that ends mid-page, so it has to be paid for out of round
+trips it actually saves: a container that fits in a page never asks, which is
+what keeps the account of ten thousand small containers costing what it did.
+`splitUnits` is where the correctness lives — the units come from one level of a
+hierarchical listing, so they are disjoint and none is a prefix of another,
+which is what lets a group be cut at its first differing byte — and
+`TestSplitUnitsCoversEverythingOnce` holds it to reaching every unit exactly
+once. What a divided listing gives up is the container's own names in sorted
+order: ordering them would mean only the range being consumed may run ahead,
+which is the sequential listing again with more goroutines. `Store.WalkAll`
+never promised an order. What it does promise, and what `emptyDirs` and the
+destination directories are built on, is every blob's directories before the
+blob, and that is a property of each blob's own emission rather than of the
+sequence.
 
 **Containers are listed several at a time.** One listing per container is
 unavoidable — the service cannot list across them — but an account of ten
@@ -391,6 +436,15 @@ requests made of it. The README's claims about request economy — one stat for
 a plain path, one listing per wildcard element, one walk for `**` — are pinned
 there, so a change to the walker that costs a round trip shows up as a failing
 test rather than in someone's bill.
+
+`internal/engine/destindex_test.go` pins the destination side of the same
+economy: one listing per directory rather than a stat per file, and the two
+routes to an overwrite decision agreeing with each other.
+
+`internal/store/azure/split_test.go` serves a container with real paging and a
+working delimiter, so a divided listing can be held to what an undivided one
+would have produced. The emulator cannot stand in for this: its round trips are
+free, which is the one condition under which dividing is never worth it.
 
 `scripts/e2e.sh` covers the blob paths against the emulator — 40 checks; it is the only
 test that exercises upload, download, blob-to-blob copy and remote wildcards

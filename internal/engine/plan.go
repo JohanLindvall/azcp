@@ -638,30 +638,24 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 	out chan<- *task, display string) error {
 
 	e.prog.Saw(1)
-	t := &task{src: src, dst: dst, display: display}
-
+	var backup string
 	if e.needsDestCheck() {
-		dn, err := e.storeFor(dst).Stat(ctx, dst, false)
-		switch {
-		case err == nil:
-			proceed, backup, derr := e.decideOverwrite(src, dn)
-			if derr != nil {
-				e.fail("%v", derr)
-				return nil
-			}
-			if !proceed {
-				e.log.Debug("skipping existing destination",
-					"source", src.URL.Display(), "destination", dst.Display())
-				e.markSkipped()
-				return nil
-			}
-			t.backup = backup
-		case !store.IsNotExist(err):
-			e.fail("cannot access %s: %s", quote(dst.Display()), brief(err))
+		proceed, name, err := e.weighDestination(ctx, src, dst)
+		if err != nil {
+			e.fail("%v", err)
 			return nil
 		}
+		if !proceed {
+			e.log.Debug("skipping existing destination",
+				"source", src.URL.Display(), "destination", dst.Display())
+			e.markSkipped()
+			return nil
+		}
+		backup = name
 	}
-	t.removeFirst = e.opt.RemoveDestination
+	t := &task{src: src, dst: dst, display: display,
+		backup: backup, removeFirst: e.opt.RemoveDestination}
+	e.destIdx.planned(dst)
 
 	e.prog.Plan(1, src.Size)
 	if e.opt.DryRun {
@@ -683,6 +677,56 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// weighDestination applies the overwrite rules to whatever is already at dst,
+// and reports whether the copy goes ahead and what the existing file is backed
+// up to first.
+//
+// The index answers first where it can. On a rerun that is nearly every file,
+// and the difference is two system calls each against one directory listing for
+// all of them — on the scanner's goroutine, which the workers are waiting on.
+func (e *Engine) weighDestination(ctx context.Context, src *store.Node,
+	dst *uri.URL) (bool, string, error) {
+
+	if e.existenceDecides() {
+		if exists, partial, ok := e.destIdx.lookup(dst); ok {
+			switch {
+			case !exists:
+				return true, "", nil
+			case partial && src.URL.IsRemote():
+				// A download that stopped part-way, which outranks -n for the
+				// reason unfinishedDownload gives.
+				return true, "", nil
+			case e.opt.Update == cli.UpdateNoneFail && !e.opt.NoClobber:
+				return false, "", fmt.Errorf("not replacing %s", quote(dst.Display()))
+			default:
+				return false, "", nil
+			}
+		}
+	}
+
+	dn, err := e.storeFor(dst).Stat(ctx, dst, false)
+	switch {
+	case err == nil:
+		return e.decideOverwrite(src, dn)
+	case store.IsNotExist(err):
+		return true, "", nil
+	default:
+		return false, "", fmt.Errorf("cannot access %s: %s", quote(dst.Display()), brief(err))
+	}
+}
+
+// existenceDecides reports whether the overwrite rules in force are settled by
+// whether something is there, without looking at what it is. That is what makes
+// the index usable: -u weighs timestamps, -i asks, and --backup renames, none of
+// which a directory listing can answer.
+func (e *Engine) existenceDecides() bool {
+	if e.opt.Interactive || e.opt.Backup != cli.BackupNone {
+		return false
+	}
+	return e.opt.NoClobber ||
+		e.opt.Update == cli.UpdateNone || e.opt.Update == cli.UpdateNoneFail
 }
 
 // unfinishedDownload reports whether the destination is a download that never

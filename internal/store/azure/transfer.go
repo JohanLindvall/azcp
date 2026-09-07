@@ -508,7 +508,7 @@ func (s *Store) download(ctx context.Context, src *store.Node, f *os.File, o Tra
 		resume.done()
 	} else if err := removeResumeRecord(f.Name()); err != nil {
 		s.log.Warn("cannot remove a stale resume record",
-			"path", f.Name()+resumeSuffix, "error", err)
+			"path", f.Name()+ResumeSuffix, "error", err)
 	}
 	return nil
 }

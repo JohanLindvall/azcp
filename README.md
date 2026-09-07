@@ -47,6 +47,18 @@ Where the speed comes from — none of it clever, all of it measured:
   is unavoidable — an account full of small containers — they are fetched
   several at a time and handed on in order: 400 containers 50 ms away took
   18.5s one at a time and 0.79s this way.
+- **A big container is listed in parallel with itself.** A flat listing returns
+  5000 blobs a request and the pages are strictly sequential, so a quarter of a
+  million blobs is fifty round trips in a line. Once a listing has run long
+  enough to be worth it, `azcp` works out where the names diverge and reads the
+  key ranges side by side. An account of 258,000 blobs, nearly all in one
+  container, went from 154s to 45s — the point at which the link, not the tool,
+  is the limit.
+- **A rerun asks the directory, not the file.** `-r -n --resume` fetches only
+  what is missing, and establishing that a file is already there costs one
+  listing per destination directory rather than a stat per name — two, with
+  `--resume`, which also looks for a part-file beside each one. Over 60,000
+  blobs already downloaded that is 458 system calls instead of 120,458.
 - **No HEAD before every upload.** AzCopy checks each destination first, which
   doubles the request count for small files. `azcp` looks only when an option
   actually depends on what is there.

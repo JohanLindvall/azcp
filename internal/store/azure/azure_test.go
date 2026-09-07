@@ -38,7 +38,7 @@ func TestAncestors(t *testing.T) {
 		{"x/", "a/b.txt", nil}, // outside the prefix being walked
 	}
 	for _, c := range cases {
-		if got := ancestors(c.base, c.name); !slices.Equal(got, c.want) {
+		if got := slices.Collect(ancestors(c.base, c.name)); !slices.Equal(got, c.want) {
 			t.Errorf("ancestors(%q, %q) = %v, want %v", c.base, c.name, got, c.want)
 		}
 	}

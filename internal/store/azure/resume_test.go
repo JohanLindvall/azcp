@@ -187,7 +187,7 @@ func TestUnfinishedRecordSurvivesCrashMidWrite(t *testing.T) {
 	// A record whose header line is torn (no newline, partial content) must be
 	// treated as describing nothing, not trusted.
 	dst := filepath.Join(t.TempDir(), "blob.bin")
-	if err := os.WriteFile(dst+resumeSuffix, []byte("azcp-resu"), 0o600); err != nil {
+	if err := os.WriteFile(dst+ResumeSuffix, []byte("azcp-resu"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	r, err := openResumeFile(dst, testNode(t, `"e"`, 100), 10)
