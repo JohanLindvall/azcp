@@ -35,10 +35,21 @@ import (
 //
 // It buys the depth with requests — ranges do not divide evenly, so each ends
 // on a partial page, and finding them costs a listing of its own. Against fifty
-// slow pages that is noise. Against a container that answers in one page, or in
-// a few fast ones, it would be the whole cost, which is why the question is not
-// asked until the listing has already spent longer than the ranges could: the
-// account of ten thousand small containers pays nothing for this.
+// slow pages that is noise: a rerun of 258,000 blobs took 72 listings where an
+// undivided one took about 55, and 45 seconds where it took 154. Against a
+// container that answers in one page, or in a few fast ones, it would be the
+// whole cost, which is why the question is not asked until the listing has
+// already spent longer than the ranges could: the account of ten thousand small
+// containers pays nothing for this.
+//
+// Two obvious refinements were tried against those accounts and are slower.
+// Waiting for a second page before asking spares the two requests a container
+// that ends on page two spends for nothing — but costs three seconds on the one
+// that matters, and only moves the same waste onto three-page containers.
+// Asking while the listing carries on, so the round trip costs no wall time,
+// costs seven: the question comes back in under a second and a page takes two
+// and a half, so overlapping them buys a cheap answer at the price of an
+// expensive page fetched in order. Ask, and wait for the answer.
 
 const (
 	// maxSplitWays is how many divided listings the whole walk runs at once.

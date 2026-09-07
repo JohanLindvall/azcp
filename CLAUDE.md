@@ -290,6 +290,10 @@ The trigger is the whole design. Dividing costs a request to find the ranges
 and one per range that ends mid-page, so it has to be paid for out of round
 trips it actually saves: a container that fits in a page never asks, which is
 what keeps the account of ten thousand small containers costing what it did.
+Measured, a rerun of 258,000 blobs spends 72 listings where an undivided one
+spends about 55. Two refinements that look free are not, and `split.go` says so
+with the numbers: waiting for a second page before asking, and asking while the
+listing carries on. Do not re-derive them.
 `splitUnits` is where the correctness lives — the units come from one level of a
 hierarchical listing, so they are disjoint and none is a prefix of another,
 which is what lets a group be cut at its first differing byte — and
