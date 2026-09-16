@@ -17,7 +17,16 @@ import (
 func resolvedPath(path string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err == nil {
-		return filepath.Abs(resolved)
+		if filepath.IsAbs(resolved) {
+			return resolved, nil
+		}
+		resolved, err = filepath.Abs(resolved)
+		if err != nil {
+			return "", err
+		}
+		// EvalSymlinks leaves relative paths relative. The working directory
+		// added by Abs can itself contain aliases, including Windows 8.3 names.
+		return filepath.EvalSymlinks(resolved)
 	}
 	if !os.IsNotExist(err) {
 		return "", err
