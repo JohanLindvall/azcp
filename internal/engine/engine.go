@@ -81,6 +81,9 @@ type Engine struct {
 	// from one listing per directory instead of a stat per file. Like
 	// visitedDirs it belongs to the scanner alone.
 	destIdx *destIndex
+	// scheduled belongs to the scanner. Conflicting operands must be settled
+	// before workers can write the same destination concurrently.
+	scheduled map[string]plannedCopy
 
 	// deferredDirs holds directory attributes to apply once their contents
 	// have been written; setting a read-only mode or an old mtime first would
@@ -98,8 +101,9 @@ type Engine struct {
 }
 
 type deferredDir struct {
-	path string
-	info os.FileInfo
+	source string
+	path   string
+	info   os.FileInfo
 }
 
 // New builds an engine. A bad --include or --exclude pattern is reported here,
@@ -114,6 +118,7 @@ func New(cfg Config) (*Engine, error) {
 		hardLinks:   map[local.FileID]*linkFuture{},
 		visitedDirs: map[local.FileID]bool{},
 		destIdx:     newDestIndex(),
+		scheduled:   map[string]plannedCopy{},
 		retry: retryx.Policy{
 			MaxAttempts: maxWholeFileAttempts(o.Retries),
 			BaseDelay:   o.RetryDelay,
@@ -191,6 +196,8 @@ type task struct {
 	// removeFirst deletes the destination before writing, for --force and
 	// --remove-destination.
 	removeFirst bool
+	noop        bool
+	done        chan struct{}
 }
 
 // Run performs the copy and reports how many files failed.
@@ -213,6 +220,9 @@ func (e *Engine) Run(ctx context.Context) (int64, error) {
 				if ctx.Err() != nil {
 					// Drain without working, so the scanner is never blocked
 					// on a channel nobody is reading.
+					if t.done != nil {
+						close(t.done)
+					}
 					continue
 				}
 				e.runTask(ctx, t)
@@ -231,8 +241,10 @@ func (e *Engine) Run(ctx context.Context) (int64, error) {
 	e.prog.SetScanning(false)
 	wg.Wait()
 
+	if scanErr == nil {
+		e.deleted = e.prune(ctx)
+	}
 	e.applyDeferredDirs()
-	e.deleted = e.prune(ctx)
 
 	if scanErr != nil {
 		return e.failed.Load(), scanErr
@@ -283,6 +295,9 @@ func (e *Engine) recordFailure(f Failure) {
 
 // runTask moves one file, retrying failures that look transient.
 func (e *Engine) runTask(ctx context.Context, t *task) {
+	if t.done != nil {
+		defer close(t.done)
+	}
 	pt := e.prog.Begin(t.display, t.src.Size, direction(t.src.URL, t.dst))
 	err := retryx.Do(ctx, e.retry,
 		func(attempt int, delay time.Duration, cause error) {
@@ -377,7 +392,7 @@ func (e *Engine) applyDeferredDirs() {
 	dirs := e.deferredDirs
 	slices.SortFunc(dirs, func(a, b deferredDir) int { return cmp.Compare(len(b.path), len(a.path)) })
 	for _, d := range dirs {
-		for _, err := range local.ApplyAttrs(d.path, d.path, d.info, e.opt.Preserve, false) {
+		for _, err := range local.ApplyAttrs(d.source, d.path, d.info, e.opt.Preserve, false) {
 			e.log.Warn("cannot preserve directory attributes", "path", d.path, "error", err)
 		}
 	}

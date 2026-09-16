@@ -27,17 +27,16 @@ func TestRunCopiesAFile(t *testing.T) {
 	}
 }
 
-// cp's exit statuses are part of the contract: 1 when a file could not be
-// copied, 2 when the command line itself was wrong.
+// GNU cp uses status 1 for both copy and command-line errors.
 func TestRunExitStatuses(t *testing.T) {
 	dir := t.TempDir()
 	if code := runIn(t, dir, "--no-progress", "no-such-file", "dst"); code != exitFail {
 		t.Errorf("missing source: exit %d, want %d", code, exitFail)
 	}
-	if code := runIn(t, dir, "--not-an-option"); code != exitUsage {
+	if code := runIn(t, dir, "--not-an-option"); code != 1 {
 		t.Errorf("bad option: exit %d, want %d", code, exitUsage)
 	}
-	if code := runIn(t, dir, "--no-progress", "lonely"); code != exitUsage {
+	if code := runIn(t, dir, "--no-progress", "lonely"); code != 1 {
 		t.Errorf("missing operand: exit %d, want %d", code, exitUsage)
 	}
 }

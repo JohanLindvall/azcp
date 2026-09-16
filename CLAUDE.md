@@ -20,7 +20,8 @@ rather than reasoning from memory.
 make build     # ./bin/azcp
 make test      # go test ./...
 make race      # go test -race ./...
-make lint      # gofmt -w, go vet, go test
+make lint      # check gofmt formatting, go vet
+make check     # lint, tests and race detector
 ```
 
 For manual end-to-end work against blob storage, the Azurite emulator is
@@ -79,7 +80,7 @@ spending.
 
 ### Dependencies
 
-Six direct ones, and each earns its place. `klauspost/compress` replaces the
+Seven direct ones, and each earns its place. `klauspost/compress` replaces the
 standard library's gzip, flate and zlib decoders — measured at 3.1 GB/s against
 2.2 GB/s on the benchmark in `decompress_test.go`, over a whole file in one pass
 — and brings zstd, which the standard library has no answer for. It pulls in
@@ -450,7 +451,7 @@ working delimiter, so a divided listing can be held to what an undivided one
 would have produced. The emulator cannot stand in for this: its round trips are
 free, which is the one condition under which dividing is never worth it.
 
-`scripts/e2e.sh` covers the blob paths against the emulator — 40 checks; it is the only
+`scripts/e2e.sh` covers the blob paths against the emulator; it is the only
 test that exercises upload, download, blob-to-blob copy and remote wildcards
 together. Add to it when changing anything in `store/azure`.
 

@@ -20,12 +20,11 @@ import (
 	"github.com/JohanLindvall/azcp/internal/progress"
 )
 
-// Exit statuses, following cp: 0 success, 1 some file could not be copied,
-// 2 the command line was wrong.
+// Exit statuses, following cp: 0 success, 1 for copy or command-line errors.
 const (
 	exitOK    = 0
 	exitFail  = 1
-	exitUsage = 2
+	exitUsage = 1
 )
 
 func main() { os.Exit(run(os.Args[1:])) }
@@ -33,9 +32,9 @@ func main() { os.Exit(run(os.Args[1:])) }
 func run(argv []string) int {
 	opt, err := cli.Parse(argv)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", cli.Program, err)
+		logx.Errf("%s: %v\n", cli.Program, err)
 		if isUsage(err) {
-			fmt.Fprintf(os.Stderr, "Try '%s --help' for more information.\n", cli.Program)
+			logx.Errf("Try '%s --help' for more information.\n", cli.Program)
 		}
 		return exitUsage
 	}
@@ -61,7 +60,7 @@ func run(argv []string) int {
 		Color:  colorSupported(),
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", cli.Program, err)
+		logx.Errf("%s: %v\n", cli.Program, err)
 		return exitUsage
 	}
 	defer closer.Close()
@@ -71,12 +70,13 @@ func run(argv []string) int {
 	logx.SetGuard(prog.Guard)
 	prog.Start()
 	// Stop is idempotent; this covers the paths that return early.
-	defer prog.Stop()
+	defer func() { prog.Stop(); logx.SetGuard(nil) }()
 
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
-	go hardStopOnSecondSignal(prog, opt)
+	stopSecondSignal := hardStopOnSecondSignal(prog, opt)
+	defer stopSecondSignal()
 
 	eng, err := engine.New(engine.Config{
 		Options:  opt,
@@ -86,7 +86,7 @@ func run(argv []string) int {
 	})
 	if err != nil {
 		prog.Stop()
-		fmt.Fprintf(os.Stderr, "%s: %v\n", cli.Program, err)
+		logx.Errf("%s: %v\n", cli.Program, err)
 		return exitUsage
 	}
 
@@ -104,7 +104,7 @@ func run(argv []string) int {
 	logx.SetGuard(nil)
 
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", cli.Program, runErr)
+		logx.Errf("%s: %v\n", cli.Program, runErr)
 		if isUsage(runErr) {
 			return exitUsage
 		}
@@ -120,14 +120,14 @@ func run(argv []string) int {
 			if opt.DryRun {
 				verb = "Would remove"
 			}
-			fmt.Fprintf(os.Stderr, "  %s %d destination %s the source does not have\n",
+			logx.Errf("  %s %d destination %s the source does not have\n",
 				verb, n, humanize.Plural(n, "entry", "entries"))
 		}
 	}
 	reportLogged(opt)
 
 	if ctx.Err() != nil {
-		fmt.Fprintf(os.Stderr, "%s: interrupted%s\n", cli.Program, resumeHint(prog, opt))
+		logx.Errf("%s: interrupted%s\n", cli.Program, resumeHint(prog, opt))
 		return exitFail
 	}
 	if failed > 0 {
@@ -144,7 +144,7 @@ func reportLogged(opt *cli.Options) {
 		return
 	}
 	if opt.LogFile != "" {
-		fmt.Fprintf(os.Stderr, "%s: %d warning(s) and %d error(s) logged to %s\n",
+		logx.Errf("%s: %d warning(s) and %d error(s) logged to %s\n",
 			cli.Program, warns, errs, opt.LogFile)
 	}
 }
@@ -152,14 +152,23 @@ func reportLogged(opt *cli.Options) {
 // hardStopOnSecondSignal makes a second interrupt take effect at once. The
 // first one cancels the context and lets in-flight work unwind; someone who
 // asks twice wants out now, and the cursor still has to come back.
-func hardStopOnSecondSignal(prog *progress.Reporter, opt *cli.Options) {
+func hardStopOnSecondSignal(prog *progress.Reporter, opt *cli.Options) func() {
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	<-ch // the first is also handled by NotifyContext
-	<-ch
-	prog.Stop()
-	fmt.Fprintf(os.Stderr, "\n%s: interrupted%s\n", cli.Program, resumeHint(prog, opt))
-	os.Exit(exitFail)
+	done := make(chan struct{})
+	go func() {
+		for range 2 {
+			select {
+			case <-ch:
+			case <-done:
+				return
+			}
+		}
+		prog.Stop()
+		logx.Errf("\n%s: interrupted%s\n", cli.Program, resumeHint(prog, opt))
+		os.Exit(exitFail)
+	}()
+	return func() { signal.Stop(ch); close(done) }
 }
 
 // resumeHint says how much of an interrupted run can be picked up again, and
@@ -210,13 +219,12 @@ func runBenchmark(ctx context.Context, eng *engine.Engine, opt *cli.Options,
 	prog.Stop()
 	logx.SetGuard(nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: benchmark failed: %v\n", cli.Program, err)
+		logx.Errf("%s: benchmark failed: %v\n", cli.Program, err)
 		return exitFail
 	}
 	if opt.Output == cli.OutputJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(res)
+		encoded, _ := json.Marshal(res)
+		logx.Printf("%s\n", encoded)
 		return exitOK
 	}
 	res.Report()
@@ -248,12 +256,11 @@ func writeJSONSummary(prog *progress.Reporter, eng *engine.Engine, opt *cli.Opti
 	if elapsed.Seconds() > 0 {
 		summary["bytes_per_second"] = float64(bytes) / elapsed.Seconds()
 	}
-	enc := json.NewEncoder(os.Stdout)
-	_ = enc.Encode(summary)
+	encoded, _ := json.Marshal(summary)
+	logx.Printf("%s\n", encoded)
 }
 
-// isUsage reports whether err is a problem with the command line, which exits
-// with status 2 rather than 1.
+// isUsage reports whether a diagnostic should point at --help.
 func isUsage(err error) bool {
 	var ue *cli.UsageError
 	return errors.As(err, &ue)

@@ -96,6 +96,10 @@ else
 fi
 [ -d "$WORK/s2s/copy/hollow/inner" ] && ok "a nested empty directory survives blob-to-blob" \
                                      || bad "blob-to-blob lost the nested empty directory"
+"$AZCP" -rT "$AZ/tree/empty" "$AZ/empty-copy" >/dev/null
+"$AZCP" -rT "$AZ/empty-copy" "$WORK/empty-copy" >/dev/null
+[ -d "$WORK/empty-copy" ] && ok "a completely empty prefix survives blob-to-blob" \
+                          || bad "blob-to-blob lost an empty root directory"
 
 # The emulator does not implement the from-URL operations, so this also proves
 # the fallback to the asynchronous Copy Blob route works.
@@ -200,6 +204,37 @@ cmp -s "$WORK/page.gz" "$WORK/raw.gz" \
 check "--decompress expands and drops the extension" \
   "$(cat "$WORK/out" 2>/dev/null)" "compressed payload"
 
+echo "keep expanded" > "$WORK/out"
+"$AZCP" -n --decompress "$AZ/page.gz" "$WORK/out.gz" >/dev/null
+check "-n protects the expanded destination" "$(cat "$WORK/out")" "keep expanded"
+"$AZCP" --decompress --resume "$AZ/page.gz" "$WORK/resumed.gz" >/dev/null
+check "--resume works with decompression" "$(cat "$WORK/resumed")" "compressed payload"
+[ ! -e "$WORK/resumed.azcp-part" ] && ok "decompression finalizes the resume record" \
+                                      || bad "decompression left a resume record"
+
+"$AZCP" --content-encoding=gzip "$WORK/page.gz" "$AZ/encoded/page.gz" >/dev/null
+mkdir -p "$WORK/expanded"
+echo stale > "$WORK/expanded/extra"
+"$AZCP" -rT --delete --decompress "$AZ/encoded" "$WORK/expanded" >/dev/null
+check "--delete keeps decompressed files" "$(cat "$WORK/expanded/page")" "compressed payload"
+[ ! -e "$WORK/expanded/extra" ] && ok "--delete removes extras beside decompressed files" \
+                                || bad "--delete left an extra beside a decompressed file"
+
+echo "attributes only" > "$WORK/attr-encoded.gz"
+"$AZCP" --attributes-only --decompress "$AZ/page.gz" "$WORK/attr-encoded.gz" >/dev/null
+check "--attributes-only never decompresses existing data" "$(cat "$WORK/attr-encoded.gz")" "attributes only"
+
+# Reserved URL characters belong to the key, including in a copy-source URL.
+"$AZCP" "$SRC/file.txt" "$AZ/reserved%3Fname%23percent%25.txt" >/dev/null
+"$AZCP" "$AZ/reserved%3Fname%23percent%25.txt" "$AZ/reserved-copy.txt" >/dev/null
+"$AZCP" "$AZ/reserved-copy.txt" "$WORK/reserved.txt" >/dev/null
+check "server-side copy preserves reserved key characters" "$(cat "$WORK/reserved.txt")" "hello"
+
+mkdir -p "$WORK/excluded"
+"$AZCP" -rT --exclude logs "$AZ/tree" "$WORK/excluded" >/dev/null
+[ ! -e "$WORK/excluded/logs" ] && ok "a directory exclusion protects the whole remote subtree" \
+                              || bad "remote listing copied an excluded subtree"
+
 # --- metadata ---------------------------------------------------------------
 "$AZCP" --metadata "batch=nightly,source=e2e" "$SRC/file.txt" "$AZ/meta.txt" >/dev/null
 ok "--metadata is accepted on upload"
@@ -264,12 +299,15 @@ else
 fi
 
 # --- benchmark --------------------------------------------------------------
+"$AZCP" "$SRC/file.txt" "$AZ/bench/azcp-benchmark-000.bin" >/dev/null
 if "$AZCP" --benchmark=2x1MiB --output=json "$AZ/bench/" 2>/dev/null \
      | grep -q upload_bytes_per_second; then
   ok "--benchmark measures and reports throughput"
 else
   bad "--benchmark did not report a result"
 fi
+"$AZCP" "$AZ/bench/azcp-benchmark-000.bin" "$WORK/bench-existing" >/dev/null
+check "benchmark leaves preexisting blobs untouched" "$(cat "$WORK/bench-existing")" "hello"
 
 # --- overwrite rules --------------------------------------------------------
 echo "changed" > "$WORK/changed.txt"

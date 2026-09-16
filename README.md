@@ -365,7 +365,12 @@ The default is safe for blobs that carry no checksum, which is most of them.
 A mismatch is retried before it is reported, since bytes that arrived wrong
 often arrive right the second time. Both directions cost an extra read of the
 file, because blocks and ranges move out of order and cannot be hashed on the
-way past — which is why neither is on by default.
+way past. Upload checksums are opt-in; downloads check a recorded MD5 by default.
+
+Downloads and server-side copies are conditional on the blob version seen during
+the scan. A blob changed during the copy fails the transfer instead of silently
+combining ranges from different versions. Run the command again to copy its new
+version.
 
 ## Limiting bandwidth
 
@@ -395,6 +400,13 @@ destroys data. It refuses if any file failed to copy — a listing that stopped
 half way looks exactly like a source with fewer files in it. It never removes
 anything `--exclude` ruled out, since an exclusion says "not my business", not
 "remove it". And `--dry-run` reports every deletion without making one.
+Excluding a directory protects all of its descendants. Destination symlinks
+are never followed when looking for entries to delete, even with `-L`.
+An incomplete or failed scan also prevents deletion.
+
+`--dry-run` creates no destination files, directories or containers, including
+with `--parents`. It cannot be combined with `--benchmark`, which requires real
+transfers to measure throughput.
 
 `--newer-than` and `--older-than` bound by modification time, for pipelines that
 track their own watermark:
@@ -437,11 +449,26 @@ Uploading, it needs nothing on this machine. Blocks staged by the earlier
 attempt are still held against the blob, so `azcp` asks the service what
 arrived and sends only the rest — which means a transfer can be resumed after a
 reboot, or from a different machine entirely.
+Each staged block is identified by a hash of its contents, so changing the
+source or block size reuses only blocks whose bytes still match. Computing these
+identities costs an extra local read of each staged block; it adds no storage
+requests. Blocks staged by older versions with index-only identities are uploaded
+again rather than trusted.
 
 Downloading, only this process knows which ranges landed, because they arrive
 out of order and a half-written file is indistinguishable from a whole one with
 holes. A small record is kept beside the file and removed when it is complete. A
 record that describes a different blob is discarded rather than spliced in.
+The record also identifies the account and blob path, and is rejected if the
+local file is missing, has the wrong size, or the record is malformed. Older
+record formats restart safely. A checksum failure leaves an incomplete record
+and invalidates the saved ranges so `--resume -n` fetches them again.
+
+With `--decompress`, overwrite checks, dry-run output and deletion tracking all
+use the expanded filename. For example, downloading `page.gz` produces `page`,
+and `-n` protects an existing `page`. A resumed download keeps its record until
+decompression finishes. `--attributes-only` leaves the existing contents and
+filename alone, even when `--decompress` is also given.
 
 Stopping a run with Ctrl-C says how much was left unfinished and whether it can
 be picked up, which differs by direction for the reason above — an upload can be
@@ -551,6 +578,8 @@ $ azcp --output=json -v -r ./build azure://acct/rel/ | tail -1
 ```
 
 Failures appear as they happen and again in the summary's `failures` array.
+Deletion events use `remove` or `would-remove`, with the destination in the
+`destination` field; they are JSON objects too.
 
 ## Measuring the link
 
@@ -567,6 +596,9 @@ $ azcp --benchmark=10x64MiB azure://acct/scratch/
 
   measured with --jobs=64 --part-size=8.00 MiB
 ```
+
+Each benchmark uses unique blob names, leaving existing blobs and concurrent
+benchmark runs untouched.
 
 ## Logging
 
@@ -621,8 +653,13 @@ Added by `azcp`:
 | `--create-container` | create a missing destination container |
 | `--content-type`, `--access-tier` | blob properties on write |
 
-Exit status is 0 on success, 1 if a file could not be copied, 2 if the command
-line was wrong — the same as `cp`.
+Exit status is 0 on success and 1 for copy failures or an invalid command line,
+matching GNU `cp`.
+
+Local copies reject source/destination aliases before truncating or backing up
+anything. When multiple source files map to one destination, the first wins and
+later conflicts are reported; `-n` skips them, while `--backup` writes them in
+order and retains the earlier versions.
 
 ## Compared with AzCopy
 
@@ -641,6 +678,10 @@ against a local emulator does not.
 | upload one 200 MiB file | 29 | **27** |
 | download one 200 MiB file | **26** | 27 |
 | download 300 files in 341 directories | **93** (2 listings) | 195 (103 listings) |
+
+The first four azcp counts were rechecked against Azurite on 2026-09-16.
+Uploading the 500 small files into a missing container with `--create-container`
+costs one extra request (504); the table uses an existing container.
 
 Throughput against a real storage account, rather than the emulator, has
 measured about twice AzCopy's on a sample download.
@@ -686,8 +727,8 @@ What remains AzCopy's, by choice:
   and are refused before anything is transferred rather than partway through.
 - `-Z`, `--context` and `--preserve=context` are accepted but do nothing: this
   tool does not set SELinux contexts. Using one logs a warning saying so.
-- `--copy-contents` is accepted and has no effect, since special files are
-  never recursed into.
+- `--copy-contents` is accepted with a warning and has no effect, since special
+  files are never recursed into.
 - A missing destination container is an error rather than being created
   silently; `--create-container` opts in. Containers behave more like a mount
   point than a directory, so creating one is not something to do by accident.

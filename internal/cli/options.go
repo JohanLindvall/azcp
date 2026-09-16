@@ -142,6 +142,7 @@ type Options struct {
 
 	// cp behaviour
 	Recursive            bool
+	CopyContents         bool
 	AttributesOnly       bool
 	Backup               Backup
 	Suffix               string
@@ -372,7 +373,7 @@ func (o *Options) TouchesNetwork() bool {
 func (o *Options) PeakRequests() int { return o.Jobs * o.PartConcurrency }
 
 // UsageError marks a problem with the command line, which the caller reports
-// with exit status 2 and a pointer at --help.
+// with a pointer at --help, in addition to the nonzero exit status.
 type UsageError struct{ err error }
 
 // Usage wraps err as a command-line problem.
@@ -452,6 +453,7 @@ func (o *Options) apply(f cpflags.Flag) error {
 	case "copy-contents":
 		// Only affects recursion into special files, which this tool never
 		// does; accepted so existing command lines keep working.
+		o.CopyContents = true
 	case "debug":
 		// cp's --debug explains how each file was copied. The nearest
 		// equivalents here are -v and the debug-level log records, which is
@@ -818,6 +820,9 @@ func (o *Options) resolveOperands(operands []string) error {
 }
 
 func (o *Options) validate() error {
+	if o.Benchmark && o.DryRun {
+		return usagef("--benchmark cannot be combined with --dry-run")
+	}
 	if o.HasTargetDir && o.NoTargetDirectory {
 		return usagef("cannot combine --target-directory (-t) and --no-target-directory (-T)")
 	}

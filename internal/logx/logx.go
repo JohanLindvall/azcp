@@ -85,7 +85,7 @@ func Errf(format string, args ...any) {
 // and permissions) stays visible, because that is exactly what someone
 // debugging a 403 needs to see.
 var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)((?:\?|&|^)sig=)[^&\s"'<>]+`),
+	regexp.MustCompile(`(?i)((?:\?|&|\\u0026|^)sig=)[^&\s"'<>]+`),
 	regexp.MustCompile(`(?i)(AccountKey=)[^;\s"'<>]+`),
 	regexp.MustCompile(`(?i)(Bearer\s+)[A-Za-z0-9._~+/-]{16,}=*`),
 	regexp.MustCompile(`(?i)(SharedKey\s+[A-Za-z0-9]+:)[A-Za-z0-9+/=]{16,}`),
@@ -175,6 +175,7 @@ func Init(cfg Config) (*slog.Logger, io.Closer, error) {
 	case "", "text", "auto":
 		h = &prettyHandler{w: dest, level: lvl, color: cfg.Color}
 	default:
+		closer.Close()
 		return nil, closer, fmt.Errorf("unknown log format %q (want text or json)", cfg.Format)
 	}
 	return slog.New(&countingHandler{Handler: h}), closer, nil

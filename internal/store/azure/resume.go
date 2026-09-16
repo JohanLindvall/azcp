@@ -3,8 +3,10 @@ package azure
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -36,7 +38,6 @@ const ResumeSuffix = ".azcp-part"
 
 // resumeFile records which ranges of a download have landed.
 type resumeFile struct {
-	path string
 	mu   sync.Mutex
 	f    *os.File
 	have map[int]bool
@@ -70,13 +71,16 @@ func removeResumeRecord(path string) error {
 // continuing into it would splice two files together.
 func openResumeFile(dst string, src *store.Node, blockSize int64) (*resumeFile, error) {
 	path := dst + ResumeSuffix
-	header := fmt.Sprintf("azcp-resume 1 %s %d %d",
-		strings.Trim(src.ETag, `"`), src.Size, blockSize)
+	identity := sha256.Sum256([]byte(blobURL(src.URL)))
+	header := fmt.Sprintf("azcp-resume 2 %x %s %d %d",
+		identity, strings.Trim(src.ETag, `"`), src.Size, blockSize)
 
-	r := &resumeFile{path: path, have: map[int]bool{}}
+	r := &resumeFile{have: map[int]bool{}}
 	if existing, err := os.Open(path); err == nil {
-		matched := r.read(existing, header)
+		matched := r.read(existing, header, src.Size, blockSize)
 		existing.Close()
+		fi, err := os.Stat(dst)
+		matched = matched && err == nil && fi.Size() == src.Size && src.ETag != ""
 		if !matched {
 			r.have = map[int]bool{}
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -108,15 +112,25 @@ func openResumeFile(dst string, src *store.Node, blockSize int64) (*resumeFile, 
 }
 
 // read loads a record, reporting whether it describes the same blob.
-func (r *resumeFile) read(f *os.File, header string) bool {
+func (r *resumeFile) read(f *os.File, header string, size, blockSize int64) bool {
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return false
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], info.Size()-1); err != nil || last[0] != '\n' {
+		return false
+	}
 	sc := bufio.NewScanner(f)
 	if !sc.Scan() || sc.Text() != header {
 		return false
 	}
 	for sc.Scan() {
-		if i, err := strconv.Atoi(strings.TrimSpace(sc.Text())); err == nil {
-			r.have[i] = true
+		i, err := strconv.Atoi(strings.TrimSpace(sc.Text()))
+		if err != nil || i < 0 || int64(i) >= (size+blockSize-1)/blockSize {
+			return false
 		}
+		r.have[i] = true
 	}
 	return sc.Err() == nil
 }
@@ -160,12 +174,6 @@ func (r *resumeFile) bytesDone(blockSize, total int64) int64 {
 	return n
 }
 
-// done removes the record: the file is whole and there is nothing to resume.
-func (r *resumeFile) done() {
-	r.close()
-	_ = os.Remove(r.path)
-}
-
 func (r *resumeFile) close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -201,4 +209,19 @@ func (s *Store) stagedBlocks(ctx context.Context, bb *blockblob.Client) (map[str
 // service requires. Every block in one blob must encode to the same length.
 func blockID(i int) string {
 	return base64.StdEncoding.EncodeToString(fmt.Appendf(nil, "azcp-blk-%08d", i))
+}
+
+// Content identities let a resumed upload trust only matching bytes, even if
+// the source or block size changed. Index-only IDs silently splice old blocks
+// into a new file. Keep the old decoded length for Azure's uniform-ID rule.
+func contentBlockID(ctx context.Context, src io.ReaderAt, offset, size int64) (string, error) {
+	section := io.NewSectionReader(src, offset, size)
+	sum, err := hashReader(ctx, section, sha256.New())
+	if err != nil {
+		return "", err
+	}
+	if read, err := section.Seek(0, io.SeekCurrent); err != nil || read != size {
+		return "", io.ErrUnexpectedEOF
+	}
+	return base64.StdEncoding.EncodeToString(sum[:17]), nil
 }

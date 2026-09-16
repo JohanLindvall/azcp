@@ -71,6 +71,9 @@ type TransferOptions struct {
 	CheckMD5 MD5Check
 	// Resume continues an interrupted transfer instead of starting again.
 	Resume bool
+	// KeepResumeRecord leaves completion to a caller that still has to
+	// transform the downloaded bytes, such as transparent decompression.
+	KeepResumeRecord bool
 }
 
 func (o TransferOptions) blockSize(size int64) int64 {
@@ -232,7 +235,10 @@ func inParallel(ctx context.Context, count, workers int, fn func(ctx context.Con
 		}(i)
 	}
 	wg.Wait()
-	return firstErr
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
 }
 
 // Upload writes a local file to a blob, staging blocks in parallel.
@@ -327,7 +333,10 @@ func (s *Store) uploadBlocks(ctx context.Context, f io.ReaderAt, size int64,
 	err = inParallel(ctx, count, o.concurrency(), func(ctx context.Context, i int) error {
 		offset := int64(i) * blockSize
 		n := min(blockSize, size-offset)
-		id := blockID(i)
+		id, err := contentBlockID(ctx, f, offset, n)
+		if err != nil {
+			return fmt.Errorf("reading block %d of %d: %w", i+1, count, err)
+		}
 		ids[i] = id
 		if staged[id] {
 			if o.Progress != nil {
@@ -465,15 +474,25 @@ func (s *Store) Download(ctx context.Context, src *store.Node, f *os.File, o Tra
 	if err := s.withSignIn(ctx, func() error { return s.download(ctx, src, f, o) }); err != nil {
 		return err
 	}
-	if o.CheckMD5 == MD5Off {
-		return nil
-	}
 	// The file has to be re-read: ranges arrive out of order, so there is no
 	// point during the transfer at which a running hash would be correct. It
 	// is read back through the page cache, so nothing is flushed first — an
 	// fsync per file would cost more than the hash does on a tree of small
 	// ones, and this is the default path.
-	return s.verifyDownload(f.Name(), src.MD5, o.CheckMD5, src.URL.Display())
+	if err := s.verifyDownload(ctx, f.Name(), src.MD5, o.CheckMD5, src.URL.Display()); err != nil {
+		// A checksum failure invalidates every completed range. Keep an empty
+		// record so -n still knows the file needs repair on the next run.
+		if o.Resume && errors.Is(err, retryx.ErrRetryable) {
+			if resetErr := os.WriteFile(f.Name()+ResumeSuffix, nil, 0o600); resetErr != nil {
+				s.log.Warn("cannot reset the resume record", "path", f.Name()+ResumeSuffix, "error", resetErr)
+			}
+		}
+		return err
+	}
+	if !o.KeepResumeRecord {
+		return removeResumeRecord(f.Name())
+	}
+	return nil
 }
 
 func (s *Store) download(ctx context.Context, src *store.Node, f *os.File, o TransferOptions) error {
@@ -504,12 +523,6 @@ func (s *Store) download(ctx context.Context, src *store.Node, f *os.File, o Tra
 	if err := s.downloadRanges(ctx, src, f, o, resume); err != nil {
 		return err
 	}
-	if resume != nil {
-		resume.done()
-	} else if err := removeResumeRecord(f.Name()); err != nil {
-		s.log.Warn("cannot remove a stale resume record",
-			"path", f.Name()+ResumeSuffix, "error", err)
-	}
 	return nil
 }
 
@@ -524,7 +537,7 @@ func (s *Store) openRead(ctx context.Context, src *store.Node) (io.ReadCloser, e
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.DownloadStream(ctx, src.URL.Container, src.URL.Key, nil)
+	resp, err := c.DownloadStream(ctx, src.URL.Container, src.URL.Key, &blob.DownloadStreamOptions{AccessConditions: sourceConditions(src)})
 	if err != nil {
 		if isNotFound(err) {
 			return nil, notExist(src.URL, err)
@@ -666,6 +679,7 @@ func (s *Store) asyncCopy(ctx context.Context, src *store.Node, dst *uri.URL, o 
 	}
 
 	started, err := dstBlob.StartCopyFromURL(ctx, srcURL, &blob.StartCopyFromURLOptions{
+		SourceModifiedAccessConditions: sourceCopyConditions(src),
 		// nil means the service copies the source's own metadata, which is
 		// what a copy with nothing overridden should do.
 		Metadata:         o.metadata(),
@@ -829,11 +843,12 @@ func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 
 	if src.Size <= maxSyncCopyBytes {
 		_, err := bb.UploadBlobFromURL(ctx, srcURL, &blockblob.UploadBlobFromURLOptions{
-			CopySourceAuthorization: auth,
-			Metadata:                o.metadata(),
-			AccessConditions:        o.accessConditions(),
-			Tier:                    o.tier(),
-			HTTPHeaders:             o.httpHeaders(dst.Key),
+			SourceModifiedAccessConditions: sourceCopyConditions(src),
+			CopySourceAuthorization:        auth,
+			Metadata:                       o.metadata(),
+			AccessConditions:               o.accessConditions(),
+			Tier:                           o.tier(),
+			HTTPHeaders:                    o.httpHeaders(dst.Key),
 		})
 		if err != nil {
 			return err
@@ -857,8 +872,9 @@ func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 		n := min(bs, src.Size-off)
 		ids[i] = blockID(i)
 		_, err := bb.StageBlockFromURL(ctx, ids[i], srcURL, &blockblob.StageBlockFromURLOptions{
-			CopySourceAuthorization: auth,
-			Range:                   blob.HTTPRange{Offset: off, Count: n},
+			SourceModifiedAccessConditions: sourceCopyConditions(src),
+			CopySourceAuthorization:        auth,
+			Range:                          blob.HTTPRange{Offset: off, Count: n},
 		})
 		if err != nil {
 			return fmt.Errorf("stage block at offset %d: %w", off, err)

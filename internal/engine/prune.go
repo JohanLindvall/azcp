@@ -8,8 +8,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/JohanLindvall/azcp/internal/cli"
 	"github.com/JohanLindvall/azcp/internal/logx"
 	"github.com/JohanLindvall/azcp/internal/store"
+	"github.com/JohanLindvall/azcp/internal/store/local"
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
@@ -89,7 +91,13 @@ func (e *Engine) prune(ctx context.Context) int64 {
 				quote(u.Display()), brief(err))
 			return err
 		}
-		walkErr := e.storeFor(root).WalkAll(ctx, root, onError, func(n *store.Node) error {
+		namespace := e.storeFor(root)
+		if !root.IsRemote() {
+			// -L describes the source. Following a destination link here would
+			// let --delete remove data outside the destination tree.
+			namespace = local.New(e.log, false)
+		}
+		walkErr := namespace.WalkAll(ctx, root, onError, func(n *store.Node) error {
 			rel, ok := store.RelUnder(root.PathPart(), n.URL.PathPart())
 			if !ok || rel == "" || keep[rel] {
 				return nil
@@ -113,8 +121,11 @@ func (e *Engine) prune(ctx context.Context) int64 {
 		depth := func(n *store.Node) int { return strings.Count(n.URL.PathPart(), "/") }
 		slices.SortStableFunc(extra, func(a, b *store.Node) int { return cmp.Compare(depth(b), depth(a)) })
 		for _, n := range extra {
+			if ctx.Err() != nil {
+				return removed
+			}
 			if e.opt.DryRun {
-				logx.Printf("would remove %s\n", quote(n.URL.Display()))
+				e.reportRemoval(n.URL, true)
 				removed++
 				continue
 			}
@@ -125,12 +136,28 @@ func (e *Engine) prune(ctx context.Context) int64 {
 				e.fail("cannot remove %s: %s", quote(n.URL.Display()), brief(err))
 				continue
 			}
-			if e.opt.Verbose {
-				logx.Printf("removed %s\n", quote(n.URL.Display()))
+			if e.opt.Verbose || e.opt.Output == cli.OutputJSON {
+				e.reportRemoval(n.URL, false)
 			}
 			e.log.Debug("removed", "path", n.URL.Display())
 			removed++
 		}
 	}
 	return removed
+}
+
+func (e *Engine) reportRemoval(u *uri.URL, dryRun bool) {
+	if e.opt.Output == cli.OutputJSON {
+		event := "remove"
+		if dryRun {
+			event = "would-remove"
+		}
+		logx.Printf("%s\n", jsonLine(map[string]any{"event": event, "destination": u.Display()}))
+		return
+	}
+	verb := "removed"
+	if dryRun {
+		verb = "would remove"
+	}
+	logx.Printf("%s %s\n", verb, quote(u.Display()))
 }

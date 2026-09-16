@@ -23,6 +23,9 @@ import (
 // transfer moves one file. It is called on a worker goroutine and may be called
 // again for the same task if the first attempt failed transiently.
 func (e *Engine) transfer(ctx context.Context, t *task, pt *progress.Task) error {
+	if t.noop {
+		return nil
+	}
 	if t.backup != "" {
 		if err := os.Rename(t.dst.Path, t.backup); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("cannot back up %s: %w", quote(t.dst.Display()), err)
@@ -132,6 +135,7 @@ func (e *Engine) download(ctx context.Context, t *task, pt *progress.Task) error
 	if !e.opt.AttributesOnly {
 		opts := e.transferOptions()
 		opts.Progress = pt.Set
+		opts.KeepResumeRecord = e.opt.Resume && e.opt.Decompress && decompressible(t.src.ContentEncoding)
 		if err := e.az.Download(ctx, t.src, f, opts); err != nil {
 			return err
 		}
@@ -139,15 +143,21 @@ func (e *Engine) download(ctx context.Context, t *task, pt *progress.Task) error
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("cannot write %s: %w", quote(t.dst.Display()), err)
 	}
-	if e.opt.Decompress && decompressible(t.src.ContentEncoding) {
-		final, derr := decompressFile(t.dst.Path, t.src.ContentEncoding)
+	if e.opt.Decompress && !e.opt.AttributesOnly && decompressible(t.src.ContentEncoding) {
+		_, derr := decompressTo(ctx, t.dst.Path, t.src.ContentEncoding, t.dst.Path)
 		if derr != nil {
+			if e.opt.Resume {
+				// No completed compressed ranges can vouch for a failed decode.
+				if err := os.WriteFile(t.dst.Path+azure.ResumeSuffix, nil, 0o600); err != nil {
+					e.log.Warn("cannot reset the resume record", "path", t.dst.Display(), "error", err)
+				}
+			}
 			return derr
 		}
-		if final != t.dst.Path {
-			e.log.Debug("expanded on arrival",
-				"blob", t.src.URL.Display(), "path", final)
-			t.dst = t.dst.WithPathPart(final)
+		if e.opt.Resume {
+			if err := os.Remove(t.dst.Path + azure.ResumeSuffix); err != nil && !os.IsNotExist(err) {
+				return err
+			}
 		}
 	}
 	// restoreAttrs covers the timestamps too, including falling back to the
@@ -195,20 +205,21 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 
 	switch {
 	case e.opt.SymbolicLink:
-		// cp refuses a relative source unless the link lands in the current
-		// directory, because the link text would dangle. Making the target
-		// absolute instead produces a working link in exactly the cases cp
-		// errors on, and the identical link everywhere else.
 		return e.replace(t, func() error {
-			target := srcPath
-			if !filepath.IsAbs(target) {
-				abs, err := filepath.Abs(target)
+			if !filepath.IsAbs(srcPath) {
+				cwd, err := os.Stat(".")
 				if err != nil {
 					return err
 				}
-				target = abs
+				parent, err := os.Stat(filepath.Dir(dstPath))
+				if err != nil {
+					return err
+				}
+				if !os.SameFile(cwd, parent) {
+					return plainf("%s: can make relative symbolic links only in current directory", t.dst.Display())
+				}
 			}
-			return os.Symlink(target, dstPath)
+			return os.Symlink(srcPath, dstPath)
 		})
 	case e.opt.HardLink && !t.src.IsSymlink():
 		return e.replace(t, func() error { return os.Link(srcPath, dstPath) })
@@ -383,6 +394,9 @@ func (e *Engine) openDest(t *task, flags int, mode os.FileMode) (*os.File, error
 
 // destError phrases a destination failure the way cp does.
 func destError(t *task, err error) error {
+	if errors.Is(err, local.ErrSameFile) {
+		return plainf("%s and %s are the same file", quote(t.src.URL.Display()), quote(t.dst.Display()))
+	}
 	if errors.Is(err, syscall.EISDIR) {
 		return plainf("cannot overwrite directory %s with non-directory",
 			quote(t.dst.Display()))
@@ -411,7 +425,7 @@ func (e *Engine) applyAttrs(t *task) {
 	if !e.opt.Preserve.Any() || t.dst.IsRemote() || t.src.URL.IsRemote() {
 		return
 	}
-	info, err := os.Lstat(t.src.URL.Path)
+	info, err := sourceInfo(t.src)
 	if err != nil {
 		e.log.Warn("cannot read source attributes",
 			"path", t.src.URL.Display(), "error", err)
@@ -427,6 +441,9 @@ func (e *Engine) applyAttrs(t *task) {
 // checkUnsupported rejects combinations that cannot work against blob storage
 // before any data moves, rather than failing partway through.
 func (e *Engine) checkUnsupported(dest *uri.URL) error {
+	if e.opt.CopyContents {
+		e.log.Warn("ignoring --copy-contents: this tool does not copy special files")
+	}
 	if e.opt.SELinux {
 		// Accepted so existing command lines keep working, but nothing here
 		// sets a security context, and silently doing less than asked would be

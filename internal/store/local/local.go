@@ -90,11 +90,9 @@ func (s *Store) ReadDir(_ context.Context, u *uri.URL) ([]*store.Node, error) {
 	for _, e := range entries {
 		fi, err := e.Info()
 		if err != nil {
-			// The entry vanished between listing and stat; that is normal on a
-			// live filesystem and not worth failing the whole walk over.
-			s.log.Debug("entry disappeared during listing",
-				"path", filepath.Join(u.Path, e.Name()), "error", err)
-			continue
+			// A partial listing cannot stand in for the source: --delete would
+			// interpret the missing entry as permission to remove its copy.
+			return nil, wrap(filepath.Join(u.Path, e.Name()), err)
 		}
 		out = append(out, s.node(u.Join(e.Name()), fi))
 	}
@@ -152,6 +150,7 @@ func (s *Store) walk(ctx context.Context, dir *uri.URL,
 			continue
 		}
 		// Ownership of the inode set is what makes following links safe.
+		var entered *FileID
 		if s.Follow {
 			target, terr := os.Stat(e.URL.Path)
 			if terr != nil {
@@ -166,6 +165,7 @@ func (s *Store) walk(ctx context.Context, dir *uri.URL,
 					continue
 				}
 				visited[id] = true
+				entered = &id
 			}
 		}
 		if s.OneFileSystem {
@@ -176,6 +176,9 @@ func (s *Store) walk(ctx context.Context, dir *uri.URL,
 		}
 		if err := s.walk(ctx, e.URL, onError, fn, visited, rootDev, depth+1); err != nil {
 			return err
+		}
+		if entered != nil {
+			delete(visited, *entered)
 		}
 	}
 	return nil

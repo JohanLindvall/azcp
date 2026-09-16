@@ -3,6 +3,7 @@ package local
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,6 +14,18 @@ import (
 	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
+
+func TestCopyFileRefusesSameOpenFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source")
+	writeFile(t, path, []byte("keep"))
+	if _, err := CopyFile(context.Background(), path, path, CopyOptions{}); !errors.Is(err, ErrSameFile) {
+		t.Fatalf("same-file error = %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "keep" {
+		t.Fatalf("source changed: %q, %v", got, err)
+	}
+}
 
 func writeFile(t *testing.T, path string, data []byte) {
 	t.Helper()

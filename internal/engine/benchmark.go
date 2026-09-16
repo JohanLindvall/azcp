@@ -47,6 +47,9 @@ func (e *Engine) Benchmark(ctx context.Context) (*BenchmarkResult, error) {
 	if !dst.IsRemote() {
 		return nil, errors.New("--benchmark needs a blob destination, not a local path")
 	}
+	if e.opt.DryRun {
+		return nil, errors.New("--benchmark cannot be combined with --dry-run")
+	}
 	if err := e.az.MkdirAll(ctx, dst, 0); err != nil {
 		return nil, err
 	}
@@ -65,8 +68,14 @@ func (e *Engine) Benchmark(ctx context.Context) (*BenchmarkResult, error) {
 		Jobs: e.opt.Jobs, PartSize: e.opt.PartSize,
 	}
 	names := make([]*uri.URL, e.opt.BenchFiles)
+	// A benchmark must never overwrite and then delete somebody's data or
+	// another benchmark's files. Every run owns a fresh, unpredictable prefix.
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil, err
+	}
 	for i := range names {
-		names[i] = dst.Join(fmt.Sprintf("azcp-benchmark-%03d.bin", i))
+		names[i] = dst.Join(fmt.Sprintf("azcp-benchmark-%x-%03d.bin", nonce, i))
 	}
 	// Whatever happens, the generated data does not stay behind.
 	defer e.benchCleanup(names)
@@ -77,6 +86,7 @@ func (e *Engine) Benchmark(ctx context.Context) (*BenchmarkResult, error) {
 	if err := e.benchEach(ctx, names, progress.DirUpload,
 		func(ctx context.Context, u *uri.URL, pt *progress.Task) error {
 			opts := e.transferOptions()
+			opts.NoClobber = true
 			opts.Progress = pt.Set
 			return e.az.UploadAt(ctx, bytes.NewReader(payload), int64(len(payload)),
 				u, opts)

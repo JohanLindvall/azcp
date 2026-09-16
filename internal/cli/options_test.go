@@ -8,6 +8,12 @@ import (
 	"github.com/JohanLindvall/azcp/internal/store/local"
 )
 
+func TestBenchmarkRefusesDryRun(t *testing.T) {
+	if _, err := Parse([]string{"--benchmark", "--dry-run", "azure://acct/c"}); err == nil {
+		t.Fatal("a benchmark cannot honor dry-run")
+	}
+}
+
 // mustParse parses a full command line and fails the test on any error.
 func mustParse(t *testing.T, argv ...string) *Options {
 	t.Helper()

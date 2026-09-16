@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 
@@ -20,8 +21,8 @@ import (
 //
 // It is not free. The hash has to be computed over the whole file, and neither
 // direction can do it while transferring, because blocks and ranges are moved
-// out of order. So both are opt-in, and both say plainly when they cannot do
-// what was asked.
+// out of order. Recording one on upload is opt-in; downloads check a recorded
+// checksum by default.
 
 // MD5Check selects what to do about a blob's recorded checksum on download.
 type MD5Check int
@@ -46,13 +47,16 @@ func fileMD5(ctx context.Context, path string) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
-	h := md5.New()
-	buf := make([]byte, 1<<20)
+	return hashReader(ctx, f, md5.New())
+}
+
+func hashReader(ctx context.Context, r io.Reader, h hash.Hash) ([]byte, error) {
+	buf := make([]byte, 64<<10)
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		n, rerr := f.Read(buf)
+		n, rerr := r.Read(buf)
 		h.Write(buf[:n])
 		if errors.Is(rerr, io.EOF) {
 			return h.Sum(nil), nil
@@ -93,7 +97,7 @@ func (c *checksum) wait() ([]byte, error) {
 
 // verifyDownload compares what landed on disk with the checksum the service
 // reported for the blob.
-func (s *Store) verifyDownload(path string, blobMD5 []byte, mode MD5Check, display string) error {
+func (s *Store) verifyDownload(ctx context.Context, path string, blobMD5 []byte, mode MD5Check, display string) error {
 	if mode == MD5Off {
 		return nil
 	}
@@ -105,7 +109,7 @@ func (s *Store) verifyDownload(path string, blobMD5 []byte, mode MD5Check, displ
 		s.log.Debug("blob has no recorded MD5, nothing to check against", "blob", display)
 		return nil
 	}
-	got, err := fileMD5(context.Background(), path)
+	got, err := fileMD5(ctx, path)
 	if err != nil {
 		return fmt.Errorf("cannot re-read %s to check it: %w", path, err)
 	}

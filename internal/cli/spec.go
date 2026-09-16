@@ -233,8 +233,7 @@ const usageTail = `
 Sizes accept K, M, G and T suffixes (powers of 1024). Durations accept Go
 syntax, e.g. 500ms, 30s, 2m.
 
-Exit status is 0 on success, 1 if any file could not be copied, and 2 if the
-command line itself was wrong.
+Exit status is 0 on success and 1 for copy failures or an invalid command line.
 `
 
 // PrintUsage writes the help text.
