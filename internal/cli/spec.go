@@ -5,6 +5,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"runtime"
 	"runtime/debug"
 	"strings"
 
@@ -342,8 +343,10 @@ func meta(s cpflags.Spec) string {
 	return "VALUE"
 }
 
-// VersionText is printed by --version.
+// VersionText is printed by --version. The Go version is named because the
+// runtime is where a copier's behaviour on files, sockets and signals comes
+// from, and a bug report is worth little without it.
 func VersionText() string {
-	return fmt.Sprintf("%s %s\nA cp-compatible copier with Azure Blob Storage support.\n",
-		Program, VersionString())
+	return fmt.Sprintf("%s %s\nA cp-compatible copier with Azure Blob Storage support.\nBuilt with %s for %s/%s.\n",
+		Program, VersionString(), runtime.Version(), runtime.GOOS, runtime.GOARCH)
 }
