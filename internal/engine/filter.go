@@ -101,7 +101,16 @@ func (f *filter) excluded(rel string) bool {
 	if f == nil {
 		return false
 	}
-	return matchAny(f.excludes, rel)
+	for {
+		if matchAny(f.excludes, rel) {
+			return true
+		}
+		i := strings.LastIndexByte(rel, '/')
+		if i < 0 {
+			return false
+		}
+		rel = rel[:i]
+	}
 }
 
 // included reports whether an entry survives --include. With no --include given

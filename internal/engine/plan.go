@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/JohanLindvall/azcp/internal/cli"
@@ -39,6 +40,11 @@ func (e *Engine) scan(ctx context.Context, out chan<- *task) error {
 		// Every source failed to resolve; the individual reasons are already
 		// reported, and the non-zero exit status comes from the failure count.
 		return nil
+	}
+	// One unrenamed source tree cannot collide with itself. Avoid retaining
+	// per-file bookkeeping on the common large recursive copy.
+	if len(sources) == 1 && !e.opt.Decompress {
+		e.scheduled = nil
 	}
 
 	destNode, destErr := e.storeFor(dest).Stat(ctx, dest, true)
@@ -218,6 +224,15 @@ func (e *Engine) destIsDirectory(dest *uri.URL, node *store.Node, nsources int) 
 
 // targetFor computes where one source lands.
 func (e *Engine) targetFor(ctx context.Context, dest *uri.URL, destIsDir bool, src *store.Node) (*uri.URL, error) {
+	if src.URL.IsRemote() && !dest.IsRemote() && (e.opt.Parents || destIsDir) {
+		name := src.URL.Base()
+		if e.opt.Parents {
+			name = src.URL.PathPart()
+		}
+		if err := checkLocalName(name); err != nil {
+			return nil, err
+		}
+	}
 	if e.opt.Parents {
 		parts := glob.SplitPath(src.URL.PathPart())
 		if len(parts) == 0 {
@@ -226,7 +241,7 @@ func (e *Engine) targetFor(ctx context.Context, dest *uri.URL, destIsDir bool, s
 		}
 		target := dest.Join(parts...)
 		// Recreate the intermediate directories the source path implies.
-		if len(parts) > 1 {
+		if len(parts) > 1 && !e.opt.DryRun {
 			parent := dest.Join(parts[:len(parts)-1]...)
 			if err := e.storeFor(parent).MkdirAll(ctx, parent, 0o755); err != nil {
 				return nil, err
@@ -253,8 +268,26 @@ func (e *Engine) guardSelfCopy(src *store.Node, dst *uri.URL) error {
 	if src.URL.IsRemote() && !src.URL.SameAccount(dst) {
 		return nil
 	}
-	sp := glob.SplitPath(src.URL.PathPart())
-	dp := glob.SplitPath(dst.PathPart())
+	source, dest := src.URL.PathPart(), dst.PathPart()
+	if !src.URL.IsRemote() {
+		var err error
+		if source, err = resolvedPath(source); err != nil {
+			return err
+		}
+		if dest, err = resolvedPath(dest); err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(source, dest)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil
+		}
+		if rel == "." {
+			return fmt.Errorf("%s and %s are the same file", quote(src.URL.Display()), quote(dst.Display()))
+		}
+		return fmt.Errorf("cannot copy a directory, %s, into itself, %s", quote(src.URL.Display()), quote(dst.Display()))
+	}
+	sp := glob.SplitPath(source)
+	dp := glob.SplitPath(dest)
 	if len(dp) < len(sp) {
 		return nil
 	}
@@ -355,11 +388,11 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 		if info, err := os.Stat(src.URL.Path); err == nil {
 			if id, _, ok := local.IDOf(src.URL.Path, info); ok {
 				if e.visitedDirs[id] {
-					e.log.Warn("skipping directory already visited through a symbolic link",
-						"path", src.URL.Display())
+					e.fail("cannot copy cyclic symbolic link %s", quote(src.URL.Display()))
 					return nil
 				}
 				e.visitedDirs[id] = true
+				defer delete(e.visitedDirs, id)
 			}
 		}
 	}
@@ -398,7 +431,7 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 		// Blob storage has no empty directories; write the marker every Azure
 		// tool uses so the shape survives a round trip.
 		if err := e.az.MkdirMarker(ctx, dst); err != nil {
-			e.log.Warn("cannot record empty directory", "path", dst.Display(), "error", err)
+			e.fail("cannot record empty directory %s: %s", quote(dst.Display()), brief(err))
 		}
 	}
 	for _, child := range entries {
@@ -423,8 +456,8 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 	// Directory attributes are applied once the contents are written, so that
 	// a read-only mode or an old mtime cannot interfere with filling it.
 	if !dst.IsRemote() && !src.URL.IsRemote() && e.opt.Preserve.Any() && !e.opt.DryRun {
-		if info, err := os.Lstat(src.URL.Path); err == nil {
-			e.deferredDirs = append(e.deferredDirs, deferredDir{path: dst.Path, info: info})
+		if info, err := sourceInfo(src); err == nil {
+			e.deferredDirs = append(e.deferredDirs, deferredDir{source: src.URL.Path, path: dst.Path, info: info})
 		}
 	}
 	return nil
@@ -481,12 +514,16 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 	out chan<- *task, display, rootRel string) error {
 
 	base := src.URL.PathPart()
+	if base != "" {
+		base = strings.TrimSuffix(base, "/") + "/"
+	}
 	made := map[string]bool{}
 	// Tracked only when the destination is blob storage, which needs a marker
 	// blob to represent an empty directory.
 	var empty *emptyDirs
 	if dst.IsRemote() {
 		empty = newEmptyDirs()
+		empty.dir(dst)
 	}
 
 	onError := func(u *uri.URL, err error) error {
@@ -501,13 +538,18 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		rel, ok := store.RelUnder(base, n.URL.PathPart())
+		rel, ok := strings.CutPrefix(n.URL.PathPart(), base)
 		if !ok || rel == "" {
 			return nil
 		}
+		if !dst.IsRemote() {
+			if err := checkLocalName(rel); err != nil {
+				return err
+			}
+		}
 		filterRel := joinRel(rootRel, rel)
 		target := dst.Join(strings.Split(rel, "/")...)
-		e.recordKept(target)
+		e.recordKept(e.fileDestination(n, target))
 		if n.IsDir() {
 			if !e.filter.descend(filterRel) {
 				return nil
@@ -536,8 +578,7 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 	if !e.opt.DryRun {
 		for _, u := range empty.leaves() {
 			if merr := e.az.MkdirMarker(ctx, u); merr != nil {
-				e.log.Warn("cannot record empty directory",
-					"path", u.Display(), "error", merr)
+				e.fail("cannot record empty directory %s: %s", quote(u.Display()), brief(merr))
 			}
 		}
 	}
@@ -637,7 +678,18 @@ func (e *Engine) planSymlink(ctx context.Context, src *store.Node, dst *uri.URL,
 func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 	out chan<- *task, display string) error {
 
+	dst = e.fileDestination(src, dst)
 	e.prog.Saw(1)
+	if proceed, err := e.reserveDestination(ctx, src, dst); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		e.fail("%v", err)
+		return nil
+	} else if !proceed {
+		e.markSkipped()
+		return nil
+	}
 	var backup string
 	if e.needsDestCheck() {
 		proceed, name, err := e.weighDestination(ctx, src, dst)
@@ -655,6 +707,15 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 	}
 	t := &task{src: src, dst: dst, display: display,
 		backup: backup, removeFirst: e.opt.RemoveDestination}
+	if err := e.prepareLocalTask(t); err != nil {
+		e.fail("%v", err)
+		return nil
+	}
+	dst = t.dst
+	if e.scheduled != nil {
+		t.done = make(chan struct{})
+		e.scheduled[destinationKey(dst)] = plannedCopy{source: destinationKey(src.URL), done: t.done}
+	}
 	e.destIdx.planned(dst)
 
 	e.prog.Plan(1, src.Size)
@@ -669,6 +730,9 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 		}
 		pt := e.prog.Begin(display, src.Size, direction(src.URL, dst))
 		pt.Done(nil)
+		if t.done != nil {
+			close(t.done)
+		}
 		return nil
 	}
 	select {
@@ -677,6 +741,17 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// Overwrite decisions and --delete must use the name that actually lands.
+// Renaming only in the worker lets --decompress bypass -n and makes --delete
+// remove the expanded file as an unexpected destination entry.
+func (e *Engine) fileDestination(src *store.Node, dst *uri.URL) *uri.URL {
+	if e.opt.Decompress && !e.opt.AttributesOnly && !src.IsDir() &&
+		src.URL.IsRemote() && !dst.IsRemote() && decompressible(src.ContentEncoding) {
+		return dst.WithPathPart(decompressedName(dst.Path))
+	}
+	return dst
 }
 
 // weighDestination applies the overwrite rules to whatever is already at dst,

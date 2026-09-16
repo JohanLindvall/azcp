@@ -49,6 +49,8 @@ type CopyOptions struct {
 
 const defaultBufSize = 512 << 10
 
+var ErrSameFile = errors.New("source and destination are the same file")
+
 func (o *CopyOptions) report(n int64) {
 	if o.Progress != nil && n > 0 {
 		o.Progress(n)
@@ -74,7 +76,7 @@ func CopyFile(ctx context.Context, srcPath, dstPath string, opts CopyOptions) (i
 	if mode == 0 {
 		mode = si.Mode().Perm()
 	}
-	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	flags := os.O_WRONLY | os.O_CREATE
 	if opts.Excl {
 		flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
 	}
@@ -90,6 +92,18 @@ func CopyFile(ctx context.Context, srcPath, dstPath string, opts CopyOptions) (i
 			df.Close()
 		}
 	}()
+	di, err := df.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if os.SameFile(si, di) {
+		return 0, ErrSameFile
+	}
+	if di.Mode().IsRegular() {
+		if err := df.Truncate(0); err != nil {
+			return 0, err
+		}
+	}
 
 	if opts.Reflink != ReflinkNever {
 		switch err := tryReflink(df, sf); {

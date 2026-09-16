@@ -26,6 +26,9 @@ func testNode(t *testing.T, etag string, size int64) *store.Node {
 func TestResumeRecordRoundTrip(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "blob.bin")
 	node := testNode(t, `"etag-1"`, 100)
+	if err := os.WriteFile(dst, make([]byte, node.Size), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	r, err := openResumeFile(dst, node, 10)
 	if err != nil {
@@ -91,7 +94,7 @@ func TestResumeRecordRejectsChangedBlob(t *testing.T) {
 	}
 }
 
-func TestResumeRecordDoneRemovesIt(t *testing.T) {
+func TestRemoveResumeRecord(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "blob.bin")
 	r, err := openResumeFile(dst, testNode(t, `"e"`, 10), 10)
 	if err != nil {
@@ -100,9 +103,12 @@ func TestResumeRecordDoneRemovesIt(t *testing.T) {
 	if err := r.mark(0); err != nil {
 		t.Fatal(err)
 	}
-	r.done()
+	r.close()
+	if err := removeResumeRecord(dst); err != nil {
+		t.Fatal(err)
+	}
 	if IncompleteDownload(dst) {
-		t.Error("done() left the record behind")
+		t.Error("completed record was left behind")
 	}
 	if err := removeResumeRecord(dst); err != nil {
 		t.Errorf("removing an absent record should be quiet: %v", err)

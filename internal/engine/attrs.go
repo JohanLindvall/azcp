@@ -26,7 +26,7 @@ func (e *Engine) uploadMetadata(src *store.Node) map[string]string {
 		return m
 	}
 
-	info, err := os.Lstat(src.URL.Path)
+	info, err := sourceInfo(src)
 	if err != nil {
 		e.log.Warn("cannot read attributes to preserve",
 			"path", src.URL.Display(), "error", err)

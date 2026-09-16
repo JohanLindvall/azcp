@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -34,8 +35,26 @@ func decompressible(encoding string) bool {
 // decompressFile expands the file in place and returns its final path, which
 // loses a trailing .gz, .gzip, .zz, .zst or .zstd if it had one.
 func decompressFile(path, encoding string) (string, error) {
+	return decompressTo(context.Background(), path, encoding, decompressedName(path))
+}
+
+func decompressedName(path string) string {
+	for _, ext := range []string{".gz", ".gzip", ".zz", ".zst", ".zstd"} {
+		if trimmed, ok := strings.CutSuffix(path, ext); ok && filepath.Base(path) != ext {
+			return trimmed
+		}
+	}
+	return path
+}
+
+func decompressTo(ctx context.Context, path, encoding, final string) (string, error) {
 	in, err := os.Open(path)
 	if err != nil {
+		return path, err
+	}
+	info, err := in.Stat()
+	if err != nil {
+		in.Close()
 		return path, err
 	}
 	r, err := decoder(in, encoding)
@@ -54,8 +73,11 @@ func decompressFile(path, encoding string) (string, error) {
 	}
 	tmpName := tmp.Name()
 
-	_, copyErr := io.Copy(tmp, r)
+	_, copyErr := io.Copy(tmp, &contextReader{ctx: ctx, Reader: r})
 	r.Close()
+	if copyErr == nil {
+		copyErr = tmp.Chmod(info.Mode().Perm())
+	}
 	tmpErr := tmp.Close()
 
 	// Everything is closed before anything is renamed or removed. Unix does
@@ -73,13 +95,6 @@ func decompressFile(path, encoding string) (string, error) {
 		return path, tmpErr
 	}
 
-	final := path
-	for _, ext := range []string{".gz", ".gzip", ".zz", ".zst", ".zstd"} {
-		if trimmed, ok := strings.CutSuffix(final, ext); ok {
-			final = trimmed
-			break
-		}
-	}
 	if err := os.Rename(tmpName, final); err != nil {
 		os.Remove(tmpName)
 		return path, err
@@ -92,6 +107,18 @@ func decompressFile(path, encoding string) (string, error) {
 		}
 	}
 	return final, nil
+}
+
+type contextReader struct {
+	ctx context.Context
+	io.Reader
+}
+
+func (r *contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.Reader.Read(p)
 }
 
 func decoder(r io.Reader, encoding string) (io.ReadCloser, error) {

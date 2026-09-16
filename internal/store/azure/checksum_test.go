@@ -32,14 +32,14 @@ func TestVerifyDownload(t *testing.T) {
 
 	t.Run("matching checksum passes in every mode", func(t *testing.T) {
 		for _, mode := range []MD5Check{MD5Off, MD5Warn, MD5Fail, MD5Require} {
-			if err := s.verifyDownload(path, good, mode, "blob"); err != nil {
+			if err := s.verifyDownload(context.Background(), path, good, mode, "blob"); err != nil {
 				t.Errorf("mode %v: %v", mode, err)
 			}
 		}
 	})
 
 	t.Run("mismatch fails, and is worth retrying", func(t *testing.T) {
-		err := s.verifyDownload(path, bad, MD5Fail, "blob")
+		err := s.verifyDownload(context.Background(), path, bad, MD5Fail, "blob")
 		if err == nil {
 			t.Fatal("a corrupted download was accepted")
 		}
@@ -55,7 +55,7 @@ func TestVerifyDownload(t *testing.T) {
 
 	t.Run("mismatch is tolerated in warn and off", func(t *testing.T) {
 		for _, mode := range []MD5Check{MD5Off, MD5Warn} {
-			if err := s.verifyDownload(path, bad, mode, "blob"); err != nil {
+			if err := s.verifyDownload(context.Background(), path, bad, mode, "blob"); err != nil {
 				t.Errorf("mode %v rejected: %v", mode, err)
 			}
 		}
@@ -63,17 +63,17 @@ func TestVerifyDownload(t *testing.T) {
 
 	t.Run("a blob with no checksum", func(t *testing.T) {
 		for _, mode := range []MD5Check{MD5Off, MD5Warn, MD5Fail} {
-			if err := s.verifyDownload(path, nil, mode, "blob"); err != nil {
+			if err := s.verifyDownload(context.Background(), path, nil, mode, "blob"); err != nil {
 				t.Errorf("mode %v should accept a blob with no checksum: %v", mode, err)
 			}
 		}
-		if err := s.verifyDownload(path, nil, MD5Require, "blob"); err == nil {
+		if err := s.verifyDownload(context.Background(), path, nil, MD5Require, "blob"); err == nil {
 			t.Error("require should refuse a blob with no checksum")
 		}
 	})
 
 	t.Run("an unreadable file is an error, not a pass", func(t *testing.T) {
-		if err := s.verifyDownload(filepath.Join(t.TempDir(), "gone"), good, MD5Fail, "blob"); err == nil {
+		if err := s.verifyDownload(context.Background(), filepath.Join(t.TempDir(), "gone"), good, MD5Fail, "blob"); err == nil {
 			t.Error("a missing destination was reported as verified")
 		}
 	})

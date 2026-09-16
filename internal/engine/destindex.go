@@ -91,6 +91,10 @@ func (d *destIndex) planned(u *uri.URL) {
 	// record a file that is not written yet would cost the very listing this
 	// is here to avoid.
 	if entries, ok := d.dirs[dir]; ok {
+		if _, partial := entries.parts[name]; partial {
+			delete(entries.parts, name)
+			d.names--
+		}
 		if _, seen := entries.names[name]; !seen {
 			entries.names[name] = struct{}{}
 			d.names++
@@ -120,14 +124,13 @@ func (d *destIndex) read(dir string) *dirEntries {
 			return nil
 		}
 		for _, n := range names {
+			entries.names[n] = struct{}{}
 			if base, cut := strings.CutSuffix(n, azure.ResumeSuffix); cut {
 				if entries.parts == nil {
 					entries.parts = map[string]struct{}{}
 				}
 				entries.parts[base] = struct{}{}
-				continue
 			}
-			entries.names[n] = struct{}{}
 		}
 	case os.IsNotExist(err):
 	default:

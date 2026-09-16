@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"sync/atomic"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 
 	"github.com/JohanLindvall/azcp/internal/store"
@@ -56,7 +59,8 @@ func (s *Store) downloadRanges(ctx context.Context, src *store.Node, f io.Writer
 		n := min(blockSize, src.Size-offset)
 
 		resp, err := bc.DownloadStream(ctx, &blob.DownloadStreamOptions{
-			Range: blob.HTTPRange{Offset: offset, Count: n},
+			Range:            blob.HTTPRange{Offset: offset, Count: n},
+			AccessConditions: sourceConditions(src),
 		})
 		if err != nil {
 			return fmt.Errorf("reading bytes %d-%d: %w", offset, offset+n-1, err)
@@ -132,5 +136,26 @@ func (discardAt) WriteAt(p []byte, _ int64) (int, error) { return len(p), nil }
 
 // blobURL is the plain URL of a blob, used where a message needs one.
 func blobURL(u *uri.URL) string {
-	return u.ServiceURL() + "/" + u.Container + "/" + u.Key
+	base, _ := url.Parse(u.ServiceURL())
+	base.Path += "/" + u.Container + "/" + u.Key
+	return base.String()
+}
+
+// Every range must come from the version the scan described, including ranges
+// fetched after resuming. Otherwise a blob changed mid-copy can produce a file
+// assembled from different versions, with no MD5 available to detect it.
+func sourceConditions(src *store.Node) *blob.AccessConditions {
+	if src.ETag == "" {
+		return nil
+	}
+	return &blob.AccessConditions{ModifiedAccessConditions: &blob.ModifiedAccessConditions{
+		IfMatch: to.Ptr(azcore.ETag(src.ETag)),
+	}}
+}
+
+func sourceCopyConditions(src *store.Node) *blob.SourceModifiedAccessConditions {
+	if src.ETag == "" {
+		return nil
+	}
+	return &blob.SourceModifiedAccessConditions{SourceIfMatch: to.Ptr(azcore.ETag(src.ETag))}
 }
