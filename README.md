@@ -174,9 +174,13 @@ x86-64 and arm64. Each platform has an archive with the documentation, and the
 binary on its own, compressed, for scripts:
 
 ```
-curl -fsSL https://github.com/JohanLindvall/azcp/releases/latest/download/azcp_v0.1.0_linux_amd64.bin.gz \
+v=$(curl -fsSL https://api.github.com/repos/JohanLindvall/azcp/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+curl -fsSL "https://github.com/JohanLindvall/azcp/releases/download/$v/azcp_${v}_linux_amd64.bin.gz" \
   | gunzip > azcp && chmod +x azcp
 ```
+
+The asset names carry the version, so the first line looks it up; every
+release's own notes carry the same line with the version filled in.
 
 Or:
 
