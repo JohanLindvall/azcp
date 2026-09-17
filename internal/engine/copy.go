@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -102,6 +103,17 @@ func (e *Engine) upload(ctx context.Context, t *task, pt *progress.Task) error {
 	// as an empty blob whose metadata says what it is.
 	if t.src.IsSymlink() {
 		return e.az.PutMarker(ctx, t.dst, opts)
+	}
+	if e.compresses(t.src) {
+		// The headers describe the file inside: its own type, and the coding
+		// it arrives in. Guessed from the blob's name they would say "a gzip
+		// file", which is what the encoding header exists to avoid.
+		opts.ContentEncoding = e.opt.Compress.Format.String()
+		opts.ContentType = cmp.Or(e.opt.ContentType, azure.ContentTypeFor(t.src.Name()),
+			"application/octet-stream")
+		return e.az.UploadEncoded(ctx,
+			func() io.ReadCloser { return e.encoded(ctx, t.src.URL.Path, pt) },
+			t.src.Size, t.dst, opts)
 	}
 	return e.az.Upload(ctx, t.src.URL.Path, t.dst, opts)
 }
@@ -240,7 +252,8 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 		}
 	}
 
-	if e.opt.AttributesOnly {
+	switch {
+	case e.opt.AttributesOnly:
 		f, err := e.openDest(t, os.O_WRONLY|os.O_CREATE, t.src.Mode.Perm())
 		if err != nil {
 			return err
@@ -248,7 +261,11 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 		if err := f.Close(); err != nil {
 			return err
 		}
-	} else {
+	case e.compresses(t.src):
+		if err := e.compressLocal(ctx, t, pt); err != nil {
+			return err
+		}
+	default:
 		opts := local.CopyOptions{
 			Reflink:  e.opt.Reflink,
 			Sparse:   e.opt.Sparse,
@@ -467,6 +484,10 @@ func (e *Engine) checkUnsupported(dest *uri.URL) error {
 		// reach this process, so there is nothing here to pace.
 		e.log.Warn("--bwlimit does not apply to a server-side blob-to-blob copy: " +
 			"the data never passes through this host")
+	}
+	if e.opt.Compress.On() && srcRemote {
+		return errors.New("--compress applies to local sources only; " +
+			"a blob already in storage is copied as it is")
 	}
 	if !remote {
 		return nil

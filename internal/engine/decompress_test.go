@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JohanLindvall/azcp/internal/codec"
+
 	kgzip "github.com/klauspost/compress/gzip"
 	kzlib "github.com/klauspost/compress/zlib"
 	"github.com/klauspost/compress/zstd"
@@ -128,7 +130,7 @@ func BenchmarkDecodeGzip(b *testing.B) {
 	b.SetBytes(int64(len(rawForBench())))
 	b.ResetTimer()
 	for b.Loop() {
-		r, err := decoder(bytes.NewReader(data), "gzip")
+		r, err := codec.NewReader(bytes.NewReader(data), "gzip")
 		if err != nil {
 			b.Fatal(err)
 		}

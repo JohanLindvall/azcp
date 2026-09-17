@@ -197,9 +197,14 @@ var specs = []cpflags.Spec{
 		Help: "read each blob's metadata while scanning, so a recorded " +
 			"symlink downloads as a symlink and a blob-to-blob copy keeps " +
 			"metadata on every route; implied by --preserve and --decompress"},
+	{Long: "compress", Arg: cpflags.OptionalArg, Meta: "FORMAT[:LEVEL]",
+		Help: "store each file compressed, with the content encoding set and " +
+			"the extension appended: gzip (default), deflate or zstd, at " +
+			"LEVEL if given; a file already in one of those forms is copied " +
+			"as it is"},
 	{Long: "decompress", Arg: cpflags.NoArg,
-		Help: "on download, expand blobs whose content encoding says they are " +
-			"compressed, dropping a trailing .gz"},
+		Help: "on download, expand blobs whose content encoding is gzip, " +
+			"deflate or zstd, dropping the extension that said so"},
 	{Long: "newer-than", Arg: cpflags.RequiredArg, Meta: "TIME",
 		Help: "copy only entries modified since TIME: a date, an RFC 3339 " +
 			"timestamp, or an age such as 7d"},

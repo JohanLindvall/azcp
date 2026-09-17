@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,18 +26,46 @@ import (
 type fakeBlobs struct {
 	mu         sync.Mutex
 	containers map[string]map[string]fakeBlob // container -> blob name -> blob
-	calls      map[string]int
+	// staged holds blocks put but not yet committed, by container/blob#id.
+	staged map[string][]byte
+	calls  map[string]int
 }
 
 type fakeBlob struct {
 	data        []byte
 	contentType string
+	encoding    string
+	md5         string // base64, as the header carries it
 	meta        map[string]string
 }
 
 func newFakeBlobs() *fakeBlobs {
-	return &fakeBlobs{containers: map[string]map[string]fakeBlob{}, calls: map[string]int{}}
+	return &fakeBlobs{
+		containers: map[string]map[string]fakeBlob{},
+		staged:     map[string][]byte{},
+		calls:      map[string]int{},
+	}
 }
+
+// blobFrom builds a blob from an upload's body and headers.
+func blobFrom(data []byte, h http.Header) fakeBlob {
+	b := fakeBlob{
+		data:        data,
+		contentType: h.Get("x-ms-blob-content-type"),
+		encoding:    h.Get("x-ms-blob-content-encoding"),
+		md5:         h.Get("x-ms-blob-content-md5"),
+		meta:        map[string]string{},
+	}
+	for k, v := range h {
+		if name, isMeta := strings.CutPrefix(strings.ToLower(k), "x-ms-meta-"); isMeta {
+			b.meta[name] = v[0]
+		}
+	}
+	return b
+}
+
+// blockIDRe picks the block ids out of a commit's body, in the order given.
+var blockIDRe = regexp.MustCompile(`<(?:Latest|Committed|Uncommitted)>([^<]+)</`)
 
 // put stores a blob, creating its container.
 func (f *fakeBlobs) put(container, name string, data []byte, meta map[string]string) {
@@ -49,10 +78,15 @@ func (f *fakeBlobs) put(container, name string, data []byte, meta map[string]str
 }
 
 func (f *fakeBlobs) has(container, name string) bool {
+	_, ok := f.blob(container, name)
+	return ok
+}
+
+func (f *fakeBlobs) blob(container, name string) (fakeBlob, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	_, ok := f.containers[container][name]
-	return ok
+	b, ok := f.containers[container][name]
+	return b, ok
 }
 
 func (f *fakeBlobs) count(kind string) int {
@@ -139,15 +173,38 @@ func (f *fakeBlobs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPut:
 			data, _ := io.ReadAll(r.Body)
-			meta := map[string]string{}
-			for k, v := range r.Header {
-				if name, isMeta := strings.CutPrefix(strings.ToLower(k), "x-ms-meta-"); isMeta {
-					meta[name] = v[0]
+			switch q.Get("comp") {
+			case "block":
+				f.calls["stage block"]++
+				f.staged[container+"/"+blob+"#"+q.Get("blockid")] = data
+				w.WriteHeader(http.StatusCreated)
+			case "blocklist":
+				f.calls["commit"]++
+				var whole []byte
+				for _, m := range blockIDRe.FindAllStringSubmatch(string(data), -1) {
+					whole = append(whole, f.staged[container+"/"+blob+"#"+m[1]]...)
 				}
+				blobs[blob] = blobFrom(whole, r.Header)
+				stamp(w)
+				w.WriteHeader(http.StatusCreated)
+			case "properties":
+				f.calls["set properties"]++
+				if !ok {
+					refuse(w, http.StatusNotFound, "BlobNotFound")
+					return
+				}
+				b.contentType = r.Header.Get("x-ms-blob-content-type")
+				b.encoding = r.Header.Get("x-ms-blob-content-encoding")
+				b.md5 = r.Header.Get("x-ms-blob-content-md5")
+				blobs[blob] = b
+				stamp(w)
+				w.WriteHeader(http.StatusOK)
+			default:
+				f.calls["put blob"]++
+				blobs[blob] = blobFrom(data, r.Header)
+				stamp(w)
+				w.WriteHeader(http.StatusCreated)
 			}
-			blobs[blob] = fakeBlob{data: data, contentType: r.Header.Get("x-ms-blob-content-type"), meta: meta}
-			stamp(w)
-			w.WriteHeader(http.StatusCreated)
 		case http.MethodDelete:
 			if !ok {
 				refuse(w, http.StatusNotFound, "BlobNotFound")
@@ -164,6 +221,12 @@ func (f *fakeBlobs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Length", strconv.Itoa(len(b.data)))
 			w.Header().Set("Content-Type", b.contentType)
 			w.Header().Set("x-ms-blob-type", "BlockBlob")
+			if b.encoding != "" {
+				w.Header().Set("Content-Encoding", b.encoding)
+			}
+			if b.md5 != "" {
+				w.Header().Set("Content-MD5", b.md5)
+			}
 			for k, v := range b.meta {
 				w.Header().Set("x-ms-meta-"+k, v)
 			}

@@ -441,7 +441,7 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 			continue
 		}
 		childRel := joinRel(rel, child.Name())
-		e.recordKept(dst.Join(child.Name()))
+		e.recordKept(e.fileDestination(child, dst.Join(child.Name())))
 		// An excluded directory is pruned rather than walked and discarded.
 		if child.IsDir() && !e.filter.descend(childRel) {
 			e.log.Debug("pruning excluded directory", "path", child.URL.Display())
@@ -750,6 +750,9 @@ func (e *Engine) fileDestination(src *store.Node, dst *uri.URL) *uri.URL {
 	if e.opt.Decompress && !e.opt.AttributesOnly && !src.IsDir() &&
 		src.URL.IsRemote() && !dst.IsRemote() && decompressible(src.ContentEncoding) {
 		return dst.WithPathPart(decompressedName(dst.Path))
+	}
+	if e.compresses(src) {
+		return e.compressedDestination(dst)
 	}
 	return dst
 }

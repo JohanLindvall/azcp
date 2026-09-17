@@ -224,6 +224,30 @@ echo "attributes only" > "$WORK/attr-encoded.gz"
 "$AZCP" --attributes-only --decompress "$AZ/page.gz" "$WORK/attr-encoded.gz" >/dev/null
 check "--attributes-only never decompresses existing data" "$(cat "$WORK/attr-encoded.gz")" "attributes only"
 
+# --- compression --------------------------------------------------------------
+# --compress stores the file under its name plus the extension, with the
+# encoding set — exactly what --decompress expects to find.
+"$AZCP" --compress=gzip:9 "$SRC/file.txt" "$AZ/packed/" >/dev/null
+"$AZCP" "$AZ/packed/file.txt.gz" "$WORK/file.txt.gz" >/dev/null
+check "--compress writes gzip under the extended name" "$(gunzip -c "$WORK/file.txt.gz")" "hello"
+"$AZCP" --decompress "$AZ/packed/file.txt.gz" "$WORK/unpacked.gz" >/dev/null
+check "--decompress reads back what --compress wrote" "$(cat "$WORK/unpacked")" "hello"
+
+# A multi-block source streams up as it is compressed; the checksum follows it.
+"$AZCP" --compress=zstd --put-md5 "$SRC/big.bin" "$AZ/packed/" >/dev/null
+mkdir -p "$WORK/unpack"
+"$AZCP" --decompress --check-md5=require "$AZ/packed/big.bin.zst" "$WORK/unpack/" >/dev/null
+cmp -s "$SRC/big.bin" "$WORK/unpack/big.bin" \
+  && ok "a multi-block compressed upload round-trips with its checksum" \
+  || bad "a multi-block compressed upload did not round-trip"
+
+# A file that already is compressed is stored as it is, not wrapped again.
+"$AZCP" --compress "$WORK/page.gz" "$AZ/packed/" >/dev/null
+"$AZCP" "$AZ/packed/page.gz" "$WORK/page-again.gz" >/dev/null
+cmp -s "$WORK/page.gz" "$WORK/page-again.gz" \
+  && ok "--compress leaves an already compressed file alone" \
+  || bad "--compress wrapped a .gz a second time"
+
 # Reserved URL characters belong to the key, including in a copy-source URL.
 "$AZCP" "$SRC/file.txt" "$AZ/reserved%3Fname%23percent%25.txt" >/dev/null
 "$AZCP" "$AZ/reserved%3Fname%23percent%25.txt" "$AZ/reserved-copy.txt" >/dev/null
