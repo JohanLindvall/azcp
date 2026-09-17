@@ -78,11 +78,19 @@ var names = map[string]Format{
 	"zstd": Zstd, "zst": Zstd,
 }
 
+// suffix is what a file extension announces: the compressed form, and what the
+// name should read once that form is removed — nothing more for most, but a
+// tarball's abbreviation stands for the .tar underneath it.
+type suffix struct {
+	format  Format
+	becomes string
+}
+
 // extensions are the suffixes that announce a compressed form.
-var extensions = map[string]Format{
-	".gz": Gzip, ".gzip": Gzip,
-	".zz":  Deflate,
-	".zst": Zstd, ".zstd": Zstd,
+var extensions = map[string]suffix{
+	".gz": {Gzip, ""}, ".gzip": {Gzip, ""}, ".tgz": {Gzip, ".tar"},
+	".zz":  {Deflate, ""},
+	".zst": {Zstd, ""}, ".zstd": {Zstd, ""}, ".tzst": {Zstd, ".tar"},
 }
 
 // Spec is what --compress asks for: a format and, optionally, how hard to try.
@@ -203,16 +211,18 @@ func NewReader(r io.Reader, encoding string) (io.ReadCloser, error) {
 	}
 }
 
-// StripExtension drops the suffix announcing a compressed form — .gz, .gzip,
+// StripExtension removes the suffix announcing a compressed form — .gz, .gzip,
 // .zz, .zst or .zstd, in any case — from a path, and reports whether there was
-// one. A name that is nothing but the suffix is left alone.
+// one. A tarball's .tgz or .tzst becomes the .tar it abbreviates. A name that
+// is nothing but the suffix is left alone.
 func StripExtension(path string) (string, bool) {
 	base := filepath.Base(path)
 	ext := strings.ToLower(filepath.Ext(base))
-	if _, ok := extensions[ext]; !ok || len(base) == len(ext) {
+	s, ok := extensions[ext]
+	if !ok || len(base) == len(ext) {
 		return path, false
 	}
-	return path[:len(path)-len(ext)], true
+	return path[:len(path)-len(ext)] + s.becomes, true
 }
 
 // HasExtension reports whether name announces itself as already compressed.

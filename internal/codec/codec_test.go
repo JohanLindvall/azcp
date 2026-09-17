@@ -113,6 +113,8 @@ func TestExtensions(t *testing.T) {
 	cases := map[string]string{
 		"report.csv.gz": "report.csv", "a/b/x.GZ": "a/b/x", "dump.zst": "dump",
 		"page.gzip": "page", "raw.zz": "raw", "old.zstd": "old",
+		// A tarball's abbreviation stands for the .tar underneath it.
+		"logs.tgz": "logs.tar", "logs.tzst": "logs.tar", "a/LOGS.TGZ": "a/LOGS.tar",
 	}
 	for in, want := range cases {
 		got, ok := StripExtension(in)
@@ -120,7 +122,7 @@ func TestExtensions(t *testing.T) {
 			t.Errorf("StripExtension(%q) = %q, %v; want %q", in, got, ok, want)
 		}
 	}
-	for _, in := range []string{"plain.txt", ".gz", "dir/.zst", "gz", "archive.tar", ""} {
+	for _, in := range []string{"plain.txt", ".gz", "dir/.zst", ".tgz", "gz", "archive.tar", ""} {
 		if got, ok := StripExtension(in); ok || got != in {
 			t.Errorf("StripExtension(%q) = %q, %v; want unchanged", in, got, ok)
 		}

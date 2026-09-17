@@ -204,7 +204,8 @@ var specs = []cpflags.Spec{
 			"as it is"},
 	{Long: "decompress", Arg: cpflags.NoArg,
 		Help: "on download, expand blobs whose content encoding is gzip, " +
-			"deflate or zstd, dropping the extension that said so"},
+			"deflate or zstd, dropping the extension that said so (.tgz and " +
+			".tzst become .tar)"},
 	{Long: "newer-than", Arg: cpflags.RequiredArg, Meta: "TIME",
 		Help: "copy only entries modified since TIME: a date, an RFC 3339 " +
 			"timestamp, or an age such as 7d"},

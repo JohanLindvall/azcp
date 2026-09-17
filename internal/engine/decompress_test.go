@@ -63,6 +63,8 @@ func TestDecompressFile(t *testing.T) {
 		{"deflate", ".zz", "file.txt"},
 		{"zstd", ".zst", "file.txt"},
 		{"zstd", ".zstd", "file.txt"},
+		{"gzip", ".tgz", "file.txt.tar"},
+		{"zstd", ".tzst", "file.txt.tar"},
 		{"gzip", "", "file.txt"}, // no extension to drop
 	} {
 		t.Run(tc.encoding+tc.ext, func(t *testing.T) {

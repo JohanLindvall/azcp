@@ -248,6 +248,12 @@ cmp -s "$WORK/page.gz" "$WORK/page-again.gz" \
   && ok "--compress leaves an already compressed file alone" \
   || bad "--compress wrapped a .gz a second time"
 
+# A tarball's abbreviated suffix expands to the .tar it stands for.
+cp "$WORK/page.gz" "$WORK/src-bundle.tgz"
+"$AZCP" --content-encoding=gzip "$WORK/src-bundle.tgz" "$AZ/packed/bundle.tgz" >/dev/null
+"$AZCP" --decompress "$AZ/packed/bundle.tgz" "$WORK/bundle.tgz" >/dev/null
+check "--decompress turns .tgz into .tar" "$(cat "$WORK/bundle.tar" 2>/dev/null)" "compressed payload"
+
 # Reserved URL characters belong to the key, including in a copy-source URL.
 "$AZCP" "$SRC/file.txt" "$AZ/reserved%3Fname%23percent%25.txt" >/dev/null
 "$AZCP" "$AZ/reserved%3Fname%23percent%25.txt" "$AZ/reserved-copy.txt" >/dev/null

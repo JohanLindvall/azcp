@@ -398,8 +398,9 @@ starts over rather than resuming. Each file is compressed on one core; the
 parallelism is `--jobs`.
 
 `--decompress` is the mirror: on download, a blob whose `Content-Encoding` names
-one of those formats is expanded on arrival and loses the extension, so a tree
-that went up with `--compress` comes back down as it left.
+one of those formats is expanded on arrival and loses the extension — `.tgz`
+and `.tzst` become `.tar` — so a tree that went up with `--compress` comes back
+down as it left.
 
 ## Limiting bandwidth
 
