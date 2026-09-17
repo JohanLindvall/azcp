@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JohanLindvall/azcp/internal/codec"
 	"github.com/JohanLindvall/azcp/internal/cpflags"
 	"github.com/JohanLindvall/azcp/internal/humanize"
 	"github.com/JohanLindvall/azcp/internal/progress"
@@ -224,8 +225,11 @@ type Options struct {
 	Metadata           map[string]string
 	CopyMetadata       bool
 	Decompress         bool
-	NewerThan          time.Time
-	OlderThan          time.Time
+	// Compress stores each local source compressed, in the format and at the
+	// level asked for. The zero value is off.
+	Compress  codec.Spec
+	NewerThan time.Time
+	OlderThan time.Time
 
 	Sources []string
 	Dest    string
@@ -629,6 +633,12 @@ func (o *Options) apply(f cpflags.Flag) error {
 		o.CopyMetadata = true
 	case "decompress":
 		o.Decompress = true
+	case "compress":
+		spec, err := codec.Parse(f.Value)
+		if err != nil {
+			return fmt.Errorf("invalid argument %q for '%s': %w", f.Value, f.Name(), err)
+		}
+		o.Compress = spec
 	case "newer-than":
 		t, err := ParseTimeSpec(f.Value, time.Now())
 		if err != nil {
@@ -834,6 +844,13 @@ func (o *Options) validate() error {
 	}
 	if o.Backup != BackupNone && o.NoClobber {
 		return usagef("options --backup and --no-clobber are mutually exclusive")
+	}
+	if o.Compress.On() && o.Decompress {
+		return usagef("cannot combine --compress and --decompress")
+	}
+	if o.Compress.On() && o.ContentEncoding != "" {
+		return usagef("--compress sets the content encoding itself; " +
+			"do not pass --content-encoding as well")
 	}
 	if o.Jobs < 1 {
 		o.Jobs = 1

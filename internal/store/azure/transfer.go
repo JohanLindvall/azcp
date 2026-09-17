@@ -105,7 +105,7 @@ func (o TransferOptions) httpHeaders(name string) *blob.HTTPHeaders {
 func (o TransferOptions) httpHeadersWithMD5(name string, sum []byte) *blob.HTTPHeaders {
 	ct := o.ContentType
 	if ct == "" {
-		ct = guessContentType(name)
+		ct = ContentTypeFor(name)
 	}
 	h := &blob.HTTPHeaders{}
 	set := false
@@ -172,10 +172,10 @@ func (o TransferOptions) tier() *blob.AccessTier {
 	return to.Ptr(blob.AccessTier(o.AccessTier))
 }
 
-// guessContentType maps a file extension to a MIME type. Blob storage defaults
+// ContentTypeFor maps a file extension to a MIME type. Blob storage defaults
 // to application/octet-stream, which makes anything served straight from the
 // container download instead of render, so it is worth setting.
-func guessContentType(name string) string {
+func ContentTypeFor(name string) string {
 	if ct := mime.TypeByExtension(path.Ext(name)); ct != "" {
 		return ct
 	}

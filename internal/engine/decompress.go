@@ -6,45 +6,32 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
-	// klauspost's decoders are drop-in replacements for the standard
-	// library's and measurably quicker, which matters here because a
-	// download of any size is expanded in one pass. They also bring zstd,
-	// which the standard library has no answer for at all.
-	"github.com/klauspost/compress/flate"
-	"github.com/klauspost/compress/gzip"
-	"github.com/klauspost/compress/zlib"
-	"github.com/klauspost/compress/zstd"
+	"github.com/JohanLindvall/azcp/internal/codec"
 )
 
 // A blob written by a web pipeline is often stored already compressed, with
 // Content-Encoding saying so, because that is how it will be served. Downloaded
 // as-is it is a file of gibberish with a plausible name. --decompress expands
-// it on arrival and drops the extension that said it was compressed.
+// it on arrival and drops the extension that said it was compressed. It is the
+// mirror of --compress, and the two share codec so they cannot drift apart.
 
-// decompressed reports the encodings this understands.
+// decompressible reports whether a Content-Encoding is one that can be
+// expanded here.
 func decompressible(encoding string) bool {
-	switch strings.ToLower(strings.TrimSpace(encoding)) {
-	case "gzip", "x-gzip", "deflate", "zstd":
-		return true
-	}
-	return false
+	_, ok := codec.ByEncoding(encoding)
+	return ok
 }
 
 // decompressFile expands the file in place and returns its final path, which
-// loses a trailing .gz, .gzip, .zz, .zst or .zstd if it had one.
+// loses the extension announcing the compression if it had one.
 func decompressFile(path, encoding string) (string, error) {
 	return decompressTo(context.Background(), path, encoding, decompressedName(path))
 }
 
 func decompressedName(path string) string {
-	for _, ext := range []string{".gz", ".gzip", ".zz", ".zst", ".zstd"} {
-		if trimmed, ok := strings.CutSuffix(path, ext); ok && filepath.Base(path) != ext {
-			return trimmed
-		}
-	}
-	return path
+	name, _ := codec.StripExtension(path)
+	return name
 }
 
 func decompressTo(ctx context.Context, path, encoding, final string) (string, error) {
@@ -57,7 +44,7 @@ func decompressTo(ctx context.Context, path, encoding, final string) (string, er
 		in.Close()
 		return path, err
 	}
-	r, err := decoder(in, encoding)
+	r, err := codec.NewReader(in, encoding)
 	if err != nil {
 		in.Close()
 		return path, fmt.Errorf("cannot decompress %s: %w", path, err)
@@ -109,6 +96,7 @@ func decompressTo(ctx context.Context, path, encoding, final string) (string, er
 	return final, nil
 }
 
+// contextReader stops a copy when its context does.
 type contextReader struct {
 	ctx context.Context
 	io.Reader
@@ -119,31 +107,4 @@ func (r *contextReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return r.Reader.Read(p)
-}
-
-func decoder(r io.Reader, encoding string) (io.ReadCloser, error) {
-	switch strings.ToLower(strings.TrimSpace(encoding)) {
-	case "gzip", "x-gzip":
-		return gzip.NewReader(r)
-	case "deflate":
-		// "deflate" is ambiguous in the wild: the specification says zlib, and
-		// a good deal of software means raw. Try the correct one, fall back to
-		// what people actually send.
-		if zr, err := zlib.NewReader(r); err == nil {
-			return zr, nil
-		}
-		if s, ok := r.(io.Seeker); ok {
-			if _, err := s.Seek(0, io.SeekStart); err != nil {
-				return nil, err
-			}
-		}
-		return flate.NewReader(r), nil
-	case "zstd":
-		d, err := zstd.NewReader(r)
-		if err != nil {
-			return nil, err
-		}
-		return d.IOReadCloser(), nil
-	}
-	return nil, fmt.Errorf("unknown content encoding %q", encoding)
 }

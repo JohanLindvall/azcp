@@ -372,6 +372,36 @@ the scan. A blob changed during the copy fails the transfer instead of silently
 combining ranges from different versions. Run the command again to copy its new
 version.
 
+## Compressing on the way
+
+`--compress` stores each file compressed, with `Content-Encoding` saying so and
+the matching extension appended — which is how a web pipeline expects a blob it
+will serve compressed to look:
+
+```
+azcp -r --compress ./site azure://acct/www/           # gzip at its default level
+azcp -r --compress=zstd:19 ./logs azure://acct/cold/  # zstd, as small as it goes
+azcp -r --compress=9 ./site azure://acct/www/         # gzip, level 9
+```
+
+`report.csv` lands as `report.csv.gz` with `Content-Type: text/csv` and
+`Content-Encoding: gzip`: the type describes the file inside, the encoding the
+wrapper. The formats are `gzip` (levels 1–9), `deflate` (1–9) and `zstd`
+(1–19). A file that already carries one of those extensions is copied as it is
+rather than wrapped twice, and a copy that never leaves the filesystem gets the
+same treatment without the headers. `-n`, `-u`, `--dry-run` and `--delete` all
+see the name that lands.
+
+The size shown while copying is the source's, since the compressed size is not
+known until the end — which is also why a compressed upload that is interrupted
+starts over rather than resuming. Each file is compressed on one core; the
+parallelism is `--jobs`.
+
+`--decompress` is the mirror: on download, a blob whose `Content-Encoding` names
+one of those formats is expanded on arrival and loses the extension — `.tgz`
+and `.tzst` become `.tar` — so a tree that went up with `--compress` comes back
+down as it left.
+
 ## Limiting bandwidth
 
 `--bwlimit=10M` caps throughput at ten mebibytes a second across the whole run,
@@ -638,6 +668,7 @@ Added by `azcp`:
 | `--delete` | remove destination entries the source does not have |
 | `--resume` | continue an interrupted transfer |
 | `--newer-than`, `--older-than` | bound by modification time |
+| `--compress[=FORMAT[:LEVEL]]` | store files compressed — gzip (default), deflate or zstd — with the encoding set and the extension appended |
 | `--decompress` | expand gzip, deflate or zstd blobs on download |
 | `--metadata=K=V` | store metadata on uploaded blobs |
 | `--copy-metadata` | read blob metadata while scanning (see [Archiving a tree](#archiving-a-tree)) |
@@ -698,6 +729,9 @@ Where `azcp` is ahead:
   backups, hard and symbolic links, reflink cloning and sparse files.
 - **Sign-in that stays signed in**, with a browser or a device code, remembered
   in the platform's credential store.
+- **Compression both ways.** `--compress` stores a tree gzip'd or zstd'd with
+  the headers a web server wants, and `--decompress` brings it back; AzCopy
+  only expands.
 
 Things AzCopy once had that `azcp` did not, and now does: resuming an
 interrupted transfer (`--resume`), making a destination match a source

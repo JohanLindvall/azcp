@@ -81,7 +81,7 @@ spending.
 ### Dependencies
 
 Seven direct ones, and each earns its place. `klauspost/compress` replaces the
-standard library's gzip, flate and zlib decoders — measured at 3.1 GB/s against
+standard library's gzip, flate and zlib coders in both directions — measured at 3.1 GB/s against
 2.2 GB/s on the benchmark in `decompress_test.go`, over a whole file in one pass
 — and brings zstd, which the standard library has no answer for. It pulls in
 nothing else.
@@ -98,6 +98,7 @@ changes.
 cmd/azcp             entry point, signal handling, exit status
 internal/cli         option table, help text, resolved configuration
 internal/cpflags     getopt_long-compatible parser
+internal/codec       compression formats: encodings, extensions, coders
 internal/engine      planning, the worker pool, cp's per-file semantics
 internal/glob        brace expansion and the pattern matcher
 internal/store       namespace interface and the pattern-driven walker
@@ -317,6 +318,17 @@ endpoint 50 ms away, 400 containers took 18.5s one at a time and 0.79s with the
 look-ahead; `--jobs=1 --part-concurrency=1` still lists one at a time. The
 memory this costs is bounded by `listAhead × listBuffer` nodes and nothing else,
 which is why the per-listing channel has a size at all.
+
+**A compressed upload is a stream, and a stream cannot resume.** `--compress`
+produces a length nobody knows in advance, so `UploadEncoded` in
+`store/azure/encoded.go` is the one place the SDK's own stream upload is used:
+a single request for what came from one block of source, staged blocks as they
+arrive otherwise, with `--put-md5` set in a request of its own afterwards
+because the digest exists only at the end. Progress is measured on the source.
+The extension is added in the planner's `fileDestination`, beside the one
+`--decompress` removes, so `-n`, `-u`, `--dry-run` and `--delete` all see the
+`.gz`; `internal/codec` is the single table of formats, encodings and
+extensions the two directions share, which is what keeps them mirrors.
 
 **The SDK single-shots anything up to 256 MiB.** `blockblob.UploadFile` ignores
 the block size it is given and sends a file of 256 MiB or less in one request,

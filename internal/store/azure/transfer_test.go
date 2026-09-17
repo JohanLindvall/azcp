@@ -54,13 +54,13 @@ func TestHTTPHeadersOnlyWhenThereIsSomethingToSay(t *testing.T) {
 }
 
 func TestGuessContentType(t *testing.T) {
-	if got := guessContentType("data.no-such-extension"); got != "" {
+	if got := ContentTypeFor("data.no-such-extension"); got != "" {
 		t.Errorf("unknown extension guessed %q", got)
 	}
 	// These may come from the system's table or from the fallback here; either
 	// way a file that is plainly text must not default to octet-stream.
 	for _, name := range []string{"app.log", "notes.md", "conf.yaml", "big.tgz", "x.zst"} {
-		if got := guessContentType(name); got == "" {
+		if got := ContentTypeFor(name); got == "" {
 			t.Errorf("%s: no content type guessed", name)
 		}
 	}
@@ -68,7 +68,7 @@ func TestGuessContentType(t *testing.T) {
 	// application/x-compressed — so the fallback is only observable where the
 	// platform has no opinion.
 	if mime.TypeByExtension(".zst") == "" {
-		if got := guessContentType("x.zst"); got != "application/zstd" {
+		if got := ContentTypeFor("x.zst"); got != "application/zstd" {
 			t.Errorf("x.zst guessed %q", got)
 		}
 	}
