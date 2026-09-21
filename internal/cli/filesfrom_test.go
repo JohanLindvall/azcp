@@ -43,6 +43,20 @@ func TestFilesFromReadsStandardInput(t *testing.T) {
 	}
 }
 
+func TestFilesFromRequiresExplicitDestination(t *testing.T) {
+	list := filepath.Join(t.TempDir(), "list.txt")
+	if err := os.WriteFile(list, []byte("first\nsecond\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{list, "-"} {
+		_, err := Parse([]string{"--files-from", name})
+		var usage *UsageError
+		if !errors.As(err, &usage) || !strings.Contains(err.Error(), "destination") {
+			t.Errorf("--files-from=%s: got %v, want a missing destination error", name, err)
+		}
+	}
+}
+
 // A list that cannot be read is a problem with the file, not with the command
 // line, so it is reported without pointing at --help.
 func TestFilesFromMissingListIsNotAUsageError(t *testing.T) {

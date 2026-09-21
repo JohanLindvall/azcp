@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/JohanLindvall/azcp/internal/parallel"
 	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
@@ -125,12 +126,12 @@ func TestBlockIDsAreUniformAndDistinct(t *testing.T) {
 	}
 }
 
-// inParallel is the scaffolding under uploads, downloads and staged copies:
+// The shared scheduler runs uploads, downloads and staged copies:
 // every index must run, the first error must win, and a failure must stop the
 // work still queued behind it.
 func TestInParallelRunsEverything(t *testing.T) {
 	var ran atomic.Int64
-	err := inParallel(context.Background(), 100, 8, func(_ context.Context, i int) error {
+	err := parallel.Do(context.Background(), 100, 8, func(_ context.Context, i int) error {
 		ran.Add(1)
 		return nil
 	})
@@ -142,7 +143,7 @@ func TestInParallelRunsEverything(t *testing.T) {
 func TestInParallelStopsAfterFailure(t *testing.T) {
 	boom := errors.New("boom")
 	var after atomic.Int64
-	err := inParallel(context.Background(), 10_000, 4, func(ctx context.Context, i int) error {
+	err := parallel.Do(context.Background(), 10_000, 4, func(ctx context.Context, i int) error {
 		if i == 5 {
 			return boom
 		}
@@ -163,9 +164,18 @@ func TestInParallelStopsAfterFailure(t *testing.T) {
 func TestInParallelHonoursCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := inParallel(ctx, 10, 2, func(context.Context, int) error { return nil })
+	err := parallel.Do(ctx, 10, 2, func(context.Context, int) error { return nil })
 	if err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func BenchmarkInParallel(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := parallel.Do(context.Background(), 10000, 8, func(context.Context, int) error { return nil }); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

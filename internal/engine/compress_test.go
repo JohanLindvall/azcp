@@ -109,3 +109,41 @@ func TestCompressedNameIsTheOneTheRulesSee(t *testing.T) {
 		write(t, filepath.Join(d, "mirror/src/stale"), "x")
 	}
 }
+
+func TestCompressedTreeDestinationCollision(t *testing.T) {
+	for _, flag := range []string{"", "-n", "--backup=numbered", "--dry-run"} {
+		t.Run(flag, func(t *testing.T) {
+			d := t.TempDir()
+			text := strings.Repeat("first source\n", 10000)
+			write(t, filepath.Join(d, "src/a"), text)
+			write(t, filepath.Join(d, "src/a.gz"), "second source")
+			args := []string{"-r", "--compress", "-j8", "src", "dst"}
+			if flag != "" {
+				args = append(args, flag)
+			}
+			wantFailed := int64(1)
+			if flag == "-n" || flag == "--backup=numbered" {
+				wantFailed = 0
+			}
+			if n := run(t, d, args...); n != wantFailed {
+				t.Fatalf("failed = %d, want %d", n, wantFailed)
+			}
+			if flag == "--dry-run" {
+				if exists(filepath.Join(d, "dst")) {
+					t.Fatal("dry run created a destination")
+				}
+				return
+			}
+			encoded := filepath.Join(d, "dst/a.gz")
+			if flag == "--backup=numbered" {
+				if got := read(t, encoded); got != "second source" {
+					t.Fatalf("last source = %q", got)
+				}
+				encoded += ".~1~"
+			}
+			if got := expand(t, encoded, "gzip"); got != text {
+				t.Fatal("colliding source corrupted the compressed copy")
+			}
+		})
+	}
+}

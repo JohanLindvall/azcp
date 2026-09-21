@@ -77,7 +77,7 @@ func (e *Engine) restoreAttrs(t *task) {
 				"path", t.dst.Display(), "uid", p.UID, "gid", p.GID, "error", err)
 		}
 	}
-	if e.opt.Preserve.Mode && p.HasMode {
+	if e.opt.Preserve.Mode && p.HasMode && !p.IsSymlink() {
 		if err := os.Chmod(path, p.Mode); err != nil {
 			e.log.Warn("cannot restore mode", "path", t.dst.Display(), "error", err)
 		}
@@ -94,7 +94,7 @@ func (e *Engine) restoreAttrs(t *task) {
 			atime = mtime
 		}
 		if !mtime.IsZero() {
-			if err := os.Chtimes(path, atime, mtime); err != nil {
+			if err := local.Lutimes(path, atime, mtime); err != nil {
 				e.log.Warn("cannot restore timestamps", "path", t.dst.Display(), "error", err)
 			}
 		}

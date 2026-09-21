@@ -223,9 +223,10 @@ differential-tested against real `bash` run with `globstar` and `extglob`, and
 the copy semantics are tested against temporary directories. `make e2e` needs
 Docker, and starts and stops the emulator around itself.
 
-Tested on Linux, macOS and Windows, on x86-64 and arm64 — natively, not by
-cross-compiling, because copy semantics are exactly the thing that differs per
-operating system.
+CI runs the tests natively on Linux and Windows, on x86-64 and arm64. All six
+release targets, including macOS, are also cross-compiled. macOS release builds
+run natively to exercise the keychain build and check the stamped version;
+the regular CI test matrix does not include macOS.
 
 Windows has no POSIX layer, so `--preserve=ownership` and `--preserve=xattr`
 have nothing to act on and `--one-file-system` does not apply; file identity
@@ -234,6 +235,11 @@ A macOS binary reaches the keychain through cgo, so one cross-compiled from
 another platform by `make release` signs in once per run instead of
 remembering it; the released macOS binaries are built on macOS and do not have
 that limitation.
+
+Local reflink cloning is supported on Linux where the filesystem allows it.
+macOS and Windows use ordinary copies with `--reflink=auto`; asking for
+`--reflink=always` there fails. macOS's pathname-based `clonefile` cannot safely
+replace the open destination while preserving its hard links and permissions.
 
 ## Locations
 
@@ -326,7 +332,9 @@ find . -name '*.parquet' -newer stamp | azcp --files-from=- -t azure://acct/lake
 ```
 
 Listed names are sources like any other, URLs and patterns included, and the
-destination is still the last operand or `-t`.
+destination must still be supplied as the last command-line operand or with
+`-t`. An omitted destination is an error; a name in the list is never used as
+the destination.
 
 ## Archiving a tree
 
@@ -395,6 +403,11 @@ wrapper. The formats are `gzip` (levels 1–9), `deflate` (1–9) and `zstd`
 rather than wrapped twice, and a copy that never leaves the filesystem gets the
 same treatment without the headers. `-n`, `-u`, `--dry-run` and `--delete` all
 see the name that lands.
+
+If two sources map to the same name — for example, a directory containing both
+`report.csv` and `report.csv.gz` — the second copy is refused. `-n` skips it;
+`--backup=numbered` with a local destination retains both in source order.
+Dry runs report the same conflicts.
 
 The size shown while copying is the source's, since the compressed size is not
 known until the end — which is also why a compressed upload that is interrupted
@@ -497,6 +510,8 @@ The record also identifies the account and blob path, and is rejected if the
 local file is missing, has the wrong size, or the record is malformed. Older
 record formats restart safely. A checksum failure leaves an incomplete record
 and invalidates the saved ranges so `--resume -n` fetches them again.
+Without `--resume`, an incomplete download is restarted in full, even with
+`-n`, and its stale record is removed after a successful copy.
 
 With `--decompress`, overwrite checks, dry-run output and deletion tracking all
 use the expanded filename. For example, downloading `page.gz` produces `page`,
@@ -580,11 +595,21 @@ Streaming through this host happens only when none of those is available. An
 endpoint that answers "not implemented" is remembered, so the run does not keep
 asking. `--log-level=debug` reports the route each copy took.
 
+Content-header overrides also apply to the asynchronous route. When an override
+differs from the source, it costs one properties update after the copy finishes;
+unchanged properties and the source checksum are retained. A plain asynchronous
+copy needs no additional update. `--attributes-only` updates an existing blob's
+properties and metadata without copying its contents, including blob-to-blob
+invocations.
+
 Every network request is retried `--retries` times with jittered backoff,
 honouring `Retry-After`. Retries are decided from the failure: a timeout, a
 dropped connection, a 429 or a 5xx is worth another attempt; a 404, a 403 or a
 full disk is not. Each one is logged, so a slow transfer never looks like a
 silent hang.
+Transfer durations and relative ages must be nonnegative and within the supported
+duration range. Backoff and server-supplied retry delays saturate instead of
+overflowing.
 
 ## Progress
 
@@ -614,6 +639,9 @@ $ azcp --output=json -v -r ./build azure://acct/rel/ | tail -1
 Failures appear as they happen and again in the summary's `failures` array.
 Deletion events use `remove` or `would-remove`, with the destination in the
 `destination` field; they are JSON objects too.
+Fatal planning errors also produce an error object and a summary with a nonzero
+failure count. Errors during initial argument or configuration validation are
+reported on stderr before the copy begins.
 
 ## Measuring the link
 
@@ -759,8 +787,9 @@ What remains AzCopy's, by choice:
 
 ## Differences from cp
 
-- Symbolic links cannot be stored in blob storage. Copying one to a container
-  skips it with a warning; `-L` copies what it points at instead.
+- Blob storage has no native symbolic links. Copying one to a container skips
+  it with a warning unless `-a` records it in metadata; `-L` copies what it
+  points at instead.
 - `--backup`, `--link` and `--symbolic-link` apply to local destinations only,
   and are refused before anything is transferred rather than partway through.
 - `-Z`, `--context` and `--preserve=context` are accepted but do nothing: this
@@ -771,6 +800,12 @@ What remains AzCopy's, by choice:
   silently; `--create-container` opts in. Containers behave more like a mount
   point than a directory, so creating one is not something to do by accident.
 
+Local recursive copies keep the source directory's permissions, subject to the
+umask, and leave existing directory permissions alone unless preservation was
+requested. Destination parents must exist. Like GNU `cp`, writing through a
+dangling destination symlink is refused by default; `--remove-destination`
+replaces the link, and `POSIXLY_CORRECT` enables writing through it.
+
 ## Layout
 
 ```
@@ -779,6 +814,7 @@ scripts/e2e.sh       the emulator-backed end-to-end check
 internal/cli         option table, help, resolved configuration
 internal/cpflags     getopt_long-compatible parser
 internal/engine      planning, the worker pool, cp's file semantics
+internal/parallel    bounded workers shared by block transfers and benchmarks
 internal/glob        brace expansion and the pattern matcher
 internal/store       the namespace interface and the pattern-driven walker
 internal/store/local filesystem, reflink, sparse copies, attributes
@@ -789,6 +825,9 @@ internal/retryx      transient-failure classification and backoff
 internal/humanize    sizes, rates, durations
 internal/uri         location parsing
 ```
+
+See [the service audit](docs/audit-2026-09-21.md) for the verified fixes,
+regression coverage, performance measurements, and validation limits.
 
 ## License
 

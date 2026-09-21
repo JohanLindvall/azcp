@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -75,7 +76,11 @@ func Do(ctx context.Context, p Policy, notify Notify, fn func(ctx context.Contex
 		}
 		delay := p.delay(attempt)
 		if d, ok := RetryAfter(err); ok && d > delay {
-			delay = min(d, p.MaxDelay*4) // honour the server, within reason
+			limit := time.Duration(math.MaxInt64)
+			if p.MaxDelay <= limit/4 {
+				limit = p.MaxDelay * 4
+			}
+			delay = min(d, limit) // honour the server, within reason
 		}
 		if notify != nil {
 			notify(attempt, delay, err)
@@ -97,6 +102,10 @@ func Do(ctx context.Context, p Policy, notify Notify, fn func(ctx context.Contex
 func (p Policy) delay(attempt int) time.Duration {
 	window := p.BaseDelay
 	for i := 1; i < attempt && window < p.MaxDelay; i++ {
+		if window > p.MaxDelay-window {
+			window = p.MaxDelay
+			break
+		}
 		window *= 2
 	}
 	window = min(window, p.MaxDelay)
@@ -208,6 +217,9 @@ func RetryAfter(err error) (time.Duration, bool) {
 		return 0, false
 	}
 	if secs, convErr := strconv.Atoi(v); convErr == nil && secs >= 0 {
+		if uint64(secs) > uint64(math.MaxInt64/int64(time.Second)) {
+			return time.Duration(math.MaxInt64), true
+		}
 		return time.Duration(secs) * time.Second, true
 	}
 	if t, convErr := http.ParseTime(v); convErr == nil {

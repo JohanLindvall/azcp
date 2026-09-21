@@ -11,9 +11,9 @@ VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 LDFLAGS   := -s -w -X '$(PKG)/internal/cli.Version=$(VERSION)'
 BUILDOPTS := -trimpath -ldflags "$(LDFLAGS)"
 
-# Platforms a release covers. Windows compiles and runs, but the cp semantics it
-# can honour are limited: ownership, extended attributes and hard links have no
-# counterpart there.
+# Platforms a release covers.
+# Windows cannot preserve POSIX ownership or extended attributes; hard links
+# are supported, and symbolic links depend on the caller's privileges.
 #
 # `make release` cross-compiles all of these from wherever it is run, which is
 # right for a local build. The release workflow instead builds each on its own

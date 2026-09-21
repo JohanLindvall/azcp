@@ -42,8 +42,8 @@ jobs:
   # symbolic links, file modes, device identity, path separators — so they are
   # worth running for real rather than only cross-compiling. macOS is left out
   # on cost: its runners are billed at a multiple of these, and its copy path
-  # shares plat_unix.go with Linux, so only clonefile and the timestamp field
-  # names go untested here. The cross job still compiles it, and the release
+  # shares plat_unix.go with Linux. Its timestamp field names and buffered-copy
+  # fallback still need native checks. The cross job compiles it, and the release
   # workflow still builds it on a macOS runner for the keychain.
   test:
     name: test ${{ matrix.os }}

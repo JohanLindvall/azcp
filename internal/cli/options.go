@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"runtime"
 	"slices"
@@ -340,9 +341,17 @@ func parseAge(s string) (time.Duration, error) {
 		if err != nil {
 			return 0, err
 		}
-		return time.Duration(days * 24 * float64(time.Hour)), nil
+		nanos := days * 24 * float64(time.Hour)
+		if math.IsNaN(nanos) || nanos < 0 || nanos >= float64(math.MaxInt64) {
+			return 0, errors.New("age is outside the supported duration range")
+		}
+		return time.Duration(nanos), nil
 	}
-	return time.ParseDuration(s)
+	d, err := time.ParseDuration(s)
+	if err == nil && d < 0 {
+		return 0, errors.New("age must not be negative")
+	}
+	return d, err
 }
 
 // defaultJobs picks how many files to move at once when the user has not said.
@@ -410,6 +419,9 @@ func Parse(argv []string) (*Options, error) {
 	}
 	operands := res.Operands
 	if o.FilesFrom != "" {
+		if !o.HasTargetDir && len(operands) == 0 {
+			return nil, usagef("missing destination file operand with --files-from")
+		}
 		listed, err := readFilesFrom(o.FilesFrom)
 		if err != nil {
 			return nil, err
@@ -700,6 +712,9 @@ func setDuration(dst *time.Duration, f cpflags.Flag) error {
 	d, err := time.ParseDuration(f.Value)
 	if err != nil {
 		return fmt.Errorf("invalid argument for '%s': %w", f.Name(), err)
+	}
+	if d < 0 {
+		return fmt.Errorf("invalid argument for '%s': duration must not be negative", f.Name())
 	}
 	*dst = d
 	return nil

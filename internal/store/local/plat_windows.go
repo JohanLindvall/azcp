@@ -30,9 +30,22 @@ func kernelCopy(context.Context, *os.File, *os.File, int64, *CopyOptions) (int64
 }
 
 func lutimes(path string, atime, mtime time.Time) error {
-	// Windows has no symlink-safe variant; os.Chtimes follows the link, which
-	// is the closest available behaviour.
-	return os.Chtimes(path, atime, mtime)
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	// Open the reparse point itself. os.Chtimes follows it and would change
+	// the target of a copied link, potentially outside the destination tree.
+	h, err := windows.CreateFile(p, windows.FILE_WRITE_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(h)
+	a, m := windows.NsecToFiletime(atime.UnixNano()), windows.NsecToFiletime(mtime.UnixNano())
+	return windows.SetFileTime(h, nil, &a, &m)
 }
 
 func copyXattrs(srcPath, dstPath string) error { return nil }

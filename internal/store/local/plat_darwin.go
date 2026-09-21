@@ -4,6 +4,7 @@ package local
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"syscall"
@@ -12,30 +13,19 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// macOS has the same stat information as Linux under different field names, and
-// clonefile in place of the FICLONE ioctl. Without this file the generic
-// fallback reports no file identity at all, which quietly disables hard-link
+// macOS has the same stat information as Linux under different field names.
+// Without this file the generic fallback reports no file identity at all,
+// which quietly disables hard-link
 // preservation, --one-file-system, sparse detection and — least obviously and
 // most seriously — the loop guard that stops --dereference recursing forever
 // through a symbolic link pointing back up its own tree.
 
-// tryReflink asks APFS to clone the file. clonefile needs the destination not
-// to exist, so the caller's freshly created file is removed first; on failure
-// the caller falls back to copying the data.
-func tryReflink(dst, src *os.File) error {
-	dstPath := dst.Name()
-	if err := os.Remove(dstPath); err != nil {
-		return err
-	}
-	if err := unix.Clonefile(src.Name(), dstPath, 0); err != nil {
-		// Put an empty file back so the caller's descriptor still refers to
-		// something and the fallback copy behaves as it would have.
-		if f, cerr := os.Create(dstPath); cerr == nil {
-			f.Close()
-		}
-		return err
-	}
-	return nil
+// clonefile creates a new inode; it cannot clone into the open destination.
+// Unlinking that destination first makes the fallback write to an unlinked
+// inode and breaks existing hard links even when cloning succeeds. Until a
+// descriptor-preserving clone is available, use the buffered copy path.
+func tryReflink(_, _ *os.File) error {
+	return errors.New("reflink into an open destination is not supported on macOS")
 }
 
 // kernelCopy has no macOS equivalent that works on arbitrary descriptors;

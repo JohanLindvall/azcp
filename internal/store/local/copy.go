@@ -60,6 +60,9 @@ func (o *CopyOptions) report(n int64) {
 // CopyFile copies regular file contents from srcPath to dstPath. It returns the
 // number of bytes written.
 func CopyFile(ctx context.Context, srcPath, dstPath string, opts CopyOptions) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	sf, err := os.Open(srcPath)
 	if err != nil {
 		return 0, err
@@ -325,6 +328,9 @@ func OwnerOf(fi fs.FileInfo) (uid, gid int, ok bool) { return ownerOf(fi) }
 // the platform has no numeric owners to set it does nothing, rather than
 // failing on every file a -a download restores.
 func Lchown(path string, uid, gid int) error { return lchown(path, uid, gid) }
+
+// Lutimes sets timestamps on path itself, including when it is a symlink.
+func Lutimes(path string, atime, mtime time.Time) error { return lutimes(path, atime, mtime) }
 
 // AccessTimeOf returns the last access time, falling back to the modification
 // time where the platform does not record one.

@@ -11,7 +11,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +20,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 
+	"github.com/JohanLindvall/azcp/internal/parallel"
 	"github.com/JohanLindvall/azcp/internal/retryx"
 	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/uri"
@@ -190,57 +190,6 @@ func ContentTypeFor(name string) string {
 	return ""
 }
 
-// inParallel runs fn for every index in [0, count), at most workers at a time,
-// abandoning the rest after the first failure. It reports that first error, or
-// the caller's cancellation when no work failed. It is the scaffolding shared
-// by block uploads, ranged downloads and staged server-side copies, which all
-// move the pieces of one file concurrently and must stop as one.
-func inParallel(ctx context.Context, count, workers int, fn func(ctx context.Context, i int) error) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var (
-		wg        sync.WaitGroup
-		mu        sync.Mutex
-		firstErr  error
-		semaphore = make(chan struct{}, workers)
-	)
-	fail := func(err error) {
-		mu.Lock()
-		if firstErr == nil {
-			firstErr = err
-			// Nothing else can succeed once a piece is lost; the whole is only
-			// ever assembled from every piece.
-			cancel()
-		}
-		mu.Unlock()
-	}
-	for i := range count {
-		select {
-		case semaphore <- struct{}{}:
-		case <-ctx.Done():
-			wg.Wait()
-			if firstErr != nil {
-				return firstErr
-			}
-			return ctx.Err()
-		}
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			defer func() { <-semaphore }()
-			if err := fn(ctx, i); err != nil {
-				fail(err)
-			}
-		}(i)
-	}
-	wg.Wait()
-	if firstErr != nil {
-		return firstErr
-	}
-	return ctx.Err()
-}
-
 // Upload writes a local file to a blob, staging blocks in parallel.
 func (s *Store) Upload(ctx context.Context, srcPath string, dst *uri.URL, o TransferOptions) error {
 	return s.withSignIn(ctx, func() error { return s.upload(ctx, srcPath, dst, o) })
@@ -330,7 +279,7 @@ func (s *Store) uploadBlocks(ctx context.Context, f io.ReaderAt, size int64,
 	}
 
 	var sent atomic.Int64
-	err = inParallel(ctx, count, o.concurrency(), func(ctx context.Context, i int) error {
+	err = parallel.Do(ctx, count, o.concurrency(), func(ctx context.Context, i int) error {
 		offset := int64(i) * blockSize
 		n := min(blockSize, size-offset)
 		id, err := contentBlockID(ctx, f, offset, n)
@@ -415,6 +364,9 @@ func (s *Store) PutAttrs(ctx context.Context, dst *uri.URL, o TransferOptions) e
 		}
 		if err != nil {
 			return err
+		}
+		if o.NoClobber {
+			return os.ErrExist
 		}
 		if m := o.metadata(); m != nil {
 			if _, err := bc.SetMetadata(ctx, m, nil); err != nil {
@@ -689,25 +641,61 @@ func (s *Store) asyncCopy(ctx context.Context, src *store.Node, dst *uri.URL, o 
 	if err != nil {
 		return err
 	}
+	etag := started.ETag
 	if started.CopyStatus != nil && *started.CopyStatus == blob.CopyStatusTypeSuccess {
 		if o.Progress != nil {
 			o.Progress(src.Size)
 		}
+	} else {
+		copyID := deref(started.CopyID)
+		etag, err = s.awaitCopy(ctx, dstBlob, copyID, src, dst, o)
+		if err != nil {
+			return err
+		}
+	}
+	if headers := o.asyncCopyHeaders(src); headers != nil {
+		// Copy Blob has no content-header overrides. Apply them after the
+		// copy completes, pinning the update to the version just produced.
+		_, err = dstBlob.SetHTTPHeaders(ctx, *headers, &blob.SetHTTPHeadersOptions{
+			AccessConditions: &blob.AccessConditions{ModifiedAccessConditions: &blob.ModifiedAccessConditions{
+				IfMatch: etag,
+			}},
+		})
+		return err
+	}
+	return nil
+}
+
+func (o TransferOptions) asyncCopyHeaders(src *store.Node) *blob.HTTPHeaders {
+	changed := false
+	for _, h := range []struct {
+		value  *string
+		source string
+	}{
+		{&o.ContentType, src.ContentType},
+		{&o.ContentEncoding, src.ContentEncoding},
+		{&o.ContentDisposition, src.ContentDisposition},
+		{&o.ContentLanguage, src.ContentLanguage},
+		{&o.CacheControl, src.CacheControl},
+	} {
+		if *h.value == "" {
+			*h.value = h.source
+		} else if *h.value != h.source {
+			changed = true
+		}
+	}
+	if !changed {
 		return nil
 	}
-
-	copyID := ""
-	if started.CopyID != nil {
-		copyID = *started.CopyID
-	}
-	return s.awaitCopy(ctx, dstBlob, copyID, src, dst, o)
+	// SetHTTPHeaders replaces all content properties, including the checksum.
+	return o.httpHeadersWithMD5(src.Name(), src.MD5)
 }
 
 // awaitCopy polls until the service reports the copy finished. Polling starts
 // quickly, since most copies within a region complete almost at once, and backs
 // off so a large cross-region copy does not generate needless traffic.
 func (s *Store) awaitCopy(ctx context.Context, dstBlob *blob.Client, copyID string,
-	src *store.Node, dst *uri.URL, o TransferOptions) error {
+	src *store.Node, dst *uri.URL, o TransferOptions) (*azcore.ETag, error) {
 
 	const (
 		firstPoll = 100 * time.Millisecond
@@ -718,13 +706,16 @@ func (s *Store) awaitCopy(ctx context.Context, dstBlob *blob.Client, copyID stri
 		select {
 		case <-ctx.Done():
 			s.abandonCopy(dstBlob, copyID, dst)
-			return ctx.Err()
+			return nil, ctx.Err()
 		case <-time.After(delay):
 		}
 
 		props, err := dstBlob.GetProperties(ctx, nil)
 		if err != nil {
-			return err
+			if ctx.Err() != nil {
+				s.abandonCopy(dstBlob, copyID, dst)
+			}
+			return nil, err
 		}
 		status := blob.CopyStatusTypePending
 		if props.CopyStatus != nil {
@@ -735,15 +726,15 @@ func (s *Store) awaitCopy(ctx context.Context, dstBlob *blob.Client, copyID stri
 			if o.Progress != nil {
 				o.Progress(src.Size)
 			}
-			return nil
+			return props.ETag, nil
 		case blob.CopyStatusTypeFailed:
 			detail := ""
 			if props.CopyStatusDescription != nil {
 				detail = ": " + *props.CopyStatusDescription
 			}
-			return fmt.Errorf("the service reported the copy failed%s", detail)
+			return nil, fmt.Errorf("the service reported the copy failed%s", detail)
 		case blob.CopyStatusTypeAborted:
-			return errors.New("the service reported the copy was aborted")
+			return nil, errors.New("the service reported the copy was aborted")
 		}
 		if o.Progress != nil && props.CopyProgress != nil {
 			if done, ok := parseCopyProgress(*props.CopyProgress); ok {
@@ -867,7 +858,7 @@ func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 	count := int((src.Size + bs - 1) / bs)
 	ids := make([]string, count)
 	var done atomic.Int64
-	err = inParallel(ctx, count, o.concurrency(), func(ctx context.Context, i int) error {
+	err = parallel.Do(ctx, count, o.concurrency(), func(ctx context.Context, i int) error {
 		off := int64(i) * bs
 		n := min(bs, src.Size-off)
 		ids[i] = blockID(i)

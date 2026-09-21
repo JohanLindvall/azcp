@@ -85,3 +85,36 @@ func TestJSONDeleteEmitsOnlyJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestJSONFatalPlanningErrorEndsWithSummary(t *testing.T) {
+	d := t.TempDir()
+	if err := os.WriteFile(filepath.Join(d, "src"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"--output=json", "-t", "src", "src"},
+		{"--output=json", "--backup", "src", "azure://acct/c/blob"},
+	} {
+		out, diagnostics, err := commandOutput(t, d, args...)
+		if err == nil {
+			t.Fatal("invalid destination succeeded")
+		}
+		lines := bytes.Split(bytes.TrimSpace(out), []byte("\n"))
+		if len(lines) != 2 {
+			t.Fatalf("expected error and summary, got %s; stderr: %s", out, diagnostics)
+		}
+		for i, name := range []string{"error", "summary"} {
+			var event struct {
+				Event    string            `json:"event"`
+				Failed   int               `json:"failed"`
+				Failures []json.RawMessage `json:"failures"`
+			}
+			if err := json.Unmarshal(lines[i], &event); err != nil || event.Event != name {
+				t.Fatalf("invalid %s event: %s, %v", name, lines[i], err)
+			}
+			if name == "summary" && (event.Failed != 1 || len(event.Failures) != 1) {
+				t.Fatalf("fatal failure missing from summary: %s", lines[i])
+			}
+		}
+	}
+}

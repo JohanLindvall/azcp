@@ -75,6 +75,23 @@ func TestPromptWithoutAnswersLeavesFilesAlone(t *testing.T) {
 	}
 }
 
+func TestInteractivePromptAcceptsAnswerAtEOF(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a", "b"} {
+		write(t, filepath.Join(dir, name), "new")
+		write(t, filepath.Join(dir, "dst", name), "old")
+	}
+	if n := runWithStdin(t, dir, strings.NewReader("y"), "-i", "a", "b", "dst"); n != 0 {
+		t.Fatal(n)
+	}
+	if got := read(t, filepath.Join(dir, "dst/a")); got != "new" {
+		t.Fatalf("answer at EOF was ignored: %q", got)
+	}
+	if got := read(t, filepath.Join(dir, "dst/b")); got != "old" {
+		t.Fatalf("EOF without an answer overwrote a file: %q", got)
+	}
+}
+
 // --attributes-only copies attributes onto an existing destination without
 // touching its data, exactly as cp does.
 func TestAttributesOnlyKeepsDestinationData(t *testing.T) {

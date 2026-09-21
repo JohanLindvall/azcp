@@ -12,6 +12,60 @@ import (
 	"github.com/JohanLindvall/azcp/internal/store"
 )
 
+func TestDanglingDestinationSymlink(t *testing.T) {
+	t.Setenv("POSIXLY_CORRECT", "")
+	if err := os.Unsetenv("POSIXLY_CORRECT"); err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"", "-f", "--attributes-only", "--compress", "--remove-destination", "-b"} {
+		t.Run(flag, func(t *testing.T) {
+			d := t.TempDir()
+			write(t, filepath.Join(d, "src"), "source")
+			if err := os.Symlink("missing", filepath.Join(d, "dst.gz")); err != nil {
+				t.Skip(err)
+			}
+			args := []string{"src", "dst.gz"}
+			if flag != "" {
+				args = append(args, flag)
+			}
+			want := int64(1)
+			if flag == "--remove-destination" || flag == "-b" {
+				want = 0
+			}
+			if n := run(t, d, args...); n != want {
+				t.Fatalf("failed = %d, want %d", n, want)
+			}
+			if exists(filepath.Join(d, "missing")) {
+				t.Fatal("copy wrote through a dangling destination symlink")
+			}
+		})
+	}
+}
+
+func TestLiteralBraceSourceTakesPrecedence(t *testing.T) {
+	d := t.TempDir()
+	for _, name := range []string{"{a,b}", "a", "b"} {
+		write(t, filepath.Join(d, name), name)
+	}
+	if n := run(t, d, "{a,b}", "literal"); n != 0 {
+		t.Fatal(n)
+	}
+	if got := read(t, filepath.Join(d, "literal")); got != "{a,b}" {
+		t.Fatal("existing brace name was expanded")
+	}
+	if err := os.Mkdir(filepath.Join(d, "expanded"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if n := run(t, d, "--glob=always", "{a,b}", "expanded"); n != 0 {
+		t.Fatal(n)
+	}
+	for _, name := range []string{"a", "b"} {
+		if got := read(t, filepath.Join(d, "expanded", name)); got != name {
+			t.Fatal("--glob=always did not expand braces")
+		}
+	}
+}
+
 func TestSameFileDoesNotDestroySource(t *testing.T) {
 	for _, alias := range []string{"src", "hard", "sym"} {
 		for _, flags := range [][]string{nil, {"--attributes-only"}, {"--remove-destination"}, {"-b"}} {

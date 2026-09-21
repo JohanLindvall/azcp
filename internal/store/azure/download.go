@@ -11,6 +11,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 
+	"github.com/JohanLindvall/azcp/internal/parallel"
 	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
@@ -51,7 +52,7 @@ func (s *Store) downloadRanges(ctx context.Context, src *store.Node, f io.Writer
 		}
 	}
 
-	return inParallel(ctx, count, o.concurrency(), func(ctx context.Context, i int) error {
+	return parallel.Do(ctx, count, o.concurrency(), func(ctx context.Context, i int) error {
 		if resume != nil && resume.has(i) {
 			return nil
 		}

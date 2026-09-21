@@ -15,6 +15,49 @@ import (
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
+func TestDownloadedSymlinkPreservesItsOwnAttributes(t *testing.T) {
+	d := t.TempDir()
+	target := filepath.Join(d, "target")
+	link := filepath.Join(d, "link")
+	write(t, target, "untouched")
+	before, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Probe before invoking the engine so Windows without symlink privilege
+	// skips instead of reporting an unrelated failure.
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Unix(946684800, 0)
+	e := newEngine(t, "-a", "azure://acct/c/link", link)
+	task := &task{src: &store.Node{
+		URL: mustURL(t, "azure://acct/c/link"), Kind: store.KindFile,
+		Metadata: (store.PosixMeta{SymlinkDest: target, MTime: when, ATime: when,
+			Mode: 0o777, HasMode: true}).Encode(),
+	}, dst: mustURL(t, link)}
+	if err := e.transfer(context.Background(), task, nil); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(when) {
+		t.Fatalf("link mtime = %v, want %v", info.ModTime(), when)
+	}
+	after, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) || after.Mode() != before.Mode() {
+		t.Fatal("restoring symlink attributes changed its target")
+	}
+}
+
 // A blob azcp did not put there carries none of its own attributes, but the
 // service still knows when it was last written, which is the closest thing to a
 // modification time it has and a great deal closer than the moment it happened

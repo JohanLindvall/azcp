@@ -99,10 +99,75 @@ func TestCopyFileCancelled(t *testing.T) {
 	dir := t.TempDir()
 	src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
 	writeFile(t, src, bytes.Repeat([]byte("x"), 1<<20))
+	writeFile(t, dst, []byte("keep"))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := CopyFile(ctx, src, dst, CopyOptions{Reflink: ReflinkNever}); err == nil {
 		t.Fatal("a cancelled context copied anyway")
+	}
+	if got, err := os.ReadFile(dst); err != nil || string(got) != "keep" {
+		t.Fatalf("cancelled copy changed the destination: %q, %v", got, err)
+	}
+}
+
+func TestReflinkAttemptKeepsOpenDestination(t *testing.T) {
+	d := t.TempDir()
+	srcPath, dstPath := filepath.Join(d, "src"), filepath.Join(d, "dst")
+	writeFile(t, srcPath, []byte("source"))
+	writeFile(t, dstPath, nil)
+	src, err := os.Open(srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	dst, err := os.OpenFile(dstPath, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	_ = tryReflink(dst, src)
+	opened, err := dst.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	named, err := os.Stat(dstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(opened, named) {
+		t.Fatal("reflink detached the open destination from its name")
+	}
+	if _, err := dst.WriteAt([]byte("fallback"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(dstPath); err != nil || string(got) != "fallback" {
+		t.Fatalf("fallback did not reach the named destination: %q, %v", got, err)
+	}
+}
+
+func TestCopyFileAutoPreservesDestinationLinksAndMode(t *testing.T) {
+	d := t.TempDir()
+	src, dst, alias := filepath.Join(d, "src"), filepath.Join(d, "dst"), filepath.Join(d, "alias")
+	writeFile(t, src, []byte("new"))
+	writeFile(t, dst, []byte("old"))
+	if err := os.Chmod(dst, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(dst, alias); err != nil {
+		t.Skip(err)
+	}
+	if _, err := CopyFile(context.Background(), src, dst, CopyOptions{Reflink: ReflinkAuto}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(alias); err != nil || string(got) != "new" {
+		t.Fatalf("copy broke a destination hard link: %q, %v", got, err)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("existing destination mode changed to %o", info.Mode().Perm())
 	}
 }
 

@@ -104,6 +104,10 @@ type deferredDir struct {
 	source string
 	path   string
 	info   os.FileInfo
+	// New directories may need temporary owner access while workers fill
+	// them. Restore the umask-filtered mode even without --preserve.
+	mode        os.FileMode
+	restoreMode bool
 }
 
 // New builds an engine. A bad --include or --exclude pattern is reported here,
@@ -392,6 +396,11 @@ func (e *Engine) applyDeferredDirs() {
 	dirs := e.deferredDirs
 	slices.SortFunc(dirs, func(a, b deferredDir) int { return cmp.Compare(len(b.path), len(a.path)) })
 	for _, d := range dirs {
+		if d.restoreMode {
+			if err := os.Chmod(d.path, d.mode); err != nil {
+				e.fail("cannot restore directory permissions on %s: %s", quote(d.path), brief(err))
+			}
+		}
 		for _, err := range local.ApplyAttrs(d.source, d.path, d.info, e.opt.Preserve, false) {
 			e.log.Warn("cannot preserve directory attributes", "path", d.path, "error", err)
 		}

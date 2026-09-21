@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -43,7 +43,7 @@ func (e *Engine) scan(ctx context.Context, out chan<- *task) error {
 	}
 	// One unrenamed source tree cannot collide with itself. Avoid retaining
 	// per-file bookkeeping on the common large recursive copy.
-	if len(sources) == 1 && !e.opt.Decompress {
+	if len(sources) == 1 && !e.opt.Decompress && !e.opt.Compress.On() {
 		e.scheduled = nil
 	}
 
@@ -99,7 +99,7 @@ func (e *Engine) expandSources(ctx context.Context) ([]*store.Node, error) {
 				raw = "/"
 			}
 		}
-		for _, expanded := range e.braceExpand(raw) {
+		for _, expanded := range e.braceExpand(ctx, raw) {
 			u, err := uri.Parse(expanded, e.uriOK)
 			if err != nil {
 				e.fail("%v", err)
@@ -116,9 +116,16 @@ func (e *Engine) expandSources(ctx context.Context) ([]*store.Node, error) {
 	return out, ctx.Err()
 }
 
-func (e *Engine) braceExpand(arg string) []string {
+func (e *Engine) braceExpand(ctx context.Context, arg string) []string {
 	if e.opt.Glob == cli.GlobNever {
 		return []string{arg}
+	}
+	if e.opt.Glob == cli.GlobAuto && !uri.IsRemoteArg(arg) && strings.ContainsRune(arg, '{') {
+		if u, err := uri.Parse(arg, e.uriOK); err == nil {
+			if _, err := e.local.Stat(ctx, u, false); err == nil {
+				return []string{arg}
+			}
+		}
 	}
 	return glob.ExpandBraces(arg)
 }
@@ -401,12 +408,8 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 		// The top of a recursive copy is the only place a deletion may reach.
 		e.pruner.root(dst)
 	}
-	mode := fs.FileMode(0o755)
-	if e.opt.Preserve.Mode {
-		mode = src.Mode.Perm()
-	}
 	if !e.opt.DryRun {
-		if err := e.storeFor(dst).MkdirAll(ctx, dst, mode|0o200); err != nil {
+		if err := e.prepareDirectory(ctx, src, dst); err != nil {
 			e.fail("cannot create directory %s: %s", quote(dst.Display()), brief(err))
 			return nil
 		}
@@ -453,13 +456,6 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 		}
 	}
 
-	// Directory attributes are applied once the contents are written, so that
-	// a read-only mode or an old mtime cannot interfere with filling it.
-	if !dst.IsRemote() && !src.URL.IsRemote() && e.opt.Preserve.Any() && !e.opt.DryRun {
-		if info, err := sourceInfo(src); err == nil {
-			e.deferredDirs = append(e.deferredDirs, deferredDir{source: src.URL.Path, path: dst.Path, info: info})
-		}
-	}
 	return nil
 }
 
@@ -886,10 +882,12 @@ func (e *Engine) promptOverwrite(dst *uri.URL) (bool, error) {
 		line, readErr = e.promptIn.ReadString('\n')
 	})
 	if readErr != nil {
-		// No one is there to answer; treat that as "leave it alone" rather
-		// than silently overwriting.
 		e.cancelAll = true
-		return false, nil
+		// EOF can accompany a final answer without a newline. Only an empty
+		// answer or an actual read failure means nobody has consented.
+		if !errors.Is(readErr, io.EOF) || line == "" {
+			return false, nil
+		}
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":

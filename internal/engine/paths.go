@@ -66,16 +66,20 @@ func sourceInfo(src *store.Node) (os.FileInfo, error) {
 // The low-level copier repeats the identity check on open handles before
 // truncation, since paths can change between planning and execution.
 func (e *Engine) prepareLocalTask(t *task) error {
-	if t.src.URL.IsRemote() || t.dst.IsRemote() {
+	if t.dst.IsRemote() {
 		return nil
 	}
-	si, err := sourceInfo(t.src)
-	if err != nil {
-		return err
-	}
-	if t.backup != "" {
-		if backup, err := os.Stat(t.backup); err == nil && os.SameFile(si, backup) {
-			return plainf("backing up %s might destroy source;  %s not copied", quote(t.dst.Display()), quote(t.src.URL.Display()))
+	var si os.FileInfo
+	if !t.src.URL.IsRemote() {
+		var err error
+		si, err = sourceInfo(t.src)
+		if err != nil {
+			return err
+		}
+		if t.backup != "" {
+			if backup, err := os.Stat(t.backup); err == nil && os.SameFile(si, backup) {
+				return plainf("backing up %s might destroy source;  %s not copied", quote(t.dst.Display()), quote(t.src.URL.Display()))
+			}
 		}
 	}
 	di, err := os.Lstat(t.dst.Path)
@@ -89,9 +93,21 @@ func (e *Engine) prepareLocalTask(t *task) error {
 		return plainf("cannot overwrite directory %s with non-directory", quote(t.dst.Display()))
 	}
 	if !t.src.IsSymlink() {
-		if target, err := os.Stat(t.dst.Path); err == nil {
-			di = target
+		if di.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Stat(t.dst.Path)
+			_, posix := os.LookupEnv("POSIXLY_CORRECT")
+			replacesLink := t.backup != "" || t.removeFirst || e.opt.HardLink || e.opt.SymbolicLink ||
+				(t.src.URL.IsRemote() && store.DecodePosixMeta(t.src.Metadata).IsSymlink())
+			if os.IsNotExist(err) && !posix && !replacesLink {
+				return plainf("not writing through dangling symlink %s", quote(t.dst.Display()))
+			}
+			if err == nil {
+				di = target
+			}
 		}
+	}
+	if t.src.URL.IsRemote() {
+		return nil
 	}
 	if !os.SameFile(si, di) {
 		return nil

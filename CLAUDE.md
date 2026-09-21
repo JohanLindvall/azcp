@@ -50,8 +50,10 @@ because the copy semantics are full of things that differ per operating system
 — symbolic links, file modes, device identity, path separators — and
 cross-compiling proves none of it. macOS is deliberately not in that matrix: its
 runners cost a multiple of the others, and its copy path shares `plat_unix.go`
-with Linux, so what goes untested is `clonefile` and the spelling of the stat
-timestamp fields in `plat_darwin.go`. Touch those and run the tests on a Mac.
+with Linux, so what goes untested is the spelling of the stat timestamp fields
+in `plat_darwin.go`. macOS uses buffered copies: its pathname-based `clonefile`
+cannot clone into an open destination without changing file identity. Touch
+platform-specific behavior and run the tests on that platform.
 Formatting, vet, the race detector, the cross-compile check (which still
 covers darwin) and the emulator-backed end-to-end suite run once on Linux.
 
@@ -100,6 +102,7 @@ internal/cli         option table, help text, resolved configuration
 internal/cpflags     getopt_long-compatible parser
 internal/codec       compression formats: encodings, extensions, coders
 internal/engine      planning, the worker pool, cp's per-file semantics
+internal/parallel    bounded workers shared by transfers and benchmarks
 internal/glob        brace expansion and the pattern matcher
 internal/store       namespace interface and the pattern-driven walker
 internal/store/local filesystem, reflink, sparse copies, attributes
@@ -128,6 +131,20 @@ correctness, and request counts came from the emulator's access log. Re-measure
 rather than reason about it if you change a transfer path.
 
 ## Invariants worth knowing before editing
+
+**A reflink attempt keeps the open destination attached to its name.** The
+fallback writes to that same descriptor, and existing hard links must keep
+seeing its contents. macOS's `clonefile` cannot meet this contract; unlinking
+the destination before cloning loses fallback writes and breaks hard links.
+It uses the buffered route under `--reflink=auto` and refuses `always`.
+
+**Collision tracking follows name transformations.** Even one source tree can
+collide with itself under `--compress` or `--decompress`. Only an untransformed
+tree can omit the scheduled-destination map.
+
+**Block workers are reused.** `internal/parallel.Do` handles bounded execution,
+cancellation, the first error, and joining workers for all block transfer routes
+and benchmarks. It must not launch a goroutine for every completed resume range.
 
 **The terminal has one owner.** While the progress display is running it owns
 stderr. Every write goes through `logx.WithTerminal`, which the display hooks

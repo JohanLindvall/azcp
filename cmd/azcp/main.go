@@ -103,7 +103,8 @@ func run(argv []string) int {
 	prog.Stop()
 	logx.SetGuard(nil)
 
-	if runErr != nil && !errors.Is(runErr, context.Canceled) {
+	fatal := runErr != nil && !errors.Is(runErr, context.Canceled)
+	if fatal && opt.Output != cli.OutputJSON {
 		logx.Errf("%s: %v\n", cli.Program, runErr)
 		if isUsage(runErr) {
 			return exitUsage
@@ -112,7 +113,11 @@ func run(argv []string) int {
 	}
 
 	if opt.Output == cli.OutputJSON {
-		writeJSONSummary(prog, eng, opt)
+		var summaryErr error
+		if fatal {
+			summaryErr = runErr
+		}
+		writeJSONSummary(prog, eng, opt, summaryErr)
 	} else {
 		prog.Summary(os.Stderr, opt.DryRun)
 		if n := eng.Deleted(); n > 0 {
@@ -130,7 +135,7 @@ func run(argv []string) int {
 		logx.Errf("%s: interrupted%s\n", cli.Program, resumeHint(prog, opt))
 		return exitFail
 	}
-	if failed > 0 {
+	if failed > 0 || fatal {
 		return exitFail
 	}
 	return exitOK
@@ -232,9 +237,18 @@ func runBenchmark(ctx context.Context, eng *engine.Engine, opt *cli.Options,
 }
 
 // writeJSONSummary closes a machine-readable run with one summary object.
-func writeJSONSummary(prog *progress.Reporter, eng *engine.Engine, opt *cli.Options) {
+func writeJSONSummary(prog *progress.Reporter, eng *engine.Engine, opt *cli.Options, runErr error) {
 	done, failed, skipped, retries, bytes, elapsed := prog.Totals()
 	warns, errs := logx.Counts()
+	failures := eng.Failures()
+	if runErr != nil {
+		// Fatal planning failures have no per-file task to count them. They
+		// still belong in the same JSON stream and summary as copy failures.
+		failed++
+		failures = append(failures, engine.Failure{Error: runErr.Error()})
+		encoded, _ := json.Marshal(map[string]string{"event": "error", "error": runErr.Error()})
+		logx.Printf("%s\n", encoded)
+	}
 	summary := map[string]any{
 		"event":           "summary",
 		"version":         cli.VersionString(),
@@ -250,8 +264,8 @@ func writeJSONSummary(prog *progress.Reporter, eng *engine.Engine, opt *cli.Opti
 		"warnings":        warns,
 		"errors":          errs,
 	}
-	if f := eng.Failures(); len(f) > 0 {
-		summary["failures"] = f
+	if len(failures) > 0 {
+		summary["failures"] = failures
 	}
 	if elapsed.Seconds() > 0 {
 		summary["bytes_per_second"] = float64(bytes) / elapsed.Seconds()

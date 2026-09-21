@@ -19,6 +19,13 @@ func kernelCopy(context.Context, *os.File, *os.File, int64, *CopyOptions) (int64
 }
 
 func lutimes(path string, atime, mtime time.Time) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errUnsupported
+	}
 	return os.Chtimes(path, atime, mtime)
 }
 

@@ -6,11 +6,11 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/JohanLindvall/azcp/internal/humanize"
 	"github.com/JohanLindvall/azcp/internal/logx"
+	"github.com/JohanLindvall/azcp/internal/parallel"
 	"github.com/JohanLindvall/azcp/internal/progress"
 	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/store/azure"
@@ -125,44 +125,23 @@ func (e *Engine) Benchmark(ctx context.Context) (*BenchmarkResult, error) {
 func (e *Engine) benchEach(ctx context.Context, names []*uri.URL, dir progress.Direction,
 	op func(context.Context, *uri.URL, *progress.Task) error) error {
 
-	var (
-		wg        sync.WaitGroup
-		mu        sync.Mutex
-		firstErr  error
-		semaphore = make(chan struct{}, e.opt.Jobs)
-	)
-	for _, u := range names {
-		select {
-		case semaphore <- struct{}{}:
-		case <-ctx.Done():
-			wg.Wait()
-			return ctx.Err()
-		}
-		wg.Add(1)
-		go func(u *uri.URL) {
-			defer wg.Done()
-			defer func() { <-semaphore }()
-			pt := e.prog.Begin(u.Base(), e.opt.BenchSize, dir)
-			err := op(ctx, u, pt)
+	return parallel.Do(ctx, len(names), e.opt.Jobs, func(ctx context.Context, i int) error {
+		u := names[i]
+		pt := e.prog.Begin(u.Base(), e.opt.BenchSize, dir)
+		err := op(ctx, u, pt)
+		if interrupted(ctx, err) {
+			pt.Interrupted()
+		} else {
 			pt.Done(err)
-			if err != nil {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				mu.Unlock()
-			}
-		}(u)
-	}
-	wg.Wait()
-	return firstErr
+		}
+		return err
+	})
 }
 
 func (e *Engine) benchCleanup(names []*uri.URL) {
 	// A fresh context: the caller's may already be cancelled, and leaving
 	// gigabytes of generated data in someone's account is not acceptable.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()),
-		2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	var removed int
 	for _, u := range names {

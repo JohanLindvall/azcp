@@ -178,6 +178,7 @@ mkdir -p "$ATTR/src"
 echo mode > "$ATTR/src/mode.txt"; chmod 4750 "$ATTR/src/mode.txt"
 ln -s mode.txt "$ATTR/src/link.txt"
 touch -d '2021-06-15T10:20:30Z' "$ATTR/src/mode.txt" 2>/dev/null || true
+touch -h -d '2020-01-02T03:04:05Z' "$ATTR/src/link.txt"
 "$AZCP" -a "$ATTR/src" "$AZ/attrs" >/dev/null
 mkdir -p "$ATTR/back"
 "$AZCP" -a "$AZ/attrs" "$ATTR/back" >/dev/null
@@ -185,6 +186,8 @@ check "-a preserves the mode through blob storage" \
   "$(stat -c '%a' "$ATTR/back/attrs/mode.txt" 2>/dev/null)" "4750"
 [ -L "$ATTR/back/attrs/link.txt" ] && ok "-a round-trips a symbolic link" \
                                    || bad "the symbolic link did not come back"
+check "-a preserves a symbolic link's own timestamp" \
+  "$(stat -c '%Y' "$ATTR/back/attrs/link.txt")" "$(stat -c '%Y' "$ATTR/src/link.txt")"
 
 # The same tree fetched without -a: --copy-metadata is what lets a blob that
 # records a symbolic link come back as one instead of as an empty file.
@@ -203,6 +206,13 @@ cmp -s "$WORK/page.gz" "$WORK/raw.gz" \
 "$AZCP" --decompress "$AZ/page.gz" "$WORK/out.gz" >/dev/null
 check "--decompress expands and drops the extension" \
   "$(cat "$WORK/out" 2>/dev/null)" "compressed payload"
+
+# Copy Blob does not accept content-header overrides in the copy request.
+# The fallback must apply them afterwards without discarding the checksum.
+"$AZCP" --put-md5 "$WORK/page.gz" "$AZ/header-source.gz" >/dev/null
+"$AZCP" --content-encoding=gzip "$AZ/header-source.gz" "$AZ/header-copy.gz" >/dev/null
+"$AZCP" --decompress --check-md5=require "$AZ/header-copy.gz" "$WORK/header-copy.gz" >/dev/null
+check "asynchronous copy applies headers and keeps MD5" "$(cat "$WORK/header-copy")" "compressed payload"
 
 echo "keep expanded" > "$WORK/out"
 "$AZCP" -n --decompress "$AZ/page.gz" "$WORK/out.gz" >/dev/null
@@ -283,6 +293,11 @@ echo "keep me" > "$WORK/attronly-dl.txt"
 check "--attributes-only leaves local content alone" \
   "$(cat "$WORK/attronly-dl.txt")" "keep me"
 
+"$AZCP" --attributes-only --metadata stage=remote "$AZ/tree/file.txt" "$AZ/attronly.txt" >/dev/null
+"$AZCP" "$AZ/attronly.txt" "$WORK/attronly-remote.txt" >/dev/null
+check "blob-to-blob --attributes-only leaves content alone" \
+  "$(cat "$WORK/attronly-remote.txt")" "original blob"
+
 # --- attributes survive a blob-to-blob copy ----------------------------------
 "$AZCP" -r --copy-metadata "$AZ/attrs" "$AZ/attrs-copy" >/dev/null
 mkdir -p "$ATTR/copyback"
@@ -297,6 +312,13 @@ cmp -s "$SRC/big.bin" "$WORK/resume.bin" && ok "--resume completes a whole trans
                                          || bad "--resume corrupted the file"
 [ -f "$WORK/resume.bin.azcp-part" ] && bad "the resume record was left behind" \
                                     || ok "the resume record is cleaned up"
+
+echo partial > "$WORK/restart.txt"
+echo stale > "$WORK/restart.txt.azcp-part"
+"$AZCP" -n "$AZ/tree/file.txt" "$WORK/restart.txt" >/dev/null
+check "-n restarts an incomplete download without --resume" "$(cat "$WORK/restart.txt")" "hello"
+[ ! -e "$WORK/restart.txt.azcp-part" ] && ok "a restarted download clears the stale record" \
+                                     || bad "a restarted download left its stale record"
 
 # --- delete -----------------------------------------------------------------
 mkdir -p "$WORK/sync/keep"

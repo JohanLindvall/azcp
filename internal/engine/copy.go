@@ -46,9 +46,13 @@ func (e *Engine) transfer(ctx context.Context, t *task, pt *progress.Task) error
 	// says is where the link should point.
 	if t.src.URL.IsRemote() && !t.dst.IsRemote() {
 		if p := store.DecodePosixMeta(t.src.Metadata); p.IsSymlink() {
-			return e.replace(t, func() error {
+			if err := e.replace(t, func() error {
 				return os.Symlink(p.SymlinkDest, t.dst.Path)
-			})
+			}); err != nil {
+				return err
+			}
+			e.restoreAttrs(t)
+			return nil
 		}
 	}
 
@@ -136,7 +140,11 @@ func (e *Engine) download(ctx context.Context, t *task, pt *progress.Task) error
 		// finished. Refusing it would leave it unfinished for good.
 		flags = os.O_WRONLY | os.O_CREATE
 	case e.opt.NoClobber:
-		flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
+		// The scanner deliberately admits unfinished downloads even without
+		// --resume; they must be restarted, not refused as completed files.
+		if !azure.IncompleteDownload(t.dst.Path) {
+			flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
+		}
 	}
 	f, err := e.openDest(t, flags, 0o644)
 	if err != nil {
@@ -206,6 +214,9 @@ func (e *Engine) copyRemote(ctx context.Context, t *task, pt *progress.Task) err
 		maps.Copy(merged, t.src.Metadata)
 		maps.Copy(merged, e.opt.Metadata)
 		opts.Metadata = merged
+	}
+	if e.opt.AttributesOnly {
+		return e.az.PutAttrs(ctx, t.dst, opts)
 	}
 	return e.az.Copy(ctx, t.src, t.dst, opts)
 }
