@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestReporter draws into a file, which is not a terminal — hence
@@ -109,6 +110,65 @@ func TestEachFrameErasesTheLast(t *testing.T) {
 	if !strings.HasPrefix(got, want) {
 		t.Errorf("a shorter frame begins %q; it must erase all %d lines of the "+
 			"taller one first", elide(got, 32), tall)
+	}
+}
+
+func TestFrameKeepsProblemsVisible(t *testing.T) {
+	r := newQuietReporter()
+	r.Plan(100000, 1<<40)
+	r.Saw(120000)
+	r.Failed(2)
+	r.Skipped(20000)
+	r.Begin("retrying.bin", 100, DirUpload).Retrying(1, 3, time.Second)
+	for _, width := range []int{33, 40, 60, 80, 120} {
+		r.width = width
+		frame := stripANSI(strings.Join(r.frame(), "\n"))
+		for _, want := range []string{"2 failed", "1 retried", "20,000 skipped", "120,000 seen"} {
+			if !strings.Contains(frame, want) {
+				t.Errorf("width %d hid %q: %s", width, want, frame)
+			}
+		}
+	}
+}
+
+func TestScanningDoesNotPromiseCompletion(t *testing.T) {
+	r := newQuietReporter()
+	r.Plan(1, 100)
+	r.Begin("first.txt", 100, DirLocal).Done(nil)
+	r.SetScanning(true)
+	frame := stripANSI(strings.Join(r.frame(), "\n"))
+	if !strings.Contains(frame, "scanning") || strings.Contains(frame, "%") {
+		t.Fatalf("unfinished scan should not claim 100%%: %s", frame)
+	}
+	r.SetScanning(false)
+	frame = stripANSI(strings.Join(r.frame(), "\n"))
+	if !strings.Contains(frame, "100%") {
+		t.Fatalf("finished scan should show the known progress: %s", frame)
+	}
+}
+
+func TestEmptyFilesMakeVisibleProgress(t *testing.T) {
+	r := newQuietReporter()
+	r.Plan(4, 0)
+	r.Begin("empty.txt", 0, DirLocal).Done(nil)
+	frame := stripANSI(strings.Join(r.frame(), "\n"))
+	if !strings.Contains(frame, "25%") {
+		t.Fatalf("empty files left the display indeterminate: %s", frame)
+	}
+}
+
+func TestNarrowTransferKeepsFilenameAndRetry(t *testing.T) {
+	r := newQuietReporter()
+	tk := r.Begin("some/long/path/to/archive.tar.gz", 100, DirDownload)
+	tk.Set(50)
+	line := stripANSI(r.taskLine(39, tk))
+	if !strings.Contains(line, "archive.tar.gz") || !strings.Contains(line, "50%") {
+		t.Fatalf("narrow transfer lost its filename or progress: %q", line)
+	}
+	tk.Retrying(2, 3, 5*time.Second)
+	line = stripANSI(r.taskLine(32, tk))
+	if !strings.Contains(line, "retry 2/3 in 5.0s") {
+		t.Fatalf("narrow transfer hid the retry: %q", line)
 	}
 }
 

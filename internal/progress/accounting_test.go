@@ -3,6 +3,7 @@ package progress
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func newQuietReporter() *Reporter {
@@ -77,7 +78,6 @@ func TestInterruptedTakesBytesBackAndCountsUnfinished(t *testing.T) {
 func TestFrameLinesFitTheWidth(t *testing.T) {
 	r := newQuietReporter()
 	r.enabled = true
-	r.width = 60
 	r.Plan(10, 1000)
 	r.Saw(12)
 	r.Failed(1)
@@ -86,15 +86,25 @@ func TestFrameLinesFitTheWidth(t *testing.T) {
 	tk.Set(250)
 	defer tk.Done(nil)
 	rt := r.Begin("retrying.bin", 100, DirDownload)
-	rt.Retrying(2, 3, 0)
+	rt.Retrying(2, 3, 100*24*time.Hour)
 	defer rt.Done(nil)
+	r.Begin("empty.txt", 0, DirLocal)
+	r.Begin("another.txt", 10, DirRemote)
+	r.Begin("hidden.txt", 10, DirRemote)
+	r.maxRows = 4
 
-	for _, phase := range []bool{true, false} {
-		r.SetScanning(phase)
-		for _, l := range r.frame() {
-			if got := len([]rune(stripANSI(l))); got > r.width {
-				t.Errorf("line %d cells wide in a %d-cell terminal: %q",
-					got, r.width, stripANSI(l))
+	for _, level := range []colourLevel{levelNone, level16, level256, levelTrue} {
+		r.pal = palette{level}
+		for width := 1; width <= 120; width++ {
+			r.width = width
+			for _, scanning := range []bool{true, false} {
+				r.SetScanning(scanning)
+				for _, l := range r.frame() {
+					if got := len([]rune(stripANSI(l))); got >= r.width {
+						t.Fatalf("level %d, scanning %v: line %d cells wide in a %d-cell terminal: %q",
+							level, scanning, got, r.width, stripANSI(l))
+					}
+				}
 			}
 		}
 	}

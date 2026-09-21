@@ -89,125 +89,189 @@ func (r *Reporter) frame() []string {
 	phase, scanning := r.phase, r.scanning
 	r.mu.Unlock()
 
-	width := r.width
-	if width < 24 {
-		// Too narrow for a layout; a single terse line is better than wrapping.
-		return []string{r.pal.dim(fmt.Sprintf("%s %s",
-			r.spin(), humanize.Bytes(r.doneBytes.Load())))}
-	}
-
+	// Leave the last cell alone so terminals with automatic margins do not
+	// wrap a full row and change the height of the live region.
+	width := max(r.width-1, 0)
 	doneB := r.doneBytes.Load()
 	totalB := r.plannedBytes.Load()
 	doneF := r.doneFiles.Load()
 	totalF := r.plannedFiles.Load()
 	rate := r.rate(doneB)
+	if width < 32 {
+		label := phase
+		if scanning {
+			label = "Scanning"
+		}
+		return []string{truncateANSI(fmt.Sprintf(" %s %s · %s",
+			r.spin(), r.pal.bold(label), humanize.Bytes(doneB)), width)}
+	}
 
-	var lines []string
-	lines = append(lines, r.headerLine(width, phase, scanning, doneF, totalF, doneB, totalB))
-	lines = append(lines, r.barLine(width, doneB, totalB, rate))
+	lines := []string{r.headerLine(width, phase, scanning)}
+	files := r.pal.bold(humanize.Count(doneF))
+	if totalF > 0 {
+		files += r.pal.dim(" / " + humanize.Count(totalF))
+	}
+	files += r.pal.dim(" files")
+	bytes := r.pal.bold(humanize.Bytes(doneB))
+	if totalB > 0 {
+		bytes += r.pal.dim(" / " + humanize.Bytes(totalB))
+	}
+	lines = append(lines, r.detailLines(width, []string{files, bytes})...)
+	if totalB > 0 {
+		lines = append(lines, r.barLine(width, doneB, totalB, rate, scanning))
+	} else {
+		// Empty files still make progress, but a byte rate cannot estimate
+		// how long creating them will take.
+		lines = append(lines, r.barLine(width, doneF, totalF, 0, scanning))
+	}
+	lines = append(lines, r.statusLines(width, totalF)...)
 
 	if n := len(active); n > 0 {
-		lines = append(lines, "")
+		lines = append(lines, "", r.taskHeading(width, n))
 		shown := min(n, r.maxRows)
 		for _, t := range active[:shown] {
 			lines = append(lines, r.taskLine(width, t))
 		}
 		if n > shown {
-			lines = append(lines, r.pal.dim(fmt.Sprintf("    … and %d more in flight", n-shown)))
+			lines = append(lines, truncateANSI(r.pal.dim(fmt.Sprintf("   … %d more active", n-shown)), width))
 		}
 	}
 	return lines
 }
 
-func (r *Reporter) headerLine(width int, phase string, scanning bool,
-	doneF, totalF, doneB, totalB int64) string {
+func (r *Reporter) headerLine(width int, phase string, scanning bool) string {
+	head := " " + r.spin() + " " + r.pal.bold(phase)
+	if scanning {
+		head += r.pal.dim(" · scanning")
+	}
+	return joinSides(head, r.pal.dim(humanize.Duration(time.Since(r.started))+" elapsed"), width)
+}
+
+// Keep the exceptional counts separate from the totals: clipping a long
+// header used to hide failures and retries just when they mattered most.
+func (r *Reporter) statusLines(width int, totalF int64) []string {
 	var parts []string
-	if totalF > 0 {
-		parts = append(parts, fmt.Sprintf("%s/%s files",
-			humanize.Count(doneF), humanize.Count(totalF)))
-	} else {
-		parts = append(parts, fmt.Sprintf("%s files", humanize.Count(doneF)))
-	}
-	if totalB > 0 {
-		parts = append(parts, fmt.Sprintf("%s/%s", humanize.Bytes(doneB), humanize.Bytes(totalB)))
-	} else if doneB > 0 {
-		parts = append(parts, humanize.Bytes(doneB))
-	}
-	// Worth saying only when it differs from the work found: on a first copy
-	// every file seen becomes a file planned, and repeating it says nothing.
-	if seen := r.seenFiles.Load(); seen > totalF {
-		parts = append(parts, fmt.Sprintf("%s seen", humanize.Count(seen)))
-	}
 	if f := r.failedFiles.Load(); f > 0 {
 		parts = append(parts, r.pal.bad(fmt.Sprintf("%s failed", humanize.Count(f))))
 	}
-	// A link that is degrading shows up here first, and waiting for the closing
-	// summary to say so is waiting until it no longer matters.
 	if n := r.retries.Load(); n > 0 {
 		parts = append(parts, r.pal.warn(fmt.Sprintf("%s retried", humanize.Count(n))))
 	}
 	if s := r.skippedFiles.Load(); s > 0 {
-		parts = append(parts, r.pal.warn(fmt.Sprintf("%s skipped", humanize.Count(s))))
+		parts = append(parts, r.pal.dim(fmt.Sprintf("%s skipped", humanize.Count(s))))
 	}
-	if scanning {
-		phase += " (scanning)"
+	if seen := r.seenFiles.Load(); seen > totalF {
+		parts = append(parts, r.pal.dim(fmt.Sprintf("%s seen", humanize.Count(seen))))
 	}
-	head := fmt.Sprintf("%s %s  %s", r.spin(), r.pal.bold(phase),
-		r.pal.dim(strings.Join(parts, r.pal.sep(" · "))))
-	return truncateANSI(head, width)
+	return r.detailLines(width, parts)
 }
 
-func (r *Reporter) barLine(width int, doneB, totalB int64, rate float64) string {
-	right := fmt.Sprintf("  %10s", humanize.Rate(rate))
-	if totalB > 0 && rate > 0 && doneB < totalB {
-		eta := time.Duration(float64(totalB-doneB)/rate) * time.Second
-		right += fmt.Sprintf("  eta %-7s", humanize.Duration(eta))
-	} else {
-		right += strings.Repeat(" ", len("  eta ")+7)
+func joinSides(left, right string, width int) string {
+	gap := width - humanize.Width(stripANSI(left)) - humanize.Width(stripANSI(right))
+	if gap >= 2 {
+		return left + strings.Repeat(" ", gap) + right
 	}
-	pctW := 5
-	barW := width - humanize.Width(right) - pctW - 2
-	if barW < 8 {
-		return truncateANSI(r.pal.dim(strings.TrimSpace(right)), width)
-	}
+	return truncateANSI(left, width)
+}
 
-	if totalB <= 0 {
-		// Nothing to measure against yet: sweep a highlight along the bar so
-		// it is obvious work is happening.
-		return " " + r.indeterminate(barW) + r.pal.dim(right)
+func (r *Reporter) detailLines(width int, parts []string) []string {
+	var lines []string
+	line := ""
+	for _, part := range parts {
+		if line != "" && humanize.Width(stripANSI(line))+3+humanize.Width(stripANSI(part)) > width {
+			lines = append(lines, line)
+			line = ""
+		}
+		if line == "" {
+			line = "   " + truncateANSI(part, width-3)
+		} else {
+			line += r.pal.dim(" · ") + part
+		}
 	}
-	frac := float64(doneB) / float64(totalB)
-	frac = min(max(frac, 0), 1)
-	return " " + r.gradientBar(barW, frac) +
-		r.pal.dim(fmt.Sprintf("%4.0f%%", frac*100)) + r.pal.dim(right)
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func (r *Reporter) barLine(width int, done, total int64, rate float64, scanning bool) string {
+	determinate := total > 0 && !scanning
+	frac := float64(0)
+	percent := r.pal.dim("   —")
+	if determinate {
+		frac = min(max(float64(done)/float64(total), 0), 1)
+		percent = r.pal.bold(fmt.Sprintf("%3.0f%%", frac*100))
+	}
+	right := "  " + percent
+	if width >= 44 {
+		right += "  " + r.pal.accent(fmt.Sprintf("%10s", humanize.Rate(rate)))
+	}
+	if width >= 64 {
+		eta := "—"
+		if determinate && rate > 0 && done < total {
+			secs := float64(total-done) / rate
+			if secs < float64((1<<63-1)/int64(time.Second)) {
+				eta = humanize.Duration(time.Duration(secs) * time.Second)
+			}
+		}
+		right += r.pal.dim(fmt.Sprintf("  ETA %-7s", eta))
+	}
+	barW := width - humanize.Width(stripANSI(right)) - 3
+	bar := r.indeterminate(barW)
+	if determinate {
+		bar = r.gradientBar(barW, frac)
+	}
+	return "   " + bar + right
+}
+
+const taskBarWidth = 10
+
+// Dropping columns buys space for the filename before eliding it. The same
+// layout is used for the column headings and every transfer in the frame.
+func taskColumns(width int, bar, percent, rate string) string {
+	right := "  "
+	if width >= 72 {
+		right += bar + " "
+	}
+	right += percent
+	if width >= 52 {
+		right += "  " + rate
+	}
+	return right
+}
+
+func (r *Reporter) taskHeading(width, active int) string {
+	label := fmt.Sprintf("   Transfers · %d active", active)
+	if width < 52 {
+		label = fmt.Sprintf("   Transfers · %d", active)
+	}
+	right := taskColumns(width, strings.Repeat(" ", taskBarWidth), "Done", fmt.Sprintf("%10s", "Rate"))
+	return r.pal.dim(joinSides(label, right, width))
 }
 
 func (r *Reporter) taskLine(width int, t *Task) string {
-	glyph := t.dir.glyph()
 	if msg := t.retryMsg.Load(); msg != nil {
-		name := humanize.Elide(t.name, max(width-humanize.Width(*msg)-8, 8))
-		return fmt.Sprintf("  %s %s  %s",
-			r.pal.warn("⟳"), name, r.pal.warn(*msg))
+		nameW := width - humanize.Width(*msg) - 5
+		prefix := " " + r.pal.warn("⟳") + " "
+		if nameW < 8 {
+			return truncateANSI(prefix+r.pal.warn(*msg), width)
+		}
+		return prefix + r.pal.filename(t.name, nameW) + "  " + r.pal.warn(*msg)
 	}
 	got := t.transferred.Load()
 
-	// Fixed-width right-hand side keeps the bars aligned as names change.
-	const barW = 10
-	rateStr := ""
+	rateStr := "—"
 	if el := time.Since(t.start).Seconds(); el > 0.4 && got > 0 {
 		rateStr = humanize.Rate(float64(got) / el)
 	}
-	var right string
+	bar, percent := r.indeterminate(taskBarWidth), "   —"
 	if t.size > 0 {
 		frac := min(max(float64(got)/float64(t.size), 0), 1)
-		right = fmt.Sprintf(" %s %3.0f%% %10s", r.plainBar(barW, frac), frac*100, rateStr)
-	} else {
-		right = fmt.Sprintf(" %s %4s %10s", strings.Repeat("·", barW),
-			humanize.Bytes(got), rateStr)
+		bar, percent = r.plainBar(taskBarWidth, frac), fmt.Sprintf("%3.0f%%", frac*100)
 	}
-	nameW := max(width-humanize.Width(stripANSI(right))-5, 8)
-	return fmt.Sprintf("  %s %s%s", r.pal.accent(glyph),
-		humanize.Pad(t.name, nameW), r.pal.dim(right))
+	right := taskColumns(width, bar, r.pal.dim(percent), r.pal.dim(fmt.Sprintf("%10s", rateStr)))
+	nameW := width - humanize.Width(stripANSI(right)) - 3
+	return " " + r.pal.accent(t.dir.glyph()) + " " + r.pal.filename(t.name, nameW) + right
 }
 
 // blocks are the partial-cell glyphs that give the bar sub-character precision.
@@ -240,7 +304,7 @@ func (r *Reporter) gradientBar(width int, frac float64) string {
 			for j < width && !filled(j) {
 				j++
 			}
-			b.WriteString(r.pal.track(strings.Repeat("░", j-i)))
+			b.WriteString(r.pal.track(strings.Repeat("─", j-i)))
 			i = j
 			continue
 		}
@@ -275,7 +339,7 @@ func (r *Reporter) plainBar(width int, frac float64) string {
 		rest--
 	}
 	if rest > 0 {
-		b.WriteString(r.pal.track(strings.Repeat("░", rest)))
+		b.WriteString(r.pal.track(strings.Repeat("─", rest)))
 	}
 	return b.String()
 }
@@ -289,13 +353,13 @@ func (r *Reporter) indeterminate(width int) string {
 	hi := min(pos, width)
 	var b strings.Builder
 	if lo > 0 {
-		b.WriteString(r.pal.track(strings.Repeat("░", lo)))
+		b.WriteString(r.pal.track(strings.Repeat("─", lo)))
 	}
 	if hi > lo {
 		b.WriteString(r.pal.gradient(float64(lo)/float64(width), strings.Repeat("█", hi-lo)))
 	}
 	if width > hi {
-		b.WriteString(r.pal.track(strings.Repeat("░", width-hi)))
+		b.WriteString(r.pal.track(strings.Repeat("─", width-hi)))
 	}
 	return b.String()
 }
@@ -352,25 +416,25 @@ func (r *Reporter) Summary(w io.Writer, dryRun bool) {
 	if failed > 0 {
 		mark = r.pal.bad("✖")
 	}
-	fmt.Fprintf(w, "%s %s %s %s · %s in %s%s\n", mark, verb,
-		humanize.Count(done), humanize.Plural(done, "file", "files"),
-		humanize.Bytes(bytes), humanize.Duration(elapsed), rate)
+	result := fmt.Sprintf("%s %s %s", verb, humanize.Count(done), humanize.Plural(done, "file", "files"))
+	fmt.Fprintf(w, " %s %s%s%s%s\n", mark, r.pal.bold(result), r.pal.dim(" · "),
+		r.pal.bold(humanize.Bytes(bytes)), r.pal.dim(" in "+humanize.Duration(elapsed)+rate))
 
 	var notes []string
 	if seen := r.seenFiles.Load(); seen > done+skipped {
-		notes = append(notes, fmt.Sprintf("%s seen", humanize.Count(seen)))
+		notes = append(notes, r.pal.dim(fmt.Sprintf("%s seen", humanize.Count(seen))))
 	}
 	if skipped > 0 {
-		notes = append(notes, fmt.Sprintf("%s skipped", humanize.Count(skipped)))
+		notes = append(notes, r.pal.dim(fmt.Sprintf("%s skipped", humanize.Count(skipped))))
 	}
 	if failed > 0 {
 		notes = append(notes, r.pal.bad(fmt.Sprintf("%s failed", humanize.Count(failed))))
 	}
 	if retries > 0 {
-		notes = append(notes, fmt.Sprintf("%s transient %s retried",
-			humanize.Count(retries), humanize.Plural(retries, "error", "errors")))
+		notes = append(notes, r.pal.warn(fmt.Sprintf("%s transient %s retried",
+			humanize.Count(retries), humanize.Plural(retries, "error", "errors"))))
 	}
 	if len(notes) > 0 {
-		fmt.Fprintf(w, "  %s\n", r.pal.dim(strings.Join(notes, ", ")))
+		fmt.Fprintf(w, "   %s\n", strings.Join(notes, r.pal.dim(" · ")))
 	}
 }

@@ -622,11 +622,17 @@ overflowing.
 
 ## Progress
 
-On a terminal, `azcp` draws an aggregate bar with throughput and an estimate, a
-row per transfer in flight, and a note when something is being retried. Log
-records and `-v` output are interleaved without tearing the display. It stands
-down entirely when the output is not a terminal, so in a script `azcp` is as
-quiet as `cp`. `--progress=always|never` overrides that.
+On a terminal, `azcp` shows the elapsed time, file and byte totals, and an
+aggregate bar with throughput and an estimate. While the scan is finding work,
+the bar stays indeterminate; percentages and the estimate appear once the total
+is known. Aligned transfer rows keep filenames prominent, and failures, retries
+and skipped files get a separate status line. Narrow windows drop the per-file
+bars and rates to leave room for names. Colours follow the terminal's
+capabilities and respect `NO_COLOR`.
+
+Log records and `-v` output are interleaved without tearing the display. It
+stands down entirely when the output is not a terminal, so in a script `azcp`
+is as quiet as `cp`. `--progress=always|never` overrides that.
 
 It repaints once a second, and never holds a transfer up to do it: the display
 is drawn from a snapshot, so a slow or blocked terminal cannot stall a worker.

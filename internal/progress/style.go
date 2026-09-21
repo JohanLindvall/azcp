@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode"
 	"unicode/utf8"
+
+	"github.com/JohanLindvall/azcp/internal/humanize"
 )
 
 // colourLevel is how much colour the terminal can show. Everything above
@@ -62,7 +65,22 @@ func (p palette) warn(s string) string   { return p.wrap("\x1b[33m", s) }
 func (p palette) bad(s string) string    { return p.wrap("\x1b[31m", s) }
 func (p palette) good(s string) string   { return p.wrap("\x1b[32m", s) }
 func (p palette) track(s string) string  { return p.wrap("\x1b[90m", s) }
-func (p palette) sep(s string) string    { return s }
+
+func (p palette) filename(name string, width int) string {
+	// A filename can contain newlines or terminal controls. It must still
+	// occupy exactly one row, without changing the terminal's state.
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '�'
+		}
+		return r
+	}, name)
+	name = humanize.Pad(name, width)
+	if slash := strings.LastIndexAny(name, `/\`); slash >= 0 {
+		return p.dim(name[:slash+1]) + name[slash+1:]
+	}
+	return name
+}
 
 // gradient endpoints: a cool blue at the start of the bar warming to green as
 // it fills, so the eye can read progress from colour alone.

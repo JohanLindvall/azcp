@@ -1,6 +1,9 @@
 package progress
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestStripANSI(t *testing.T) {
 	cases := map[string]string{
@@ -36,6 +39,20 @@ func TestTruncateANSI(t *testing.T) {
 	}
 	if got := truncateANSI("abc", 0); got != "" {
 		t.Errorf("zero width = %q", got)
+	}
+}
+
+func TestFilenameCannotBreakTheFrame(t *testing.T) {
+	p := palette{levelTrue}
+	for _, name := range []string{"dir/a\nb.txt", "dir/a\tb.txt", "dir/\x1b[2J.txt", `C:\dir\file.txt`} {
+		got := p.filename(name, 30)
+		plain := stripANSI(got)
+		if strings.ContainsAny(plain, "\n\r\t\x1b") || strings.Contains(got, "\x1b[2J") {
+			t.Errorf("filename changed terminal state: %q", got)
+		}
+		if len([]rune(plain)) != 30 {
+			t.Errorf("filename %q took %d cells, want 30", name, len([]rune(plain)))
+		}
 	}
 }
 
