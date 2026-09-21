@@ -284,6 +284,22 @@ and the "account rejected the credential" line go through `logx.Errf` so they
 appear whatever `--log-level` says. Anything the user must act on belongs there,
 not in the logger.
 
+**A credential may be allowed everything in a container and nothing about it.**
+A service SAS scoped to one container (`sr=c`) — the least-privilege token
+people are normally handed — reads, writes and lists every blob, and is still
+refused Get Container Properties, Create Container and anything at account
+level, whatever permissions it carries. So `stat` of a container root falls back
+to a listing of one name when the properties are refused, and hands back the
+*first* refusal untouched when the listing is refused too, because that is the
+error `refreshAuth` and `explainAuth` were written against. `mkdirAll` takes a
+403 to mean "may not ask" — not "missing", and not "stop" — and leaves a missing
+container to the write, which says `ContainerNotFound`. Both go by the status
+rather than the code; the emulator alone has two. A new request about a
+container rather than its contents breaks these tokens and nothing else:
+`TestNamingStaysInsideTheContainer` and the container-SAS section of
+`scripts/e2e.sh` are what notice, the emulator enforcing the same rule the
+service does.
+
 **A recursive remote copy takes one flat listing, not one per prefix.**
 `planRemoteTree` exists because descending prefix by prefix costs a round trip
 per directory and delays the first transfer until the last directory has been

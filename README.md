@@ -274,6 +274,15 @@ Nothing has to be configured. Credentials are looked for in this order:
 6. an interactive device-code sign-in, if a terminal is attached,
 7. anonymous, for containers that allow public read.
 
+A SAS need not cover the whole account. One scoped to a single container
+(`sr=c`) works: `rl` to copy out of it, `rwl` to copy into it, and `d` as well
+for `--delete`. The service does not let such a token ask about the container
+itself, only about what is in it, so `azcp` cannot check that the container
+exists before it starts. One that does not is reported by the first listing of
+it, or by the first write into it (`ContainerNotFound`), and
+`--create-container` cannot make it: creating a container takes an account SAS,
+a key or an identity.
+
 An interactive sign-in is remembered. The tokens go into the platform's secure
 store — a keyring on Linux, the keychain on macOS, DPAPI on Windows — so later
 runs pick the session up silently and never open a browser again until it

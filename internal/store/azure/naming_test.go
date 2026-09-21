@@ -293,7 +293,7 @@ func listXML(container string, blobs map[string]fakeBlob, q url.Values) string {
 
 // fakeStore serves f over HTTP and returns a store pointed at it, plus a way
 // of naming things in it.
-func fakeStore(t *testing.T, f *fakeBlobs, createContainers bool) (*Store, func(string) *uri.URL) {
+func fakeStore(t *testing.T, f http.Handler, createContainers bool) (*Store, func(string) *uri.URL) {
 	t.Helper()
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)

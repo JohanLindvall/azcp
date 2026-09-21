@@ -371,6 +371,91 @@ check "-n leaves an existing blob alone" "$(cat "$WORK/after.txt")" "hello"
 "$AZCP" "$AZ/tree/file.txt" "$WORK/after2.txt" >/dev/null
 check "a plain copy overwrites" "$(cat "$WORK/after2.txt")" "changed"
 
+# --- a SAS scoped to one container ------------------------------------------
+# The credential people are usually handed: every blob in one container and its
+# listing, and nothing about the container itself. Get Container Properties is
+# a 403 for such a token whatever permissions it carries, and the emulator
+# enforces that as the service does, so this is the real failure rather than a
+# stand-in for it. The token is signed here, with the development key, so the
+# check needs no Azure CLI.
+#
+# The string to sign is the one sv=2020-10-02 defines: the fields in this
+# order, the ones left out empty, the resource "c" for a container.
+container_sas() {  # CONTAINER PERMISSIONS
+  local version=2020-10-02 expiry=2099-01-01T00:00:00Z hexkey sig
+  hexkey=$(printf %s "$AZURE_STORAGE_KEY" | base64 -d | od -An -tx1 | tr -d ' \n')
+  sig=$(printf '%s\n\n%s\n/blob/%s/%s\n\n\n\n%s\nc\n\n\n\n\n\n' \
+          "$2" "$expiry" "$AZURE_STORAGE_ACCOUNT" "$1" "$version" \
+        | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$hexkey" -binary | base64 \
+        | sed 's/+/%2B/g; s,/,%2F,g; s/=/%3D/g')
+  printf 'sv=%s&sr=c&sp=%s&se=%s&sig=%s' "$version" "$2" "${expiry//:/%3A}" "$sig"
+}
+
+# with_sas runs azcp holding $SAS and nothing else, so the account key cannot
+# be what made something work.
+with_sas() {
+  env -u AZURE_STORAGE_ACCOUNT -u AZURE_STORAGE_KEY AZURE_STORAGE_SAS_TOKEN="$SAS" "$AZCP" "$@"
+}
+
+if ! command -v openssl >/dev/null; then
+  bad "a container SAS cannot be signed without openssl"
+else
+  SCOPED="${CONTAINER}-scoped"
+  "$AZCP" --create-container "$SRC/file.txt" "$ACCOUNT/$SCOPED/other.txt" >/dev/null
+  SAS=$(container_sas "$SCOPED" rwl)
+
+  # The shape a job takes that keeps one file of state in a container: fetch it
+  # if it is there, and write it back. The container root is the source, so it
+  # is the container itself that has to be found.
+  mkdir -p "$WORK/scoped"
+  if with_sas -r --include state.json -T "$ACCOUNT/$SCOPED" "$WORK/scoped" >/dev/null 2>&1 \
+     && [ -z "$(ls -A "$WORK/scoped")" ]; then
+    ok "a container SAS reads the container root, and a blob not there yet is no error"
+  else
+    bad "a container SAS could not copy from the container root"
+  fi
+
+  echo "first" > "$WORK/state.json"
+  if out=$(with_sas --log-level=debug -T "$WORK/state.json" "$ACCOUNT/$SCOPED/state.json" 2>&1); then
+    ok "a container SAS writes a new blob"
+  else
+    bad "a container SAS could not write a new blob: $out"
+  fi
+  # Were the emulator to stop refusing, everything here would pass and prove
+  # nothing.
+  check "the emulator refuses such a token the container's properties" \
+    "$(printf '%s\n' "$out" | grep -c 'may not ask whether the container exists' || true)" "1"
+
+  echo "second" > "$WORK/state.json"
+  with_sas -T "$WORK/state.json" "$ACCOUNT/$SCOPED/state.json" >/dev/null 2>&1 || true
+  with_sas -r --include state.json -T "$ACCOUNT/$SCOPED" "$WORK/scoped" >/dev/null 2>&1 || true
+  check "a container SAS overwrites the blob and fetches it back" \
+    "$(cat "$WORK/scoped/state.json" 2>/dev/null)" "second"
+  check "--include still leaves the rest of the container alone" "$(ls "$WORK/scoped")" "state.json"
+
+  # A sync each way, which asks about the container as a destination too.
+  # Removing what the source does not have is the one thing that takes more
+  # than rwl, and reading takes less.
+  mkdir -p "$WORK/scoped-src" "$WORK/scoped-mirror"
+  echo kept > "$WORK/scoped-src/kept.txt"
+  echo stale > "$WORK/scoped-mirror/stale.txt"
+  SAS=$(container_sas "$SCOPED" rwdl)
+  with_sas -r -u --delete -T "$WORK/scoped-src" "$ACCOUNT/$SCOPED" >/dev/null 2>&1 || true
+  SAS=$(container_sas "$SCOPED" rl)
+  with_sas -r -u --delete -T "$ACCOUNT/$SCOPED" "$WORK/scoped-mirror" >/dev/null 2>&1 || true
+  check "a container SAS syncs with --delete in both directions" \
+    "$(ls "$WORK/scoped-mirror")" "kept.txt"
+
+  # Such a token cannot be told the container is missing, nor create it, so the
+  # write is what says so.
+  SAS=$(container_sas "${CONTAINER}-absent" rwl)
+  out=$(with_sas --create-container -T "$WORK/state.json" "$ACCOUNT/${CONTAINER}-absent/state.json" 2>&1 || true)
+  case "$out" in
+    *ContainerNotFound*) ok "a missing container is reported by the write" ;;
+    *) bad "a missing container was reported as: $out" ;;
+  esac
+fi
+
 # --- error reporting --------------------------------------------------------
 if "$AZCP" "$AZ/tree/does-not-exist.txt" "$WORK/x" >/dev/null 2>&1; then
   bad "a missing blob should fail"

@@ -92,7 +92,9 @@ type Store struct {
 	mu      sync.Mutex
 	clients map[string]*azblob.Client
 	// madeContainers remembers containers already created or verified this run
-	// so a large recursive upload does not re-check on every file.
+	// so a large recursive upload does not re-check on every file. One the
+	// credential may not ask about is remembered too: asking again gets the
+	// same refusal.
 	madeContainers map[string]bool
 }
 
@@ -323,15 +325,17 @@ func (s *Store) stat(ctx context.Context, u *uri.URL) (*store.Node, error) {
 			return nil, err
 		}
 		props, err := cc.GetProperties(ctx, nil)
-		if err != nil {
-			if isNotFound(err) {
-				return nil, notExist(u, err)
-			}
-			return nil, err
+		switch {
+		case err == nil:
+			n := dirNode(u)
+			n.ModTime = deref(props.LastModified)
+			return n, nil
+		case isNotFound(err):
+			return nil, notExist(u, err)
+		case isForbidden(err):
+			return s.containerByListing(ctx, cc, u, err)
 		}
-		n := dirNode(u)
-		n.ModTime = deref(props.LastModified)
-		return n, nil
+		return nil, err
 	}
 
 	// A trailing slash is an explicit statement that the user means a prefix.
@@ -364,6 +368,36 @@ func (s *Store) stat(ctx context.Context, u *uri.URL) (*store.Node, error) {
 	return nil, notExist(u, cause)
 }
 
+// containerByListing answers for a container whose properties the credential
+// was refused. The usual reason is a SAS scoped to that one container: the
+// service lets it read, write and list every blob inside and still answers 403
+// to Get Container Properties, which takes an account SAS, a key or an
+// identity. Such a credential can list, so that is how it is asked whether the
+// container is there. The node carries no modification time, and nothing a copy
+// decides reads a container's.
+//
+// A listing refused as well means there is no access at all, and the refusal
+// handed back is then the first one, untouched: it is the one the sign-in logic
+// was written against, and the one the message to the user is built from. Any
+// other failure of the listing is its own, and is reported as that.
+func (s *Store) containerByListing(ctx context.Context, cc *container.Client,
+	u *uri.URL, refusal error) (*store.Node, error) {
+
+	_, err := anyBlob(ctx, cc, "")
+	switch {
+	case err == nil:
+		s.log.Debug("this credential may not read the container's properties; "+
+			"a listing says it is there", "container", u.Display(),
+			"cause", retryx.Describe(refusal))
+		return dirNode(u), nil
+	case isNotFound(err):
+		return nil, notExist(u, err)
+	case isForbidden(err):
+		return nil, refusal
+	}
+	return nil, err
+}
+
 // prefixEmpty reports whether nothing is filed under u's key as a prefix. A
 // container that is not there is reported as such, not as empty.
 func (s *Store) prefixEmpty(ctx context.Context, u *uri.URL) (bool, error) {
@@ -371,19 +405,29 @@ func (s *Store) prefixEmpty(ctx context.Context, u *uri.URL) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	prefix := u.Key + "/"
-	one := int32(1)
-	pager := cc.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{
-		Prefix: &prefix, MaxResults: &one,
-	})
-	page, err := pager.NextPage(ctx)
+	found, err := anyBlob(ctx, cc, u.Key+"/")
 	if err != nil {
 		if isNotFound(err) {
 			return true, notExist(u, err)
 		}
 		return false, err
 	}
-	return len(page.Segment.BlobItems) == 0, nil
+	return !found, nil
+}
+
+// anyBlob asks for one name under prefix, which is the cheapest question a
+// listing answers. It tells a prefix with something filed under it from one
+// without, and a container that is there from one that is not.
+func anyBlob(ctx context.Context, cc *container.Client, prefix string) (bool, error) {
+	one := int32(1)
+	pager := cc.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{
+		Prefix: &prefix, MaxResults: &one,
+	})
+	page, err := pager.NextPage(ctx)
+	if err != nil {
+		return false, err
+	}
+	return page.Segment != nil && len(page.Segment.BlobItems) > 0, nil
 }
 
 // ReadDir lists the immediate children of a container or prefix. Containers are
@@ -484,8 +528,8 @@ func (s *Store) listContainers(ctx context.Context, u *uri.URL) ([]*store.Node, 
 
 // MkdirAll makes u usable as a destination. Containers are the one part of the
 // blob namespace that must really exist, so this verifies (and optionally
-// creates) the container and does nothing else: prefixes spring into being when
-// the first blob is written.
+// creates) the container, where the credential is one that may ask, and does
+// nothing else: prefixes spring into being when the first blob is written.
 func (s *Store) MkdirAll(ctx context.Context, u *uri.URL, mode fs.FileMode) error {
 	return s.withSignIn(ctx, func() error { return s.mkdirAll(ctx, u, mode) })
 }
@@ -509,6 +553,16 @@ func (s *Store) mkdirAll(ctx context.Context, u *uri.URL, _ fs.FileMode) error {
 	_, err = cc.GetProperties(ctx, nil)
 	switch {
 	case err == nil:
+	case isForbidden(err):
+		// Refused, which is not the same as absent. A SAS scoped to one container
+		// may write every blob in it and still not ask about the container, nor
+		// create it, so --create-container has nothing to offer either. The write
+		// this was called for is what finds out: into a container that is not
+		// there it fails with ContainerNotFound, and from a credential with no
+		// access at all it draws the refusal the sign-in logic is waiting for.
+		s.log.Debug("this credential may not ask whether the container exists; "+
+			"the first write will say if it does not",
+			"account", u.Account, "container", u.Container, "cause", retryx.Describe(err))
 	case !isNotFound(err):
 		return fmt.Errorf("check container %s: %w", key, err)
 	case !s.cfg.CreateContainer:
@@ -712,6 +766,15 @@ func isNotFound(err error) bool {
 	}
 	var respErr *azcore.ResponseError
 	return errors.As(err, &respErr) && respErr.StatusCode == http.StatusNotFound
+}
+
+// isForbidden reports that the service refused the operation to this
+// credential. It goes by the status alone, because the code beside it varies
+// with the kind of credential and none of them says whether the thing asked
+// about exists.
+func isForbidden(err error) bool {
+	var respErr *azcore.ResponseError
+	return errors.As(err, &respErr) && respErr.StatusCode == http.StatusForbidden
 }
 
 // notExist wraps an error so callers can use store.IsNotExist regardless of
