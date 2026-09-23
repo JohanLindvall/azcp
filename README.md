@@ -296,6 +296,14 @@ challenge it sends back. `azcp` follows that: the identity already in hand is
 asked for a token in that tenant, which is all a guest account usually needs,
 and nobody is troubled at all.
 
+An `az login` often holds more than one account: your own directory's, and a
+customer's or another employer's. The CLI answers a request for a tenant as its
+*current* account, which a tenant that account is not a member of refuses. So
+`azcp` goes on to ask the CLI's other accounts in that tenant, naming each by
+one of its subscriptions, because the subscription, not the tenant, is how the
+CLI is told whose token to hand over. They are found in the CLI's profile, and
+asking them troubles nobody either.
+
 Where even that is refused, `azcp` says so and signs you in, naming the tenant
 rather than leaving you to guess it: a browser window where there is a desktop
 to show one on, otherwise a device code you can complete elsewhere, and either

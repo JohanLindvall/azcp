@@ -96,6 +96,10 @@ type Credentials struct {
 	// resumeFn stands in for the saved-sign-in lookup in tests, which must not
 	// read the user's credential store. It is nil everywhere else.
 	resumeFn func(context.Context) (azcore.TokenCredential, bool)
+	// cliFn stands in for the Azure CLI signed in as the account a
+	// subscription belongs to, in tests, which must not run the real CLI. It
+	// is nil everywhere else.
+	cliFn func(subscription string) (azcore.TokenCredential, error)
 }
 
 // kindResumed marks a credential rebuilt from a previous run's sign-in, which
@@ -203,8 +207,9 @@ func (c *Credentials) Escalate(ctx context.Context) (azcore.TokenCredential, str
 // trying the operation again worthwhile.
 //
 // That identity may well have access there, so it is asked for a token in the
-// new tenant before anybody is troubled for a sign-in, and any sign-in that
-// follows is directed at the same tenant.
+// new tenant before anybody is troubled for a sign-in. So are the Azure CLI's
+// other accounts in that tenant, when the identity in hand is refused there.
+// Any sign-in that follows is directed at the same tenant.
 func (c *Credentials) UseTenant(tenant string, refused func(error)) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -221,7 +226,7 @@ func (c *Credentials) UseTenant(tenant string, refused func(error)) bool {
 		// that follows is now directed at the tenant just recorded.
 		return false
 	}
-	c.cred = forTenant(c.cred, tenant, refused)
+	c.cred = forTenant(c.cred, tenant, refused, c.cliAccountsIn(tenant))
 	return true
 }
 
