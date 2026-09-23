@@ -350,6 +350,16 @@ else
   bad "--output=json produced no summary: $summary"
 fi
 
+# A dry run says, per blob, when it was last written and how it is encoded:
+# enough to decide from the dry run alone whether a copy already made is current.
+would=$("$AZCP" --dry-run --output=json "$AZ/page.gz" "$WORK/would.gz" 2>/dev/null | grep '"would-copy"' || true)
+printf '%s' "$would" | grep -q '"content_encoding":"gzip"' \
+  && ok "a dry run names the encoding --decompress would undo" \
+  || bad "a dry run left out the blob's encoding: $would"
+printf '%s' "$would" | grep -Eq '"modified":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z"' \
+  && ok "a dry run says when the blob was last written, in UTC" \
+  || bad "a dry run left out when the blob was written: $would"
+
 # --- benchmark --------------------------------------------------------------
 "$AZCP" "$SRC/file.txt" "$AZ/bench/azcp-benchmark-000.bin" >/dev/null
 if "$AZCP" --benchmark=2x1MiB --output=json "$AZ/bench/" 2>/dev/null \

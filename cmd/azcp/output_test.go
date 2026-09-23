@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 )
 
 // A subprocess gives logx real stdout/stderr descriptors, including the early
@@ -115,6 +116,55 @@ func TestJSONFatalPlanningErrorEndsWithSummary(t *testing.T) {
 			if name == "summary" && (event.Failed != 1 || len(event.Failures) != 1) {
 				t.Fatalf("fatal failure missing from summary: %s", lines[i])
 			}
+		}
+	}
+}
+
+// Each file in the JSON says when its source was last written, in UTC and to
+// the precision the filesystem kept: under --dry-run, so that a reader can tell
+// from the dry run alone whether a copy it holds is current, and with -v, so the
+// record of a copy made says what it was a copy of. A local file has no content
+// encoding, so none is claimed.
+func TestJSONFileEventsSayWhenTheSourceWasWritten(t *testing.T) {
+	d := t.TempDir()
+	if err := os.Mkdir(filepath.Join(d, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(d, "src", "a.txt")
+	if err := os.WriteFile(file, []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	written := time.Date(2026, 9, 23, 12, 0, 0, 500_000_000, time.UTC)
+	if err := os.Chtimes(file, written, written); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"--dry-run", "--output=json", "-rT", "src", "dst"},
+		{"-v", "--output=json", "-rT", "src", "dst"},
+	} {
+		out, diagnostics, err := commandOutput(t, d, args...)
+		if err != nil {
+			t.Fatalf("%v: %v, %s", args, err, diagnostics)
+		}
+		var files int
+		for _, line := range bytes.Split(bytes.TrimSpace(out), []byte("\n")) {
+			var event map[string]any
+			if err := json.Unmarshal(line, &event); err != nil {
+				t.Fatalf("non-JSON output: %s", line)
+			}
+			if event["event"] == "summary" {
+				continue
+			}
+			files++
+			if event["modified"] != written.Format(time.RFC3339Nano) {
+				t.Errorf("%v: modified = %v, want %s", args, event["modified"], written.Format(time.RFC3339Nano))
+			}
+			if _, ok := event["content_encoding"]; ok {
+				t.Errorf("%v: a local file claims a content encoding: %s", args, line)
+			}
+		}
+		if files != 1 {
+			t.Fatalf("%v: %d file events in %s", args, files, out)
 		}
 	}
 }
