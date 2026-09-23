@@ -37,9 +37,11 @@ func rejected(status int, code string) error {
 
 // newTestStore builds a store whose sign-in is stubbed and whose saved-record
 // lookup cannot find anything, so the test never touches the real credential
-// store or the user's configuration.
+// store or the user's configuration — the Azure CLI's profile included, which
+// following a tenant reads.
 func newTestStore(t *testing.T, signIn func()) *Store {
 	t.Helper()
+	t.Setenv("AZURE_CONFIG_DIR", t.TempDir())
 	creds := &Credentials{
 		Mode:        AuthAuto,
 		Interactive: true,

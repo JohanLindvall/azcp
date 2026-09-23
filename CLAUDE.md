@@ -269,6 +269,23 @@ assume it is handled underneath. This happens once per run, and never when
 unexported azidentity type, which is why `tenantCredential` records it as it
 happens instead of the error being recognised by matching on its type.
 
+**The Azure CLI holds one account per tenant, and `--tenant` cannot choose
+between them.** `az account get-access-token --tenant` answers as the CLI's
+*current* account, which a tenant that account is not a member of refuses with
+AADSTS50020, however many other accounts the CLI holds there. `--subscription`
+answers as the account the subscription belongs to, and the CLI refuses the two
+flags together. So when the identity in hand is refused a token in the tenant a
+challenge named, `tenantCredential` asks the CLI's other accounts in that tenant
+(`cliaccount.go`). Each is named by one of its subscriptions from
+`azureProfile.json`, and the request's tenant is cleared. The one that answers
+is asked first from then on, because asking the refused identity again costs a
+process. This is skipped under `--auth=device` and `--auth=browser`, which ask
+to sign in as somebody rather than to be found.
+`TestTheCLIIsAskedBySubscriptionAndNotByTenantAsWell` runs the real azidentity
+credential against a stand-in `az`, which is what pins the command line.
+`newTestStore` points `AZURE_CONFIG_DIR` at an empty directory, so no test reads
+a real profile.
+
 **One prompt per run, and the tests say so.** `Credentials.escalated`,
 `Store.signIn.done` and the counter behind `Credentials.Prompts` all exist to
 pin that. `signin_test.go` fires twenty concurrent rejections and asserts a

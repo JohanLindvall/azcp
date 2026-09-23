@@ -22,8 +22,10 @@ import (
 // The SDK parses that header and then throws the tenant away (a standing TODO
 // in azblob's challenge policy), so it is read again here: once to ask the
 // identity already in hand for a token in that tenant, which usually needs
-// nobody's attention, and if that fails, to name the tenant in the message
-// rather than leaving the user to guess it.
+// nobody's attention; then, when that identity is refused there, to ask the
+// Azure CLI's other accounts in the tenant (cliaccount.go); and if all of that
+// fails, to name the tenant in the message rather than leaving the user to
+// guess it.
 
 // challengeTenant returns the tenant a rejection names, or "" if it names none.
 func challengeTenant(err error) string {
@@ -97,13 +99,36 @@ type tenantCredential struct {
 	// with an unexported type — and the difference matters: an identity that
 	// cannot go there is a reason to ask for another one.
 	refused func(error)
+	// cli is the Azure CLI's other accounts in the tenant, asked when the
+	// identity in hand cannot get a token there. It is nil when the CLI holds
+	// no other account in the tenant.
+	cli *cliAccounts
 }
 
 func (t tenantCredential) GetToken(ctx context.Context, opts policy.TokenRequestOptions) (azcore.AccessToken, error) {
 	if opts.TenantID == "" {
 		opts.TenantID = t.tenant
 	}
+	// The CLI's accounts were found for this tenant, and answer for no other.
+	cli := t.cli
+	if opts.TenantID != t.tenant {
+		cli = nil
+	}
+	// Once one of them has answered, it is asked first: the identity in hand
+	// has been refused here already, and asking it again costs a process.
+	if cli != nil && cli.hasAnswered() {
+		if tk, err := cli.GetToken(ctx, opts); err == nil {
+			return tk, nil
+		}
+	}
 	tk, err := t.TokenCredential.GetToken(ctx, opts)
+	if err != nil && cli != nil {
+		var cerr error
+		if tk, cerr = cli.GetToken(ctx, opts); cerr == nil {
+			return tk, nil
+		}
+		err = errors.Join(err, cerr)
+	}
 	if err != nil && t.refused != nil {
 		t.refused(err)
 	}
@@ -111,10 +136,11 @@ func (t tenantCredential) GetToken(ctx context.Context, opts policy.TokenRequest
 }
 
 // forTenant points cred at a tenant, replacing any tenant already applied to it
-// so a second challenge cannot stack another wrapper on the first.
-func forTenant(cred azcore.TokenCredential, tenant string, refused func(error)) azcore.TokenCredential {
+// so a second challenge cannot stack another wrapper on the first. cli, which
+// may be nil, is the Azure CLI's other accounts in that tenant.
+func forTenant(cred azcore.TokenCredential, tenant string, refused func(error), cli *cliAccounts) azcore.TokenCredential {
 	if t, ok := cred.(tenantCredential); ok {
 		cred = t.TokenCredential
 	}
-	return tenantCredential{TokenCredential: cred, tenant: tenant, refused: refused}
+	return tenantCredential{TokenCredential: cred, tenant: tenant, refused: refused, cli: cli}
 }
