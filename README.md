@@ -659,6 +659,19 @@ $ azcp --output=json -v -r ./build azure://acct/rel/ | tail -1
 {"bytes":41283,"copied":12,"deleted":0,"elapsed_seconds":1.83,"event":"summary",...}
 ```
 
+Each file is one object: `copy` with `-v`, or `would-copy` under `--dry-run`.
+It carries `source`, `destination` and `bytes`, and where the source has them,
+`modified` and `content_encoding`. `modified` is when the source was last
+written, as `-u` compares it: RFC 3339 in UTC, to the nanosecond, and the
+preserved mtime of a blob that carries one. `content_encoding` is the encoding
+`--decompress` would undo. So a dry run is enough to decide whether a copy
+already made is current, with no second pass to ask:
+
+```
+$ azcp --dry-run --output=json -r azure://acct/tree ./copy | head -1
+{"bytes":69,"content_encoding":"zstd","destination":"copy/_manifest.json.zst","event":"would-copy","modified":"2026-09-23T13:29:40Z","source":"azure://acct.blob.core.windows.net/tree/_manifest.json.zst"}
+```
+
 Failures appear as they happen and again in the summary's `failures` array.
 Deletion events use `remove` or `would-remove`, with the destination in the
 `destination` field; they are JSON objects too.

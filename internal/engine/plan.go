@@ -717,10 +717,7 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 	e.prog.Plan(1, src.Size)
 	if e.opt.DryRun {
 		if e.opt.Output == cli.OutputJSON {
-			logx.Printf("%s\n", jsonLine(map[string]any{
-				"event": "would-copy", "source": src.URL.Display(),
-				"destination": dst.Display(), "bytes": src.Size,
-			}))
+			logx.Printf("%s\n", jsonLine(fileEvent("would-copy", src, dst)))
 		} else {
 			logx.Printf("%s -> %s\n", quote(src.URL.Display()), quote(dst.Display()))
 		}

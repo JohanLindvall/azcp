@@ -362,10 +362,7 @@ func (e *Engine) runTask(ctx context.Context, t *task) {
 	}
 	if e.opt.Output == cli.OutputJSON {
 		if e.opt.Verbose {
-			logx.Printf("%s\n", jsonLine(map[string]any{
-				"event": "copy", "source": t.src.URL.Display(),
-				"destination": t.dst.Display(), "bytes": t.src.Size,
-			}))
+			logx.Printf("%s\n", jsonLine(fileEvent("copy", t.src, t.dst)))
 		}
 		return
 	}
@@ -408,6 +405,26 @@ func (e *Engine) applyDeferredDirs() {
 }
 
 func quote(s string) string { return "'" + s + "'" }
+
+// fileEvent is one file in --output=json: a copy made (with -v), or one that
+// would be (under --dry-run). Beside where it goes, it carries the two facts
+// about the source that settle whether a copy already made is still current,
+// which the destination cannot say for itself: when the source was last
+// written, as -u compares it, and the content encoding --decompress would undo.
+// With those, a caller holding a dry run can decide without asking again.
+func fileEvent(kind string, src *store.Node, dst *uri.URL) map[string]any {
+	event := map[string]any{
+		"event": kind, "source": src.URL.Display(),
+		"destination": dst.Display(), "bytes": src.Size,
+	}
+	if modified := blobMTime(src); !modified.IsZero() {
+		event["modified"] = modified.UTC().Format(time.RFC3339Nano)
+	}
+	if src.ContentEncoding != "" {
+		event["content_encoding"] = src.ContentEncoding
+	}
+	return event
+}
 
 // jsonLine renders one event. A value that cannot be encoded is reported as
 // such rather than silently dropped, because a machine reading this cannot ask.
