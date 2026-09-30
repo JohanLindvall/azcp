@@ -2,8 +2,11 @@ package progress
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/JohanLindvall/azcp/internal/humanize"
 )
 
 func newQuietReporter() *Reporter {
@@ -44,6 +47,21 @@ func TestTaskByteAccounting(t *testing.T) {
 	}
 }
 
+func TestActualSizeCorrectsBothProgressTotals(t *testing.T) {
+	for _, planned := range []int64{0, 50, 200} {
+		r := newQuietReporter()
+		r.Plan(1, planned)
+		tk := r.Begin("changing.txt", planned, DirLocal)
+		tk.Add(100)
+		tk.SetSize(100)
+		tk.Done(nil)
+		_, _, _, _, bytes, _ := r.Totals()
+		if total := r.plannedBytes.Load(); bytes != 100 || total != 100 {
+			t.Errorf("planned %d: copied %d of %d bytes, want 100 of 100", planned, bytes, total)
+		}
+	}
+}
+
 // An interrupted transfer is neither done nor failed; its bytes come back out
 // and it is remembered only as unfinished, per direction.
 func TestInterruptedTakesBytesBackAndCountsUnfinished(t *testing.T) {
@@ -73,6 +91,48 @@ func TestInterruptedTakesBytesBackAndCountsUnfinished(t *testing.T) {
 	}
 }
 
+func TestElapsedTimeStopsWithTheTransfer(t *testing.T) {
+	r := newQuietReporter()
+	r.Stop()
+	_, _, _, _, _, elapsed := r.Totals()
+	// Changing the start models time passing without making this a timed test.
+	r.started = r.started.Add(-time.Hour)
+	_, _, _, _, _, later := r.Totals()
+	if elapsed <= 0 || later != elapsed {
+		t.Fatalf("elapsed time changed after Stop: %s -> %s", elapsed, later)
+	}
+}
+
+func TestWorkersCanFinishWhileTheTerminalIsBlocked(t *testing.T) {
+	r := newQuietReporter()
+	r.Plan(20, 0)
+	r.paint.Lock()
+	defer r.paint.Unlock()
+	done := make(chan struct{})
+	go func() {
+		var workers sync.WaitGroup
+		for range 20 {
+			workers.Go(func() {
+				task := r.Begin("file", 0, DirLocal)
+				task.Add(100)
+				task.SetSize(100)
+				task.Done(nil)
+			})
+		}
+		workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		files, failed, _, _, bytes, _ := r.Totals()
+		if files != 20 || failed != 0 || bytes != 2000 || r.plannedBytes.Load() != bytes {
+			t.Fatalf("concurrent totals: %d files, %d failures, %d bytes", files, failed, bytes)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("terminal painting held up the workers")
+	}
+}
+
 // The header and bar must fit the width they are given, whatever state the
 // run is in — scanning, mid-run with an eta, or rateless.
 func TestFrameLinesFitTheWidth(t *testing.T) {
@@ -82,7 +142,7 @@ func TestFrameLinesFitTheWidth(t *testing.T) {
 	r.Saw(12)
 	r.Failed(1)
 	r.Skipped(2)
-	tk := r.Begin("a/rather/long/path/that/will/need/eliding.txt", 500, DirUpload)
+	tk := r.Begin("a/rather/long/path/日本語/👩🏽‍💻/e\u0301/needs-eliding.txt", 500, DirUpload)
 	tk.Set(250)
 	defer tk.Done(nil)
 	rt := r.Begin("retrying.bin", 100, DirDownload)
@@ -100,7 +160,7 @@ func TestFrameLinesFitTheWidth(t *testing.T) {
 			for _, scanning := range []bool{true, false} {
 				r.SetScanning(scanning)
 				for _, l := range r.frame() {
-					if got := len([]rune(stripANSI(l))); got >= r.width {
+					if got := humanize.Width(stripANSI(l)); got >= r.width {
 						t.Fatalf("level %d, scanning %v: line %d cells wide in a %d-cell terminal: %q",
 							level, scanning, got, r.width, stripANSI(l))
 					}

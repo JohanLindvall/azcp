@@ -10,6 +10,7 @@ import (
 	"github.com/JohanLindvall/azcp/internal/codec"
 	"github.com/JohanLindvall/azcp/internal/progress"
 	"github.com/JohanLindvall/azcp/internal/store"
+	"github.com/JohanLindvall/azcp/internal/store/local"
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
@@ -53,14 +54,21 @@ func (e *Engine) compressInto(ctx context.Context, w io.Writer, path string, pt 
 		return err
 	}
 	defer f.Close()
+	return e.compressFrom(ctx, w, f, pt)
+}
+
+func (e *Engine) compressFrom(ctx context.Context, w io.Writer, source io.Reader, pt *progress.Task) error {
 	enc, err := e.opt.Compress.NewWriter(w)
 	if err != nil {
 		return err
 	}
-	src := &meter{Reader: &contextReader{ctx: ctx, Reader: f}, report: pt.Set}
+	src := &meter{Reader: &contextReader{ctx: ctx, Reader: source}, report: pt.Set}
 	_, err = io.Copy(enc, src)
 	if cerr := enc.Close(); err == nil {
 		err = cerr
+	}
+	if err == nil {
+		pt.SetSize(src.n)
 	}
 	return err
 }
@@ -93,7 +101,19 @@ func (e *Engine) encoded(ctx context.Context, path string, pt *progress.Task) io
 // compressLocal is the filesystem-to-filesystem copy under --compress: the
 // destination is written through the encoder rather than cloned or copied.
 func (e *Engine) compressLocal(ctx context.Context, t *task, pt *progress.Task) error {
-	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	// Open the source first, and compare the open files before truncating.
+	// A read failure must not destroy the old destination, and aliases can
+	// change between planning and the worker reaching this file.
+	source, err := os.Open(t.src.URL.Path)
+	if err != nil {
+		return destError(t, err)
+	}
+	defer source.Close()
+	si, err := source.Stat()
+	if err != nil {
+		return err
+	}
+	flags := os.O_WRONLY | os.O_CREATE
 	if e.opt.NoClobber {
 		flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
 	}
@@ -101,7 +121,20 @@ func (e *Engine) compressLocal(ctx context.Context, t *task, pt *progress.Task) 
 	if err != nil {
 		return err
 	}
-	err = e.compressInto(ctx, f, t.src.URL.Path, pt)
+	defer f.Close()
+	di, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if os.SameFile(si, di) {
+		return destError(t, local.ErrSameFile)
+	}
+	if di.Mode().IsRegular() {
+		if err := f.Truncate(0); err != nil {
+			return err
+		}
+	}
+	err = e.compressFrom(ctx, f, source, pt)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

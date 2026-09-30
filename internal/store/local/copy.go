@@ -124,7 +124,7 @@ func CopyFile(ctx context.Context, srcPath, dstPath string, opts CopyOptions) (i
 
 	var written int64
 	if sparse {
-		written, err = copySparse(ctx, df, sf, size, &opts)
+		written, err = copySparse(ctx, df, sf, &opts)
 	} else {
 		written, err = copyDense(ctx, df, sf, size, &opts)
 	}
@@ -145,10 +145,20 @@ func looksSparse(fi fs.FileInfo, size int64) bool {
 // copyDense copies every byte, preferring an in-kernel copy when the platform
 // offers one and falling back to a buffered loop.
 func copyDense(ctx context.Context, dst, src *os.File, size int64, opts *CopyOptions) (int64, error) {
-	if n, ok, err := kernelCopy(ctx, dst, src, size, opts); ok {
-		return n, err
+	// A zero stat size is not proof of EOF: procfs files generate their
+	// contents when read. A size-bounded kernel copy never asks them for any.
+	if size > 0 {
+		if n, ok, err := kernelCopy(ctx, dst, src, size, opts); ok {
+			return n, err
+		}
 	}
-	buf := make([]byte, bufSize(opts))
+	bufferSize := bufSize(opts)
+	if size == 0 {
+		// Most of these really are empty; do not allocate half a megabyte
+		// merely to discover EOF.
+		bufferSize = min(bufferSize, 4096)
+	}
+	buf := make([]byte, bufferSize)
 	var total int64
 	for {
 		if err := ctx.Err(); err != nil {
@@ -177,7 +187,7 @@ func copyDense(ctx context.Context, dst, src *os.File, size int64, opts *CopyOpt
 
 // copySparse writes only the non-zero runs and seeks over the rest, then sets
 // the file length so trailing holes survive.
-func copySparse(ctx context.Context, dst, src *os.File, size int64, opts *CopyOptions) (int64, error) {
+func copySparse(ctx context.Context, dst, src *os.File, opts *CopyOptions) (int64, error) {
 	buf := make([]byte, bufSize(opts))
 	var off, total int64
 	for {
@@ -215,7 +225,9 @@ func copySparse(ctx context.Context, dst, src *os.File, size int64, opts *CopyOp
 			return total, rerr
 		}
 	}
-	if err := dst.Truncate(size); err != nil {
+	// The source can grow, shrink, or report zero despite having contents.
+	// Only the bytes read tell us where its final trailing hole ends.
+	if err := dst.Truncate(off); err != nil {
 		return total, err
 	}
 	return total, nil

@@ -2,6 +2,7 @@ package logx
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"testing"
@@ -46,6 +47,29 @@ func TestRedactLeavesOrdinaryTextAlone(t *testing.T) {
 	in := "cannot stat 'design=final.txt': No such file or directory"
 	if got := Redact(in); got != in {
 		t.Errorf("harmless text altered: %q", got)
+	}
+}
+
+func TestRedactionPreservesJSONEscapes(t *testing.T) {
+	for _, value := range []string{
+		`GET "https://a.blob.core.windows.net/c?sig=secret&sp=r" failed`,
+		`GET "https://a.blob.core.windows.net/c?sv=1&sig=secret" failed`,
+		"AccountKey=secret\nnext line",
+		`key "AccountKey=secret" failed`,
+	} {
+		encoded, err := json.Marshal(map[string]string{"error": value})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, cleaned := range []string{Redact(string(encoded)), string(redactBytes(encoded))} {
+			var decoded map[string]string
+			if err := json.Unmarshal([]byte(cleaned), &decoded); err != nil {
+				t.Fatalf("redaction corrupted JSON: %s: %v", cleaned, err)
+			}
+			if want := strings.ReplaceAll(value, "secret", "<redacted>"); decoded["error"] != want {
+				t.Errorf("redaction altered surrounding text: %q, want %q", decoded["error"], want)
+			}
+		}
 	}
 }
 
@@ -108,6 +132,17 @@ func TestPrettyHandlerQuotesAwkwardValues(t *testing.T) {
 	out := sink.String()
 	if !strings.Contains(out, `path="with space"`) || !strings.Contains(out, "plain=bare") {
 		t.Errorf("quoting wrong: %q", out)
+	}
+}
+
+func TestPrettyHandlerEscapesTerminalControls(t *testing.T) {
+	for _, value := range []string{"file\x1b[2J", "file\rhidden", "file\bhidden", "file\x07", "file\u202etxt.exe"} {
+		var sink strings.Builder
+		h := &prettyHandler{w: &lockedWriter{w: &sink}, level: slog.LevelDebug}
+		slog.New(h).Info("copying", "path", value)
+		if got := sink.String(); strings.ContainsAny(got, "\x1b\r\b\x07\u202e") {
+			t.Errorf("attribute changed terminal state: %q", got)
+		}
 	}
 }
 

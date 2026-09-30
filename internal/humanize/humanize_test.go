@@ -31,6 +31,7 @@ func TestCount(t *testing.T) {
 
 func TestDuration(t *testing.T) {
 	cases := map[time.Duration]string{
+		0: "0ms", time.Nanosecond: "<1ms", 500 * time.Microsecond: "<1ms",
 		400 * time.Millisecond: "400ms", 4200 * time.Millisecond: "4.2s",
 		42 * time.Second: "42s", 67 * time.Second: "1m07s",
 		2*time.Hour + 4*time.Minute: "2h04m", 73 * time.Hour: "3d01h",
@@ -52,6 +53,40 @@ func TestElide(t *testing.T) {
 	}
 	if Width(Pad("ab", 6)) != 6 {
 		t.Error("Pad did not pad to width")
+	}
+}
+
+func TestUnicodeDisplayCells(t *testing.T) {
+	for _, tt := range []struct {
+		text  string
+		width int
+	}{
+		{"日本語", 6},
+		{"e\u0301", 1},
+		{"🇸🇪", 2},
+		{"👩🏽‍💻", 2},
+		{"❤️", 2},
+	} {
+		if got := Width(tt.text); got != tt.width {
+			t.Errorf("Width(%q) = %d, want %d", tt.text, got, tt.width)
+		}
+		if got := Truncate(tt.text+"suffix", tt.width); got != tt.text {
+			t.Errorf("Truncate split a grapheme: %q, want %q", got, tt.text)
+		}
+		for width := 0; width <= 12; width++ {
+			if got := Elide("prefix/"+tt.text+".txt", width); Width(got) > width {
+				t.Errorf("Elide(%q, %d) overflowed: %q", tt.text, width, got)
+			}
+			if got := Pad(tt.text, width); Width(got) != width {
+				t.Errorf("Pad(%q, %d) has %d cells: %q", tt.text, width, Width(got), got)
+			}
+		}
+	}
+	if got := Elide("long/path/👩🏽‍💻", 3); got != "…👩🏽‍💻" {
+		t.Errorf("Elide split a joined emoji: %q", got)
+	}
+	if got := Truncate("日", 1); got != "" {
+		t.Errorf("Truncate put a wide character in one cell: %q", got)
 	}
 }
 

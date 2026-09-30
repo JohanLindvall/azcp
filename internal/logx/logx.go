@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 )
 
 // Config describes the desired logging setup.
@@ -85,8 +86,8 @@ func Errf(format string, args ...any) {
 // and permissions) stays visible, because that is exactly what someone
 // debugging a 403 needs to see.
 var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)((?:\?|&|\\u0026|^)sig=)[^&\s"'<>]+`),
-	regexp.MustCompile(`(?i)(AccountKey=)[^;\s"'<>]+`),
+	regexp.MustCompile(`(?i)((?:\?|&|\\u0026|^)sig=)[^&\s"'<>\\]+`),
+	regexp.MustCompile(`(?i)(AccountKey=)[^;\s"'<>\\]+`),
 	regexp.MustCompile(`(?i)(Bearer\s+)[A-Za-z0-9._~+/-]{16,}=*`),
 	regexp.MustCompile(`(?i)(SharedKey\s+[A-Za-z0-9]+:)[A-Za-z0-9+/=]{16,}`),
 }
@@ -357,7 +358,9 @@ func quoteIfNeeded(s string) string {
 	if s == "" {
 		return `""`
 	}
-	if strings.ContainsAny(s, " \t\n\"\\") {
+	if strings.ContainsAny(s, " \"\\") || strings.ContainsFunc(s, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r)
+	}) {
 		return strconv.Quote(s)
 	}
 	return s

@@ -82,11 +82,16 @@ spending.
 
 ### Dependencies
 
-Seven direct ones, and each earns its place. `klauspost/compress` replaces the
+Eight direct ones, and each earns its place. `klauspost/compress` replaces the
 standard library's gzip, flate and zlib coders in both directions — measured at 3.1 GB/s against
 2.2 GB/s on the benchmark in `decompress_test.go`, over a whole file in one pass
 — and brings zstd, which the standard library has no answer for. It pulls in
 nothing else.
+
+`rivo/uniseg` measures terminal cells and keeps grapheme clusters intact when
+filenames are shortened. Counting runes instead lets wide characters wrap the
+live region and splits combining accents and joined emoji. It has no runtime
+dependencies.
 
 Dependabot watches the Go modules weekly. The Azure SDK and `golang.org/x`
 families are grouped, because those modules move together and separate pull

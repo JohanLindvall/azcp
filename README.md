@@ -635,15 +635,25 @@ aggregate bar with throughput and an estimate. While the scan is finding work,
 the bar stays indeterminate; percentages and the estimate appear once the total
 is known. Aligned transfer rows keep filenames prominent, and failures, retries
 and skipped files get a separate status line. Narrow windows drop the per-file
-bars and rates to leave room for names. Colours follow the terminal's
-capabilities and respect `NO_COLOR`.
+bars and rates to leave room for names. Filenames are measured in terminal
+cells, keeping wide characters, combining accents and joined emoji intact when
+shortened. Colours follow the terminal's capabilities and respect `NO_COLOR`.
+
+When the run ends, a final frame stays on screen with the settled file count,
+bytes, elapsed time and a completed bar. It appears even if the whole copy
+finishes before the first refresh. Empty and all-skipped runs finish at 100%
+too. Failed and interrupted runs show their outcome and the amount completed;
+active-file rows and the ETA disappear. A dry run says `Would copy` and reports
+no transfer rate.
 
 Log records and `-v` output are interleaved without tearing the display. It
-stands down entirely when the output is not a terminal, so in a script `azcp`
-is as quiet as `cp`. `--progress=always|never` overrides that.
+stands down entirely when stderr is not a terminal or `TERM=dumb`, so in a
+script `azcp` is as quiet as `cp`. `--progress=always|never` overrides that.
 
-It repaints once a second, and never holds a transfer up to do it: the display
-is drawn from a snapshot, so a slow or blocked terminal cannot stall a worker.
+It draws at startup and completion and refreshes once a second in between.
+Log output clears the live frame until the next refresh, so verbose copies do
+not repaint the entire display for every file. The display is drawn from a
+snapshot, so painting never holds the lock workers use to update progress.
 Frames are written as runs of like-coloured cells rather than an escape
 sequence per character, which keeps a bar to a few hundred bytes instead of a
 few thousand — worth having when the terminal is at the far end of an SSH
@@ -678,6 +688,10 @@ Deletion events use `remove` or `would-remove`, with the destination in the
 Fatal planning errors also produce an error object and a summary with a nonzero
 failure count. Errors during initial argument or configuration validation are
 reported on stderr before the copy begins.
+The summary's `interrupted` field distinguishes cancellation from completion,
+even when no files failed. Elapsed time stops when the work ends. When stderr
+is a terminal, the progress display and its final frame still appear there;
+stdout contains only JSON.
 
 ## Measuring the link
 
@@ -759,6 +773,13 @@ Local copies reject source/destination aliases before truncating or backing up
 anything. When multiple source files map to one destination, the first wins and
 later conflicts are reported; `-n` skips them, while `--backup` writes them in
 order and retains the earlier versions.
+
+`-f` removes a destination only when opening that destination fails; an
+unreadable source leaves the existing destination intact. Compression checks
+the open source and destination before truncating. If a copy fails before
+creating its destination, a requested backup is restored to the original name.
+Local copies read virtual files such as `/proc/version` even when their reported
+size is zero, and sparse copies preserve the length actually read.
 
 ## Compared with AzCopy
 

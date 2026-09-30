@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +49,76 @@ func TestCredentialRedactionCoversParseErrorsAndJSONSummary(t *testing.T) {
 		if bytes.Contains(out, []byte("review-secret")) || bytes.Contains(diagnostics, []byte("review-secret")) {
 			t.Fatalf("credential leaked: %s %s", out, diagnostics)
 		}
+	}
+}
+
+func TestQuickCopyRetainsTheFinishedProgressBar(t *testing.T) {
+	d := t.TempDir()
+	if err := os.WriteFile(filepath.Join(d, "src"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, flags := range [][]string{nil, {"--dry-run"}, {"-v"}, {"-n"}, {"--output=json"}} {
+		args := append([]string{"--progress=always", "--progress-interval=1h"}, flags...)
+		args = append(args, "src", "dst")
+		_, diagnostics, err := commandOutput(t, d, args...)
+		if err != nil {
+			t.Fatalf("copy failed: %v: %s", err, diagnostics)
+		}
+		final := string(diagnostics)
+		if pos := strings.LastIndex(final, "\x1b[J"); pos >= 0 {
+			final = final[pos+3:]
+		}
+		if !strings.Contains(final, "100%") || !strings.Contains(final, "██") || !strings.HasSuffix(final, "\n") {
+			t.Fatalf("quick copy lost its finished bar: %q", diagnostics)
+		}
+		if strings.Contains(final, "ETA") || strings.Contains(final, "Copying") || strings.Contains(final, "active") {
+			t.Fatalf("quick copy left live state on screen: %q", final)
+		}
+	}
+}
+
+func TestJSONRedactionKeepsQuotedURLsValid(t *testing.T) {
+	arg := `https://invalid.example/c?sig=secret"quoted`
+	out, diagnostics, err := commandOutput(t, t.TempDir(), "--output=json", arg, "dst")
+	if err == nil {
+		t.Fatal("invalid endpoint accepted")
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(out), []byte("\n")) {
+		if !json.Valid(line) {
+			t.Fatalf("redaction corrupted an event: %s; stderr: %s", line, diagnostics)
+		}
+		if bytes.Contains(line, []byte("secret")) {
+			t.Fatalf("credential reached JSON output: %s", line)
+		}
+	}
+}
+
+func TestVirtualFileCopyReportsActualBytes(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("procfs is Linux-specific")
+	}
+	source, err := os.ReadFile("/proc/version")
+	if err != nil || len(source) == 0 {
+		t.Skip("procfs version is unavailable")
+	}
+	d := t.TempDir()
+	out, diagnostics, err := commandOutput(t, d, "--output=json", "/proc/version", "version")
+	if err != nil {
+		t.Fatalf("copy: %v: %s", err, diagnostics)
+	}
+	var summary struct {
+		Copied      int64 `json:"copied"`
+		Bytes       int64 `json:"bytes"`
+		Interrupted bool  `json:"interrupted"`
+	}
+	if err := json.Unmarshal(out, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Copied != 1 || summary.Bytes != int64(len(source)) || summary.Interrupted {
+		t.Fatalf("incorrect totals: %s", out)
+	}
+	if copied, err := os.ReadFile(filepath.Join(d, "version")); err != nil || !bytes.Equal(copied, source) {
+		t.Fatalf("virtual file was not copied: %q, %v", copied, err)
 	}
 }
 

@@ -2,15 +2,80 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/JohanLindvall/azcp/internal/store"
 )
+
+func TestForcePreservesDestinationWhenSourceCannotBeOpened(t *testing.T) {
+	d := t.TempDir()
+	src, dst := filepath.Join(d, "src"), filepath.Join(d, "dst")
+	write(t, src, "source")
+	write(t, dst, "irreplaceable")
+	if err := os.Chmod(src, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(src, 0o600) })
+	if f, err := os.Open(src); err == nil {
+		f.Close()
+		t.Skip("this user can read a file without read permission")
+	}
+	if n := run(t, d, "-f", "src", "dst"); n != 1 {
+		t.Fatalf("failed = %d, want 1", n)
+	}
+	if got := read(t, dst); got != "irreplaceable" {
+		t.Fatalf("-f destroyed the destination after a source failure: %q", got)
+	}
+}
+
+func TestForceOnlyRetriesOpeningTheDestination(t *testing.T) {
+	e := newEngine(t, "-f", "src", "dst")
+	for _, tt := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"source open", &os.PathError{Op: "open", Path: "src", Err: syscall.EACCES}, false},
+		{"destination open", &os.PathError{Op: "open", Path: "dst", Err: syscall.EACCES}, true},
+		{"wrapped open", fmt.Errorf("copy: %w", &os.PathError{Op: "open", Path: "dst", Err: syscall.EPERM}), true},
+		{"destination truncate", &os.PathError{Op: "truncate", Path: "dst", Err: syscall.EACCES}, false},
+		{"destination write", &os.PathError{Op: "write", Path: "dst", Err: syscall.EACCES}, false},
+		{"missing parent", &os.PathError{Op: "open", Path: "dst", Err: syscall.ENOENT}, false},
+		{"unattributed permission", syscall.EACCES, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := e.forceRetryable(tt.err, "dst"); got != tt.want {
+				t.Fatalf("forceRetryable(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+	e.opt.NoClobber = true
+	if e.forceRetryable(&os.PathError{Op: "open", Path: "dst", Err: syscall.EACCES}, "dst") {
+		t.Fatal("-f overrode -n")
+	}
+}
+
+func TestOpenErrorNamesTheRightFileAndPreservesItsCause(t *testing.T) {
+	task := &task{src: &store.Node{URL: mustURL(t, "src")}, dst: mustURL(t, "dst")}
+	for _, name := range []string{"src", "dst"} {
+		cause := &os.PathError{Op: "open", Path: name, Err: syscall.EMFILE}
+		err := destError(task, cause)
+		if !errors.Is(err, syscall.EMFILE) {
+			t.Errorf("open error lost its retryable cause: %v", err)
+		}
+		if !strings.Contains(err.Error(), quote(name)) {
+			t.Errorf("open error lost its path: %v", err)
+		}
+	}
+}
 
 func TestDanglingDestinationSymlink(t *testing.T) {
 	t.Setenv("POSIXLY_CORRECT", "")
@@ -106,6 +171,32 @@ func TestBackupCannotDestroySource(t *testing.T) {
 	}
 	if read(t, filepath.Join(d, "file~")) != "source" || read(t, filepath.Join(d, "file")) != "destination" {
 		t.Fatal("backup changed source or destination")
+	}
+}
+
+func TestFailedCopyRestoresBackupAndRetryStillKeepsIt(t *testing.T) {
+	d := t.TempDir()
+	src, dst := filepath.Join(d, "src"), filepath.Join(d, "dst")
+	write(t, dst, "irreplaceable")
+	e := newEngine(t, "-b", src, dst)
+	copy := &task{
+		src: &store.Node{URL: mustURL(t, src), Mode: 0o600},
+		dst: mustURL(t, dst), backup: dst + "~",
+	}
+	// The source disappeared after planning. Failure must put the original
+	// destination back, and a retry must still make the requested backup.
+	if err := e.transfer(context.Background(), copy, nil); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing source error = %v", err)
+	}
+	if got := read(t, dst); got != "irreplaceable" || exists(dst+"~") {
+		t.Fatalf("failed copy did not restore the original name: %q", got)
+	}
+	write(t, src, "replacement")
+	if err := e.transfer(context.Background(), copy, nil); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, dst) != "replacement" || read(t, dst+"~") != "irreplaceable" {
+		t.Fatal("retry lost the original destination or its backup")
 	}
 }
 

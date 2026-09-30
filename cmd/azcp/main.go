@@ -68,6 +68,9 @@ func run(argv []string) int {
 	// From here on every write to the terminal is arbitrated by the progress
 	// display, so log records never tear a half-drawn bar.
 	logx.SetGuard(prog.Guard)
+	if opt.DryRun {
+		prog.SetPhase("Planning")
+	}
 	prog.Start()
 	// Stop is idempotent; this covers the paths that return early.
 	defer func() { prog.Stop(); logx.SetGuard(nil) }()
@@ -99,17 +102,17 @@ func run(argv []string) int {
 		"part_concurrency", opt.PartConcurrency, "retries", opt.Retries)
 
 	failed, runErr := eng.Run(ctx)
+	fatal := runErr != nil && !errors.Is(runErr, context.Canceled)
+	if fatal {
+		// A planning failure may have no file task to account for it.
+		prog.Failed(1)
+	}
 
 	prog.Stop()
 	logx.SetGuard(nil)
 
-	fatal := runErr != nil && !errors.Is(runErr, context.Canceled)
 	if fatal && opt.Output != cli.OutputJSON {
 		logx.Errf("%s: %v\n", cli.Program, runErr)
-		if isUsage(runErr) {
-			return exitUsage
-		}
-		return exitFail
 	}
 
 	if opt.Output == cli.OutputJSON {
@@ -117,9 +120,11 @@ func run(argv []string) int {
 		if fatal {
 			summaryErr = runErr
 		}
-		writeJSONSummary(prog, eng, opt, summaryErr)
-	} else {
-		prog.Summary(os.Stderr, opt.DryRun)
+		writeJSONSummary(prog, eng, opt, summaryErr, ctx.Err() != nil)
+	}
+	// JSON owns stdout; an enabled progress display still finishes on stderr.
+	prog.Summary(os.Stderr, opt.DryRun, ctx.Err() != nil)
+	if opt.Output != cli.OutputJSON {
 		if n := eng.Deleted(); n > 0 {
 			verb := "Removed"
 			if opt.DryRun {
@@ -237,14 +242,13 @@ func runBenchmark(ctx context.Context, eng *engine.Engine, opt *cli.Options,
 }
 
 // writeJSONSummary closes a machine-readable run with one summary object.
-func writeJSONSummary(prog *progress.Reporter, eng *engine.Engine, opt *cli.Options, runErr error) {
+func writeJSONSummary(prog *progress.Reporter, eng *engine.Engine, opt *cli.Options, runErr error, interrupted bool) {
 	done, failed, skipped, retries, bytes, elapsed := prog.Totals()
 	warns, errs := logx.Counts()
 	failures := eng.Failures()
 	if runErr != nil {
 		// Fatal planning failures have no per-file task to count them. They
 		// still belong in the same JSON stream and summary as copy failures.
-		failed++
 		failures = append(failures, engine.Failure{Error: runErr.Error()})
 		encoded, _ := json.Marshal(map[string]string{"event": "error", "error": runErr.Error()})
 		logx.Printf("%s\n", encoded)
@@ -261,6 +265,7 @@ func writeJSONSummary(prog *progress.Reporter, eng *engine.Engine, opt *cli.Opti
 		"retries":         retries,
 		"elapsed_seconds": elapsed.Seconds(),
 		"dry_run":         opt.DryRun,
+		"interrupted":     interrupted,
 		"warnings":        warns,
 		"errors":          errs,
 	}

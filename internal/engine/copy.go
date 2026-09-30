@@ -23,13 +23,32 @@ import (
 
 // transfer moves one file. It is called on a worker goroutine and may be called
 // again for the same task if the first attempt failed transiently.
-func (e *Engine) transfer(ctx context.Context, t *task, pt *progress.Task) error {
+func (e *Engine) transfer(ctx context.Context, t *task, pt *progress.Task) (retErr error) {
 	if t.noop {
 		return nil
 	}
 	if t.backup != "" {
-		if err := os.Rename(t.dst.Path, t.backup); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("cannot back up %s: %w", quote(t.dst.Display()), err)
+		backup := t.backup
+		if err := os.Rename(t.dst.Path, backup); err != nil {
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("cannot back up %s: %w", quote(t.dst.Display()), err)
+			}
+		} else {
+			defer func() {
+				if retErr == nil {
+					return
+				}
+				// Like cp, put the original name back when the copy failed
+				// before creating a replacement, for example on a source open.
+				// A partial destination keeps its backup available separately.
+				if _, err := os.Lstat(t.dst.Path); os.IsNotExist(err) {
+					if err := os.Rename(backup, t.dst.Path); err != nil {
+						e.log.Warn("cannot restore backup", "path", t.dst.Display(), "backup", backup, "error", err)
+					} else {
+						t.backup = backup
+					}
+				}
+			}()
 		}
 		// Only back up once, however many attempts this task takes.
 		t.backup = ""
@@ -284,9 +303,9 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 			Progress: pt.Add,
 			Excl:     e.opt.NoClobber,
 		}
-		_, err := local.CopyFile(ctx, srcPath, dstPath, opts)
+		written, err := local.CopyFile(ctx, srcPath, dstPath, opts)
 		if err != nil {
-			if !e.forceRetryable(err) {
+			if !e.forceRetryable(err, dstPath) {
 				return destError(t, err)
 			}
 			// -f: the destination exists but cannot be opened for writing.
@@ -296,10 +315,11 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 			if rmErr := os.Remove(dstPath); rmErr != nil {
 				return err
 			}
-			if _, err = local.CopyFile(ctx, srcPath, dstPath, opts); err != nil {
+			if written, err = local.CopyFile(ctx, srcPath, dstPath, opts); err != nil {
 				return destError(t, err)
 			}
 		}
+		pt.SetSize(written)
 	}
 
 	e.applyAttrs(t)
@@ -409,7 +429,7 @@ func (e *Engine) openDest(t *task, flags int, mode os.FileMode) (*os.File, error
 	if err == nil {
 		return f, nil
 	}
-	if e.forceRetryable(err) {
+	if e.forceRetryable(err, t.dst.Path) {
 		if rmErr := os.Remove(t.dst.Path); rmErr == nil {
 			if f, err2 := os.OpenFile(t.dst.Path, flags, mode); err2 == nil {
 				e.log.Info("removed unwritable destination", "path", t.dst.Path)
@@ -429,12 +449,31 @@ func destError(t *task, err error) error {
 		return plainf("cannot overwrite directory %s with non-directory",
 			quote(t.dst.Display()))
 	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) && pathErr.Op == "open" {
+		cause := pathErr.Err.Error()
+		if cause != "" {
+			cause = strings.ToUpper(cause[:1]) + cause[1:]
+		}
+		switch pathErr.Path {
+		case t.src.URL.Path:
+			return &plainError{msg: fmt.Sprintf("cannot open %s for reading: %s", quote(t.src.URL.Display()), cause), cause: err}
+		case t.dst.Path:
+			return &plainError{msg: fmt.Sprintf("cannot create regular file %s: %s", quote(t.dst.Display()), cause), cause: err}
+		}
+	}
 	return fmt.Errorf("cannot create %s: %w", quote(t.dst.Display()), err)
 }
 
 // forceRetryable reports whether -f should clear the destination and try again.
-func (e *Engine) forceRetryable(err error) bool {
-	if !e.opt.Force {
+func (e *Engine) forceRetryable(err error, dst string) bool {
+	if !e.opt.Force || e.opt.NoClobber {
+		return false
+	}
+	// CopyFile can fail while opening the source or after writing has begun.
+	// Neither permits removing the destination: -f only retries its open.
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Op != "open" || pathErr.Path != dst {
 		return false
 	}
 	var errno syscall.Errno

@@ -72,6 +72,19 @@ fi
 [ -d "$WORK/down/tree/hollow/inner" ] && ok "a nested empty directory round-trips" \
                                       || bad "a nested empty directory was lost"
 
+# A fast download must retain its finished bar even if no timed refresh ran.
+# JSON remains on stdout while the completed display stays on stderr.
+"$AZCP" --progress=always --progress-interval=1h --output=json \
+  "$AZ/tree/file.txt" "$WORK/quick-progress" \
+  >"$WORK/quick-progress.json" 2>"$WORK/quick-progress.stderr"
+if grep -q '100%' "$WORK/quick-progress.stderr" && \
+   grep -q 'Copied 1 file' "$WORK/quick-progress.stderr" && \
+   python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s["event"] == "summary" and s["copied"] == 1 and not s["interrupted"]' "$WORK/quick-progress.json"; then
+  ok "a fast download keeps its finished bar and a separate JSON summary"
+else
+  bad "a fast download lost its completed display or JSON summary"
+fi
+
 # --- wildcards over blob names ----------------------------------------------
 mkdir -p "$WORK/glob"
 "$AZCP" "$AZ/tree/**/*.log" "$WORK/glob" >/dev/null

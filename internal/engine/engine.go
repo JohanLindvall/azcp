@@ -442,12 +442,16 @@ func brief(err error) string { return retryx.Describe(err) }
 
 // plainError carries a message that is already a complete cp-style report, so
 // the failure path prints it as-is instead of wrapping it in another sentence.
-type plainError struct{ msg string }
+type plainError struct {
+	msg   string
+	cause error
+}
 
 func (e *plainError) Error() string { return e.msg }
+func (e *plainError) Unwrap() error { return e.cause }
 
 func plainf(format string, args ...any) error {
-	return &plainError{fmt.Sprintf(format, args...)}
+	return &plainError{msg: fmt.Sprintf(format, args...)}
 }
 
 // note reports an operational problem that does not stop the copy. Like fail

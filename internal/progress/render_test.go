@@ -88,7 +88,7 @@ func TestEachFrameErasesTheLast(t *testing.T) {
 
 	// Several files in flight makes a tall frame; none makes a short one.
 	for range 3 {
-		r.active = append(r.active, &Task{r: r, name: "some/blob", size: 100})
+		r.Begin("some/blob", 100, DirLocal)
 	}
 	r.paint.Lock()
 	r.render()
@@ -154,6 +154,43 @@ func TestEmptyFilesMakeVisibleProgress(t *testing.T) {
 	frame := stripANSI(strings.Join(r.frame(), "\n"))
 	if !strings.Contains(frame, "25%") {
 		t.Fatalf("empty files left the display indeterminate: %s", frame)
+	}
+}
+
+func TestProgressDoesNotRoundUpToFinished(t *testing.T) {
+	r := newQuietReporter()
+	r.Plan(1, 1000)
+	tk := r.Begin("last.txt", 1000, DirUpload)
+	tk.Set(999)
+	frame := stripANSI(strings.Join(r.frame(), "\n"))
+	if strings.Contains(frame, "100%") || strings.Count(frame, "99%") != 2 {
+		t.Fatalf("unfinished bytes rounded up to completion: %s", frame)
+	}
+}
+
+func TestETAKeepsSubsecondPrecision(t *testing.T) {
+	r := newQuietReporter()
+	line := stripANSI(r.barLine(79, 1, 2, 2, false, false))
+	if !strings.Contains(line, "ETA 500ms") {
+		t.Fatalf("remaining half-second was lost: %q", line)
+	}
+}
+
+func TestGuardDoesNotRepaintForEveryLogLine(t *testing.T) {
+	r, f := newTestReporter(t)
+	r.interval = time.Hour
+	r.Start()
+	defer r.Stop()
+	_, at := written(t, f, 0)
+	for range 100 {
+		r.Guard(func() { _, _ = f.WriteString("log line\n") })
+	}
+	got, _ := written(t, f, at)
+	if strings.Count(got, eraseBelow) != 1 || strings.Contains(got, "Copying") {
+		t.Fatalf("log output redrew the frame: %q", got)
+	}
+	if strings.Count(got, "log line\n") != 100 {
+		t.Fatalf("log output was lost: %q", got)
 	}
 }
 

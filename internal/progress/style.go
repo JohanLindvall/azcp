@@ -25,8 +25,9 @@ const (
 type palette struct{ level colourLevel }
 
 // detectPalette follows the conventions terminal programs are expected to
-// honour: NO_COLOR wins over everything, TERM=dumb means no escapes at all, and
-// COLORTERM advertises truecolor.
+// honour: NO_COLOR wins over everything, TERM=dumb means no colour, and
+// COLORTERM advertises truecolor. New also disables the automatic display on
+// dumb terminals, which cannot interpret cursor movement.
 func detectPalette(isTTY bool) palette {
 	if !isTTY {
 		return palette{levelNone}
@@ -70,7 +71,7 @@ func (p palette) filename(name string, width int) string {
 	// A filename can contain newlines or terminal controls. It must still
 	// occupy exactly one row, without changing the terminal's state.
 	name = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
 			return '�'
 		}
 		return r
@@ -171,12 +172,11 @@ func truncateANSI(s string, width int) string {
 		return ""
 	}
 	if !strings.ContainsRune(s, '\x1b') {
-		if utf8.RuneCountInString(s) <= width {
-			return s
-		}
-		r := []rune(s)
-		return string(r[:width])
+		return humanize.Truncate(s, width)
 	}
+	// Find the cut in unstyled text, then retain the escapes while copying
+	// that many runes. The cut must be a grapheme boundary, not just a rune.
+	limit := utf8.RuneCountInString(humanize.Truncate(stripANSI(s), width))
 	var b strings.Builder
 	visible, styled := 0, false
 	var st escState
@@ -186,7 +186,7 @@ func truncateANSI(s string, width int) string {
 			b.WriteRune(r)
 			continue
 		}
-		if visible >= width {
+		if visible >= limit {
 			if styled {
 				b.WriteString("\x1b[0m")
 			}

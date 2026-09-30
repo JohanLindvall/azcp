@@ -10,7 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"github.com/rivo/uniseg"
 )
 
 var binaryUnits = [...]string{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
@@ -66,6 +67,8 @@ func Duration(d time.Duration) string {
 		d = -d
 	}
 	switch {
+	case d > 0 && d < time.Millisecond:
+		return "<1ms"
 	case d < time.Second:
 		return strconv.FormatInt(d.Milliseconds(), 10) + "ms"
 	case d < 10*time.Second:
@@ -114,8 +117,7 @@ func Elide(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	n := utf8.RuneCountInString(s)
-	if n <= width {
+	if Width(s) <= width {
 		return s
 	}
 	if width == 1 {
@@ -124,24 +126,56 @@ func Elide(s string, width int) string {
 	// Reserve one cell for the ellipsis, then split the remainder so the tail
 	// gets the larger half.
 	keep := width - 1
-	head := keep / 3
-	tail := keep - head
-	r := []rune(s)
-	return string(r[:head]) + "…" + string(r[n-tail:])
+	head := Truncate(s, keep/3)
+	tailWidth := keep - Width(head)
+	type cluster struct{ start, width int }
+	var clusters []cluster
+	g := uniseg.NewGraphemes(s)
+	for g.Next() {
+		start, _ := g.Positions()
+		clusters = append(clusters, cluster{start, g.Width()})
+	}
+	tail := len(s)
+	for i := len(clusters) - 1; i >= 0; i-- {
+		c := clusters[i]
+		if c.width > tailWidth {
+			break
+		}
+		tail, tailWidth = c.start, tailWidth-c.width
+	}
+	return head + "…" + s[tail:]
+}
+
+// Truncate takes the longest prefix that fits in width display cells without
+// splitting a grapheme, such as an accented letter or a joined emoji.
+func Truncate(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	end, used := 0, 0
+	g := uniseg.NewGraphemes(s)
+	for g.Next() {
+		used += g.Width()
+		if used > width {
+			break
+		}
+		_, end = g.Positions()
+	}
+	return s[:end]
 }
 
 // Pad right-pads s with spaces to exactly width display cells, truncating with
 // Elide when it is too long.
 func Pad(s string, width int) string {
 	s = Elide(s, width)
-	if n := utf8.RuneCountInString(s); n < width {
+	if n := Width(s); n < width {
 		return s + strings.Repeat(" ", width-n)
 	}
 	return s
 }
 
-// Width reports the number of display cells Elide and Pad account for.
-func Width(s string) int { return utf8.RuneCountInString(s) }
+// Width counts terminal cells, including wide characters and combining marks.
+func Width(s string) int { return uniseg.StringWidth(s) }
 
 // ParseSize parses a human-written byte size such as "8MiB", "512k", "1.5G" or
 // a bare byte count. It accepts both IEC (KiB) and short (K, KB) suffixes; all

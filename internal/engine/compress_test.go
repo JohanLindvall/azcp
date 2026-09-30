@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,7 +10,54 @@ import (
 	"testing"
 
 	"github.com/JohanLindvall/azcp/internal/codec"
+	"github.com/JohanLindvall/azcp/internal/store"
 )
+
+func TestCompressionPreservesDestinationWhenSourceCannotBeOpened(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		d := t.TempDir()
+		src, dst := filepath.Join(d, "src"), filepath.Join(d, "dst.gz")
+		write(t, src, "source")
+		write(t, dst, "irreplaceable")
+		if err := os.Chmod(src, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(src, 0o600) })
+		if f, err := os.Open(src); err == nil {
+			f.Close()
+			t.Skip("this user can read a file without read permission")
+		}
+		args := []string{"--compress", "src", "dst.gz"}
+		if force {
+			args = append(args, "-f")
+		}
+		if n := run(t, d, args...); n != 1 {
+			t.Fatalf("failed = %d, want 1", n)
+		}
+		if got := read(t, dst); got != "irreplaceable" {
+			t.Fatalf("compression destroyed the destination after a source failure: %q", got)
+		}
+	}
+}
+
+func TestCompressionChecksTheOpenFileIdentity(t *testing.T) {
+	d := t.TempDir()
+	src, dst := filepath.Join(d, "src"), filepath.Join(d, "dst.gz")
+	write(t, src, "irreplaceable")
+	if err := os.Link(src, dst); err != nil {
+		t.Skip(err)
+	}
+	e := newEngine(t, "--compress", src, dst)
+	// Call the worker directly: the names may have become aliases after the
+	// planner checked them.
+	task := &task{src: &store.Node{URL: mustURL(t, src), Mode: 0o600}, dst: mustURL(t, dst)}
+	if err := e.compressLocal(context.Background(), task, nil); err == nil {
+		t.Fatal("compression accepted aliased open files")
+	}
+	if got := read(t, src); got != "irreplaceable" {
+		t.Fatalf("compression truncated its source: %q", got)
+	}
+}
 
 // expand reads a compressed file back through codec, as --decompress would.
 func expand(t *testing.T, path, encoding string) string {

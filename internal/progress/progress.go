@@ -1,9 +1,10 @@
 // Package progress draws the live transfer display.
 //
 // It owns the terminal while it is running: log records and ordinary output go
-// through Guard, which erases the live region, lets the caller write, and
-// redraws. Everything degrades cleanly — no terminal, no colour, or a very
-// narrow window each drop features rather than breaking the layout.
+// through Guard, which erases the live region and lets the caller write. The
+// next frame restores the display. Everything degrades cleanly — no terminal,
+// no colour, or a very narrow window each drop features rather than breaking
+// the layout.
 package progress
 
 import (
@@ -114,11 +115,14 @@ type Reporter struct {
 	partUp   atomic.Int64
 	partDown atomic.Int64
 
-	active   []*Task
-	started  time.Time
-	stopOnce sync.Once
-	done     chan struct{}
-	wg       sync.WaitGroup
+	active  []*Task
+	started time.Time
+	// stoppedAfter freezes elapsed time before waiting on terminal I/O, so
+	// closing output cannot inflate the transfer's duration or lower its rate.
+	stoppedAfter atomic.Int64
+	stopOnce     sync.Once
+	done         chan struct{}
+	wg           sync.WaitGroup
 
 	// interval is how often the display repaints.
 	interval time.Duration
@@ -144,7 +148,7 @@ func New(cfg Config) *Reporter {
 		rows = 8
 	}
 	isTTY := term.IsTerminal(int(out.Fd()))
-	enabled := cfg.Mode == ModeAlways || (cfg.Mode == ModeAuto && isTTY)
+	enabled := cfg.Mode == ModeAlways || (cfg.Mode == ModeAuto && isTTY && os.Getenv("TERM") != "dumb")
 
 	interval := cfg.Interval
 	if interval <= 0 {
@@ -179,7 +183,10 @@ func (r *Reporter) Start() {
 	if !r.enabled {
 		return
 	}
+	r.paint.Lock()
 	r.write(hideCursor)
+	r.render()
+	r.paint.Unlock()
 	r.wg.Go(func() {
 		t := time.NewTicker(r.interval)
 		defer t.Stop()
@@ -203,6 +210,7 @@ func (r *Reporter) Start() {
 // call it.
 func (r *Reporter) Stop() {
 	r.stopOnce.Do(func() {
+		r.stoppedAfter.Store(int64(time.Since(r.started)))
 		if !r.enabled {
 			return
 		}
@@ -211,19 +219,19 @@ func (r *Reporter) Stop() {
 		r.paint.Lock()
 		r.clear()
 		r.stopped = true
-		r.paint.Unlock()
 		r.write(showCursor)
+		r.paint.Unlock()
 	})
 }
 
-// Guard runs fn with the live region erased, then redraws. Every write to the
-// terminal from elsewhere in the program goes through here.
+// Guard runs fn with the live region erased. Redrawing belongs to the ticker:
+// repainting after every log or -v line makes a fast copy spend more time
+// drawing bars than moving files, regardless of the requested interval.
 func (r *Reporter) Guard(fn func()) {
 	r.paint.Lock()
 	defer r.paint.Unlock()
 	r.clear()
 	fn()
-	r.render()
 }
 
 // SetPhase changes the verb shown in the header.
@@ -264,7 +272,14 @@ func (r *Reporter) Failed(n int64) { r.failedFiles.Add(n) }
 // Totals reports the current tallies for the closing summary.
 func (r *Reporter) Totals() (done, failed, skipped, retries int64, bytes int64, elapsed time.Duration) {
 	return r.doneFiles.Load(), r.failedFiles.Load(), r.skippedFiles.Load(),
-		r.retries.Load(), r.doneBytes.Load(), time.Since(r.started)
+		r.retries.Load(), r.doneBytes.Load(), r.elapsed()
+}
+
+func (r *Reporter) elapsed() time.Duration {
+	if d := r.stoppedAfter.Load(); d > 0 {
+		return time.Duration(d)
+	}
+	return time.Since(r.started)
 }
 
 // Unfinished reports how many uploads and downloads stopped with bytes already
@@ -279,7 +294,7 @@ type Task struct {
 	r    *Reporter
 	name string
 	dir  Direction
-	size int64
+	size atomic.Int64
 
 	transferred atomic.Int64
 	// counted is what has already been folded into the reporter's running
@@ -292,11 +307,23 @@ type Task struct {
 
 // Begin registers a transfer and returns its handle.
 func (r *Reporter) Begin(name string, size int64, dir Direction) *Task {
-	t := &Task{r: r, name: name, dir: dir, size: size, start: time.Now()}
+	t := &Task{r: r, name: name, dir: dir, start: time.Now()}
+	t.size.Store(size)
 	r.mu.Lock()
 	r.active = append(r.active, t)
 	r.mu.Unlock()
 	return t
+}
+
+// SetSize corrects a scan's estimate once the source's actual length is known.
+// Local files can change between stat and read; procfs may report zero for a
+// nonempty file. The final frame and JSON totals must describe what was copied.
+func (t *Task) SetSize(size int64) {
+	if t == nil {
+		return
+	}
+	previous := t.size.Swap(size)
+	t.r.plannedBytes.Add(size - previous)
 }
 
 // Set records the absolute number of bytes transferred so far. The Azure SDK
@@ -358,8 +385,9 @@ func (t *Task) Done(err error) {
 		r.doneFiles.Add(1)
 		// Trust the declared size at completion: byte callbacks can lag or be
 		// skipped entirely on a server-side copy.
-		if n := t.counted.Swap(t.size); n != t.size {
-			r.doneBytes.Add(t.size - n)
+		size := t.size.Load()
+		if n := t.counted.Swap(size); n != size {
+			r.doneBytes.Add(size - n)
 		}
 	}
 	r.remove(t)

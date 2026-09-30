@@ -95,6 +95,66 @@ func TestCopyFileSparsePreservesContentAndLength(t *testing.T) {
 	}
 }
 
+func TestCopyFileReadsZeroSizeVirtualFiles(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("procfs is Linux-specific")
+	}
+	const src = "/proc/version"
+	data, err := os.ReadFile(src)
+	if err != nil || len(data) == 0 {
+		t.Skip("procfs version is unavailable")
+	}
+	for _, sparse := range []Sparse{SparseAuto, SparseAlways, SparseNever} {
+		dst := filepath.Join(t.TempDir(), "version")
+		n, err := CopyFile(context.Background(), src, dst, CopyOptions{Sparse: sparse})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(dst)
+		if err != nil || !bytes.Equal(got, data) || n != int64(len(data)) {
+			t.Errorf("sparse %d: copied %d bytes (%v), got %q, want %q", sparse, n, err, got, data)
+		}
+	}
+}
+
+func TestSparseCopyUsesTheLengthActuallyRead(t *testing.T) {
+	for _, grow := range []bool{false, true} {
+		dir := t.TempDir()
+		src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+		data := make([]byte, 3*4096)
+		copy(data, "island")
+		writeFile(t, src, data)
+		changed := false
+		n, err := CopyFile(context.Background(), src, dst, CopyOptions{
+			Reflink: ReflinkNever, Sparse: SparseAlways, BufSize: 4096,
+			Progress: func(int64) {
+				if changed {
+					return
+				}
+				changed = true
+				size := int64(2 * 4096)
+				if grow {
+					size = 4 * 4096
+				}
+				if err := os.Truncate(src, size); err != nil {
+					t.Fatal(err)
+				}
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(dst)
+		if err != nil || !bytes.Equal(got, want) || n != int64(len(want)) {
+			t.Errorf("grow %v: sparse copy returned %d, wrote %d, want %d bytes (%v)", grow, n, len(got), len(want), err)
+		}
+	}
+}
+
 func TestCopyFileCancelled(t *testing.T) {
 	dir := t.TempDir()
 	src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")

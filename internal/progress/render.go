@@ -118,11 +118,11 @@ func (r *Reporter) frame() []string {
 	}
 	lines = append(lines, r.detailLines(width, []string{files, bytes})...)
 	if totalB > 0 {
-		lines = append(lines, r.barLine(width, doneB, totalB, rate, scanning))
+		lines = append(lines, r.barLine(width, doneB, totalB, rate, scanning, false))
 	} else {
 		// Empty files still make progress, but a byte rate cannot estimate
 		// how long creating them will take.
-		lines = append(lines, r.barLine(width, doneF, totalF, 0, scanning))
+		lines = append(lines, r.barLine(width, doneF, totalF, 0, scanning, false))
 	}
 	lines = append(lines, r.statusLines(width, totalF)...)
 
@@ -144,7 +144,7 @@ func (r *Reporter) headerLine(width int, phase string, scanning bool) string {
 	if scanning {
 		head += r.pal.dim(" · scanning")
 	}
-	return joinSides(head, r.pal.dim(humanize.Duration(time.Since(r.started))+" elapsed"), width)
+	return joinSides(head, r.pal.dim(humanize.Duration(r.elapsed())+" elapsed"), width)
 }
 
 // Keep the exceptional counts separate from the totals: clipping a long
@@ -176,6 +176,7 @@ func joinSides(left, right string, width int) string {
 
 func (r *Reporter) detailLines(width int, parts []string) []string {
 	var lines []string
+	indent := strings.Repeat(" ", min(3, max(width, 0)))
 	line := ""
 	for _, part := range parts {
 		if line != "" && humanize.Width(stripANSI(line))+3+humanize.Width(stripANSI(part)) > width {
@@ -183,7 +184,7 @@ func (r *Reporter) detailLines(width int, parts []string) []string {
 			line = ""
 		}
 		if line == "" {
-			line = "   " + truncateANSI(part, width-3)
+			line = indent + truncateANSI(part, width-len(indent))
 		} else {
 			line += r.pal.dim(" · ") + part
 		}
@@ -194,24 +195,27 @@ func (r *Reporter) detailLines(width int, parts []string) []string {
 	return lines
 }
 
-func (r *Reporter) barLine(width int, done, total int64, rate float64, scanning bool) string {
+func (r *Reporter) barLine(width int, done, total int64, rate float64, scanning, final bool) string {
 	determinate := total > 0 && !scanning
 	frac := float64(0)
 	percent := r.pal.dim("   —")
 	if determinate {
 		frac = min(max(float64(done)/float64(total), 0), 1)
-		percent = r.pal.bold(fmt.Sprintf("%3.0f%%", frac*100))
+		percent = r.pal.bold(percentDone(done, total))
+	}
+	if width < 12 {
+		return truncateANSI(" "+percent, width)
 	}
 	right := "  " + percent
 	if width >= 44 {
 		right += "  " + r.pal.accent(fmt.Sprintf("%10s", humanize.Rate(rate)))
 	}
-	if width >= 64 {
+	if width >= 64 && !final {
 		eta := "—"
 		if determinate && rate > 0 && done < total {
 			secs := float64(total-done) / rate
 			if secs < float64((1<<63-1)/int64(time.Second)) {
-				eta = humanize.Duration(time.Duration(secs) * time.Second)
+				eta = humanize.Duration(time.Duration(secs * float64(time.Second)))
 			}
 		}
 		right += r.pal.dim(fmt.Sprintf("  ETA %-7s", eta))
@@ -265,13 +269,22 @@ func (r *Reporter) taskLine(width int, t *Task) string {
 		rateStr = humanize.Rate(float64(got) / el)
 	}
 	bar, percent := r.indeterminate(taskBarWidth), "   —"
-	if t.size > 0 {
-		frac := min(max(float64(got)/float64(t.size), 0), 1)
-		bar, percent = r.plainBar(taskBarWidth, frac), fmt.Sprintf("%3.0f%%", frac*100)
+	if size := t.size.Load(); size > 0 {
+		frac := min(max(float64(got)/float64(size), 0), 1)
+		bar, percent = r.plainBar(taskBarWidth, frac), percentDone(got, size)
 	}
 	right := taskColumns(width, bar, r.pal.dim(percent), r.pal.dim(fmt.Sprintf("%10s", rateStr)))
 	nameW := width - humanize.Width(stripANSI(right)) - 3
 	return " " + r.pal.accent(t.dir.glyph()) + " " + r.pal.filename(t.name, nameW) + right
+}
+
+func percentDone(done, total int64) string {
+	// Rounding up announces 100% while the last bytes are still in flight.
+	percent := min(max(float64(done)/float64(total), 0), 1) * 100
+	if done < total {
+		percent = min(percent, 99)
+	}
+	return fmt.Sprintf("%3.0f%%", percent)
 }
 
 // blocks are the partial-cell glyphs that give the bar sub-character precision.
@@ -392,33 +405,57 @@ func (r *Reporter) rate(doneB int64) float64 {
 	return float64(last.bytes-first.bytes) / secs
 }
 
-// Summary writes the closing report. It is printed after the live region is
-// gone, so it stays in the scrollback.
-func (r *Reporter) Summary(w io.Writer, dryRun bool) {
+// Summary replaces the live region with a settled frame that stays in the
+// scrollback, even when the copy finished before the first refresh. It never
+// retains active rows or an ETA after the work has stopped.
+func (r *Reporter) Summary(w io.Writer, dryRun, interrupted bool) {
+	r.Stop()
 	// With no live display there was no terminal to summarise for, and cp is
 	// silent on success; staying quiet keeps scripts that check stderr happy.
 	if !r.enabled {
 		return
 	}
 	done, failed, skipped, retries, bytes, elapsed := r.Totals()
-	if done == 0 && failed == 0 && skipped == 0 {
-		return
-	}
+	r.paint.Lock()
+	defer r.paint.Unlock()
+	r.refreshWidth()
+	width := max(r.width-1, 0)
 	verb := "Copied"
 	if dryRun {
 		verb = "Would copy"
 	}
-	rate := ""
+	var rate float64
 	if s := elapsed.Seconds(); s > 0 && bytes > 0 && !dryRun {
-		rate = fmt.Sprintf(" (%s)", humanize.Rate(float64(bytes)/s))
+		rate = float64(bytes) / s
 	}
 	mark := r.pal.good("✔")
 	if failed > 0 {
 		mark = r.pal.bad("✖")
 	}
 	result := fmt.Sprintf("%s %s %s", verb, humanize.Count(done), humanize.Plural(done, "file", "files"))
-	fmt.Fprintf(w, " %s %s%s%s%s\n", mark, r.pal.bold(result), r.pal.dim(" · "),
-		r.pal.bold(humanize.Bytes(bytes)), r.pal.dim(" in "+humanize.Duration(elapsed)+rate))
+	if interrupted {
+		mark = r.pal.warn("!")
+		result = "Interrupted · " + result
+	}
+	lines := []string{joinSides(" "+mark+" "+r.pal.bold(result),
+		r.pal.dim(humanize.Duration(elapsed)+" elapsed"), width)}
+	lines = append(lines, r.detailLines(width, []string{
+		r.pal.dim(fmt.Sprintf("%s / %s files", humanize.Count(done), humanize.Count(r.plannedFiles.Load()))),
+		r.pal.bold(humanize.Bytes(bytes)),
+	})...)
+	barDone, barTotal := bytes, r.plannedBytes.Load()
+	if barTotal == 0 {
+		barDone, barTotal = done, r.plannedFiles.Load()
+	}
+	if barTotal == 0 {
+		// An empty tree or an all-skipped run still finished its work. An
+		// interruption or failed scan must not acquire a successful bar.
+		barTotal = 1
+		if !interrupted && failed == 0 {
+			barDone = 1
+		}
+	}
+	lines = append(lines, r.barLine(width, barDone, barTotal, rate, false, true))
 
 	var notes []string
 	if seen := r.seenFiles.Load(); seen > done+skipped {
@@ -434,7 +471,6 @@ func (r *Reporter) Summary(w io.Writer, dryRun bool) {
 		notes = append(notes, r.pal.warn(fmt.Sprintf("%s transient %s retried",
 			humanize.Count(retries), humanize.Plural(retries, "error", "errors"))))
 	}
-	if len(notes) > 0 {
-		fmt.Fprintf(w, "   %s\n", strings.Join(notes, r.pal.dim(" · ")))
-	}
+	lines = append(lines, r.detailLines(width, notes)...)
+	_, _ = io.WriteString(w, strings.Join(lines, "\n")+"\n")
 }

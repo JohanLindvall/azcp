@@ -3,6 +3,8 @@ package progress
 import (
 	"strings"
 	"testing"
+
+	"github.com/JohanLindvall/azcp/internal/humanize"
 )
 
 func TestStripANSI(t *testing.T) {
@@ -44,14 +46,37 @@ func TestTruncateANSI(t *testing.T) {
 
 func TestFilenameCannotBreakTheFrame(t *testing.T) {
 	p := palette{levelTrue}
-	for _, name := range []string{"dir/a\nb.txt", "dir/a\tb.txt", "dir/\x1b[2J.txt", `C:\dir\file.txt`} {
+	for _, name := range []string{
+		"dir/a\nb.txt", "dir/a\tb.txt", "dir/\x1b[2J.txt", `C:\dir\file.txt`,
+		"directory/日本語.txt", "emoji/👩🏽‍💻.txt", "dir/e\u0301.txt", "dir/file\u202etxt.exe",
+	} {
 		got := p.filename(name, 30)
 		plain := stripANSI(got)
-		if strings.ContainsAny(plain, "\n\r\t\x1b") || strings.Contains(got, "\x1b[2J") {
+		if strings.ContainsAny(plain, "\n\r\t\x1b\u202e") || strings.Contains(got, "\x1b[2J") {
 			t.Errorf("filename changed terminal state: %q", got)
 		}
-		if len([]rune(plain)) != 30 {
-			t.Errorf("filename %q took %d cells, want 30", name, len([]rune(plain)))
+		if n := humanize.Width(plain); n != 30 {
+			t.Errorf("filename %q took %d cells, want 30", name, n)
+		}
+	}
+}
+
+func TestTruncateStyledUnicodeKeepsWholeGraphemes(t *testing.T) {
+	for _, tt := range []struct {
+		text  string
+		width int
+		want  string
+	}{
+		{"日本語", 3, "日"},
+		{"👩🏽‍💻text", 2, "👩🏽‍💻"},
+		{"e\u0301text", 1, "e\u0301"},
+	} {
+		got := truncateANSI("\x1b[36m"+tt.text+"\x1b[0m", tt.width)
+		if plain := stripANSI(got); plain != tt.want {
+			t.Errorf("truncated %q to %q, want %q", tt.text, plain, tt.want)
+		}
+		if !strings.HasSuffix(got, "\x1b[0m") {
+			t.Errorf("truncation left an open style: %q", got)
 		}
 	}
 }
