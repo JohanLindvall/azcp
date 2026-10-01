@@ -210,7 +210,9 @@ func (r *Reporter) Start() {
 // call it.
 func (r *Reporter) Stop() {
 	r.stopOnce.Do(func() {
-		r.stoppedAfter.Store(int64(time.Since(r.started)))
+		// Zero means still running, and Windows' clock can measure an
+		// immediate stop as exactly that.
+		r.stoppedAfter.Store(max(int64(time.Since(r.started)), 1))
 		if !r.enabled {
 			return
 		}
