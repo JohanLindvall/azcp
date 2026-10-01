@@ -877,8 +877,12 @@ What remains AzCopy's, by choice:
   and are refused before anything is transferred rather than partway through.
 - `-Z`, `--context` and `--preserve=context` are accepted but do nothing: this
   tool does not set SELinux contexts. Using one logs a warning saying so.
-- `--copy-contents` is accepted with a warning and has no effect, since special
-  files are never recursed into.
+- Fifos, sockets and devices are not supported as sources. `cp` reads one named
+  on the command line — `producer | cp /dev/stdin file` copies the pipe — and
+  recreates one it meets under `-r`; `azcp` skips it with a message, and exits
+  0 if nothing else went wrong. `--copy-contents`, which makes `cp -r` read
+  them, is accepted with a warning and has no effect. Writing into one that
+  already exists, such as `/dev/null` or a fifo, works as it does in `cp`.
 - A missing destination container is an error rather than being created
   silently; `--create-container` opts in. Containers behave more like a mount
   point than a directory, so creating one is not something to do by accident.
