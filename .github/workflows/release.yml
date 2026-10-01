@@ -156,6 +156,9 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # scripts/install.sh reads this file from the latest release to learn
+      # which version that is, by picking out azcp_<version>_<os>_<arch>.bin.gz,
+      # so renaming those assets or changing this format breaks the installer.
       - name: Checksums
         run: |
           set -euo pipefail
