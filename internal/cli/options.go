@@ -467,8 +467,8 @@ func (o *Options) apply(f cpflags.Flag) error {
 		}
 		o.Backup = mode
 	case "copy-contents":
-		// Only affects recursion into special files, which this tool never
-		// does; accepted so existing command lines keep working.
+		// Only affects recursion into special files, which this tool skips
+		// rather than reads; accepted so existing command lines keep working.
 		o.CopyContents = true
 	case "debug":
 		// cp's --debug explains how each file was copied. The nearest

@@ -21,8 +21,9 @@ import (
 //
 // It is not free. The hash has to be computed over the whole file, and neither
 // direction can do it while transferring, because blocks and ranges are moved
-// out of order. Recording one on upload is opt-in; downloads check a recorded
-// checksum by default.
+// out of order — except to or from a pipe, which is taken in order and hashed
+// on the way past. Recording one on upload is opt-in; downloads check a
+// recorded checksum by default.
 
 // MD5Check selects what to do about a blob's recorded checksum on download.
 type MD5Check int
@@ -98,6 +99,25 @@ func (c *checksum) wait() ([]byte, error) {
 // verifyDownload compares what landed on disk with the checksum the service
 // reported for the blob.
 func (s *Store) verifyDownload(ctx context.Context, path string, blobMD5 []byte, mode MD5Check, display string) error {
+	if !wantsDigest(blobMD5, mode) {
+		return s.checkDigest(nil, blobMD5, mode, display)
+	}
+	got, err := fileMD5(ctx, path)
+	if err != nil {
+		return fmt.Errorf("cannot re-read %s to check it: %w", path, err)
+	}
+	return s.checkDigest(got, blobMD5, mode, display)
+}
+
+// wantsDigest reports whether there is a checksum to compare against and a
+// mode that would look at it, which is when hashing what arrived is worth it.
+func wantsDigest(blobMD5 []byte, mode MD5Check) bool {
+	return mode != MD5Off && len(blobMD5) > 0
+}
+
+// checkDigest weighs got, the MD5 of what arrived, against the one the service
+// reported for the blob, as mode says to.
+func (s *Store) checkDigest(got, blobMD5 []byte, mode MD5Check, display string) error {
 	if mode == MD5Off {
 		return nil
 	}
@@ -109,15 +129,11 @@ func (s *Store) verifyDownload(ctx context.Context, path string, blobMD5 []byte,
 		s.log.Debug("blob has no recorded MD5, nothing to check against", "blob", display)
 		return nil
 	}
-	got, err := fileMD5(ctx, path)
-	if err != nil {
-		return fmt.Errorf("cannot re-read %s to check it: %w", path, err)
-	}
 	if bytes.Equal(got, blobMD5) {
 		s.log.Debug("checksum verified", "blob", display)
 		return nil
 	}
-	err = fmt.Errorf("checksum mismatch for %s: the blob records %s but what arrived is %s: %w",
+	err := fmt.Errorf("checksum mismatch for %s: the blob records %s but what arrived is %s: %w",
 		display, base64.StdEncoding.EncodeToString(blobMD5),
 		base64.StdEncoding.EncodeToString(got), retryx.ErrRetryable)
 	if mode == MD5Warn {

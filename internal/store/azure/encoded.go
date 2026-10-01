@@ -13,11 +13,13 @@ import (
 )
 
 // UploadEncoded writes a stream whose length is known only once it ends — a
-// file being compressed on the way — to a blob. open starts the stream, and is
-// called afresh for every attempt, since a stream cannot be rewound. sourceSize
-// is what the stream is made from and picks the route: what came from one
-// block's worth of source is gathered and written in a single request, with
-// its checksum; anything larger is staged block by block as it arrives.
+// file being compressed on the way, or a pipe — to a blob. open starts the
+// stream, and is called afresh for every attempt, since a stream cannot be
+// rewound. sourceSize is what the stream is made from and picks the route:
+// what came from one block's worth of source is gathered and written in a
+// single request, with its checksum; anything larger is staged block by block
+// as it arrives. It is negative when nobody knows, as for a pipe, and then the
+// stream is gathered as far as one block and staged only if it goes on.
 //
 // This is the one place the SDK's own stream upload is used. It cannot resume
 // — the blocks it stages are named as it goes — so an interrupted compressed
@@ -51,28 +53,38 @@ func (s *Store) uploadEncoded(ctx context.Context, r io.Reader, sourceSize int64
 	// anything that would be single-shotted anyway is gathered here instead,
 	// where its checksum can go in the same request.
 	const streamFloor = 1 << 20
-	if sourceSize <= max(o.blockSize(sourceSize), streamFloor) {
-		var buf bytes.Buffer
-		if _, err := io.Copy(&buf, r); err != nil {
+	if limit := max(o.blockSize(sourceSize), streamFloor); sourceSize <= limit {
+		gather := r
+		if sourceSize < 0 {
+			gather = io.LimitReader(r, limit+1)
+		}
+		head, err := io.ReadAll(gather)
+		if err != nil {
 			return err
 		}
-		var digest []byte
-		if o.PutMD5 {
-			digest = sum.Sum(nil)
+		if sourceSize >= 0 || int64(len(head)) <= limit {
+			var digest []byte
+			if o.PutMD5 {
+				digest = sum.Sum(nil)
+			}
+			_, err := bb.Upload(ctx, streaming.NopCloser(bytes.NewReader(head)),
+				&blockblob.UploadOptions{
+					HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, digest),
+					Metadata:         o.metadata(),
+					AccessConditions: o.accessConditions(),
+					Tier:             o.tier(),
+				})
+			return err
 		}
-		_, err := bb.Upload(ctx, streaming.NopCloser(bytes.NewReader(buf.Bytes())),
-			&blockblob.UploadOptions{
-				HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, digest),
-				Metadata:         o.metadata(),
-				AccessConditions: o.accessConditions(),
-				Tier:             o.tier(),
-			})
-		return err
+		// Longer than a block: what was gathered goes first, the rest after.
+		r = io.MultiReader(bytes.NewReader(head), r)
 	}
 
 	// The block count is bounded, so the block is sized for the source plus
 	// the little a format can add to data it cannot shrink — never for less
-	// than the source, where a file just under the limit could go over it.
+	// than the source, where a file just under the limit could go over it. A
+	// pipe gives nothing to size by, so its blocks are --part-size, and
+	// 50,000 of those is as long as it can be.
 	_, err = bb.UploadStream(ctx, r, &blockblob.UploadStreamOptions{
 		BlockSize:        o.blockSize(sourceSize + sourceSize/8),
 		Concurrency:      o.concurrency(),

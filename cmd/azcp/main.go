@@ -18,6 +18,7 @@ import (
 	"github.com/JohanLindvall/azcp/internal/humanize"
 	"github.com/JohanLindvall/azcp/internal/logx"
 	"github.com/JohanLindvall/azcp/internal/progress"
+	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
 // Exit statuses, following cp: 0 success, 1 for copy or command-line errors.
@@ -47,8 +48,14 @@ func run(argv []string) int {
 		return exitOK
 	}
 
+	mode := opt.Progress
+	if mode == progress.ModeAuto && writesToStderr(opt.Dest) {
+		// /dev/stdout on the terminal stderr is on: a display that erases
+		// its own region would erase what is being copied there.
+		mode = progress.ModeNever
+	}
 	prog := progress.New(progress.Config{
-		Mode:     opt.Progress,
+		Mode:     mode,
 		Out:      os.Stderr,
 		Interval: opt.ProgressInterval,
 	})
@@ -283,6 +290,20 @@ func writeJSONSummary(prog *progress.Reporter, eng *engine.Engine, opt *cli.Opti
 func isUsage(err error) bool {
 	var ue *cli.UsageError
 	return errors.As(err, &ue)
+}
+
+// writesToStderr reports whether the destination is the very file stderr is,
+// which is what /dev/stdout is when both are the same terminal.
+func writesToStderr(dest string) bool {
+	if dest == "" || uri.IsRemoteArg(dest) {
+		return false
+	}
+	di, err := os.Stat(dest)
+	if err != nil {
+		return false
+	}
+	si, err := os.Stderr.Stat()
+	return err == nil && os.SameFile(di, si)
 }
 
 func colorSupported() bool {

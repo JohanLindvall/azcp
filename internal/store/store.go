@@ -24,7 +24,8 @@ const (
 	KindDir
 	// KindSymlink is a symbolic link, local or recorded in blob metadata.
 	KindSymlink
-	// KindOther is a fifo, socket or device, which is skipped.
+	// KindOther is a fifo, socket or device. A fifo named on the command line
+	// is copied as a stream; everything else of this kind is skipped.
 	KindOther
 )
 
@@ -79,6 +80,13 @@ func (n *Node) IsRegular() bool { return n != nil && n.Kind == KindFile }
 
 // IsSymlink reports whether n is a symbolic link. A nil node is not.
 func (n *Node) IsSymlink() bool { return n != nil && n.Kind == KindSymlink }
+
+// IsPipe reports whether n is a fifo, or a pipe reached through a name such as
+// /dev/stdin. Its contents exist only as they pass, and its size says nothing
+// about how much will. A nil node is not.
+func (n *Node) IsPipe() bool {
+	return n != nil && n.Kind == KindOther && n.Mode&fs.ModeNamedPipe != 0
+}
 
 // Name returns the node's last path element.
 func (n *Node) Name() string { return n.URL.Base() }

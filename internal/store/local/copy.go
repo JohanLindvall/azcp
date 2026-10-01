@@ -57,8 +57,9 @@ func (o *CopyOptions) report(n int64) {
 	}
 }
 
-// CopyFile copies regular file contents from srcPath to dstPath. It returns the
-// number of bytes written.
+// CopyFile copies the contents of srcPath — a regular file, or a fifo read to
+// its end — to dstPath, which may also be a fifo or a device to write into. It
+// returns the number of bytes written.
 func CopyFile(ctx context.Context, srcPath, dstPath string, opts CopyOptions) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -119,13 +120,19 @@ func CopyFile(ctx context.Context, srcPath, dstPath string, opts CopyOptions) (i
 		}
 	}
 
-	sparse := opts.Sparse == SparseAlways ||
-		(opts.Sparse == SparseAuto && looksSparse(si, size))
+	// Holes are made only in a regular file, as cp makes them: a fifo or a
+	// device cannot seek over the zeros it would be leaving out.
+	sparse := di.Mode().IsRegular() && (opts.Sparse == SparseAlways ||
+		(opts.Sparse == SparseAuto && looksSparse(si, size)))
 
 	var written int64
 	if sparse {
 		written, err = copySparse(ctx, df, sf, &opts)
 	} else {
+		if !si.Mode().IsRegular() {
+			// A fifo's size says nothing about what it will deliver.
+			size = -1
+		}
 		written, err = copyDense(ctx, df, sf, size, &opts)
 	}
 	if err != nil {
@@ -135,15 +142,16 @@ func CopyFile(ctx context.Context, srcPath, dstPath string, opts CopyOptions) (i
 	return written, df.Close()
 }
 
-// looksSparse uses the same test cp does: fewer allocated bytes than the
-// apparent size means the source has holes worth preserving.
+// looksSparse uses the same test cp does: a regular file with fewer allocated
+// bytes than its apparent size has holes worth preserving.
 func looksSparse(fi fs.FileInfo, size int64) bool {
 	alloc, ok := allocatedBytes(fi)
-	return ok && alloc < size
+	return ok && fi.Mode().IsRegular() && alloc < size
 }
 
 // copyDense copies every byte, preferring an in-kernel copy when the platform
-// offers one and falling back to a buffered loop.
+// offers one and falling back to a buffered loop. A negative size is a
+// stream's, which is read to its end in full-sized reads.
 func copyDense(ctx context.Context, dst, src *os.File, size int64, opts *CopyOptions) (int64, error) {
 	// A zero stat size is not proof of EOF: procfs files generate their
 	// contents when read. A size-bounded kernel copy never asks them for any.

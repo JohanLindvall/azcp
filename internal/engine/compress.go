@@ -29,7 +29,7 @@ func (e *Engine) compresses(src *store.Node) bool {
 		codec.HasExtension(src.Name()) {
 		return false
 	}
-	if src.IsRegular() {
+	if src.IsRegular() || src.IsPipe() {
 		return true
 	}
 	return src.IsSymlink() && !src.Mode.IsDir() && e.derefAt(false)
@@ -54,21 +54,30 @@ func (e *Engine) compressInto(ctx context.Context, w io.Writer, path string, pt 
 		return err
 	}
 	defer f.Close()
-	return e.compressFrom(ctx, w, f, pt)
+	_, err = e.compressFrom(ctx, w, f, pt)
+	return err
 }
 
-func (e *Engine) compressFrom(ctx context.Context, w io.Writer, source io.Reader, pt *progress.Task) error {
+// compressFrom is encode with the source measured, and reports how much of it
+// there turned out to be.
+func (e *Engine) compressFrom(ctx context.Context, w io.Writer, source io.Reader, pt *progress.Task) (int64, error) {
+	src := &meter{Reader: &contextReader{ctx: ctx, Reader: source}, report: pt.Set}
+	err := e.encode(w, src)
+	if err == nil {
+		pt.SetSize(src.n)
+	}
+	return src.n, err
+}
+
+// encode writes what r delivers to w in the --compress format.
+func (e *Engine) encode(w io.Writer, r io.Reader) error {
 	enc, err := e.opt.Compress.NewWriter(w)
 	if err != nil {
 		return err
 	}
-	src := &meter{Reader: &contextReader{ctx: ctx, Reader: source}, report: pt.Set}
-	_, err = io.Copy(enc, src)
+	_, err = io.Copy(enc, r)
 	if cerr := enc.Close(); err == nil {
 		err = cerr
-	}
-	if err == nil {
-		pt.SetSize(src.n)
 	}
 	return err
 }
@@ -134,12 +143,18 @@ func (e *Engine) compressLocal(ctx context.Context, t *task, pt *progress.Task) 
 			return err
 		}
 	}
-	err = e.compressFrom(ctx, f, source, pt)
+	n, err := e.compressFrom(ctx, f, source, pt)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
+		if phrased, ok := ioError(t, err); ok {
+			return phrased
+		}
 		return fmt.Errorf("cannot write %s: %w", quote(t.dst.Display()), err)
+	}
+	if t.src.IsPipe() {
+		t.src.Size = n
 	}
 	return nil
 }

@@ -84,6 +84,10 @@ type Engine struct {
 	// scheduled belongs to the scanner. Conflicting operands must be settled
 	// before workers can write the same destination concurrently.
 	scheduled map[string]plannedCopy
+	// streamDest says the destination is a pipe or a device, written into
+	// front to back under its own name. It too belongs to the scanner; a
+	// worker learns it from its task.
+	streamDest bool
 
 	// deferredDirs holds directory attributes to apply once their contents
 	// have been written; setting a read-only mode or an old mtime first would
@@ -201,7 +205,11 @@ type task struct {
 	// --remove-destination.
 	removeFirst bool
 	noop        bool
-	done        chan struct{}
+	// stream marks a copy from or to a pipe, which can be attempted only
+	// once: a second attempt would lose what the first one read, or send
+	// twice what it wrote.
+	stream bool
+	done   chan struct{}
 }
 
 // Run performs the copy and reports how many files failed.
@@ -303,7 +311,11 @@ func (e *Engine) runTask(ctx context.Context, t *task) {
 		defer close(t.done)
 	}
 	pt := e.prog.Begin(t.display, t.src.Size, direction(t.src.URL, t.dst))
-	err := retryx.Do(ctx, e.retry,
+	policy := e.retry
+	if t.stream {
+		policy.MaxAttempts = 1
+	}
+	err := retryx.Do(ctx, policy,
 		func(attempt int, delay time.Duration, cause error) {
 			pt.Retrying(attempt, e.retry.MaxAttempts, delay)
 			e.log.Warn("transfer failed, retrying",

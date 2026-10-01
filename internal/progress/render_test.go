@@ -256,3 +256,16 @@ func TestInterruptedIsNotFailed(t *testing.T) {
 		t.Errorf("failed = %d, want 1", failed)
 	}
 }
+
+// A pipe has no length until it ends. Bytes moving with nothing to measure
+// them against show as an amount, not as a percentage of the file count that
+// stays at nothing until the very end.
+func TestBytesWithoutATotalAreNotAPercentage(t *testing.T) {
+	r := newQuietReporter()
+	r.Plan(1, 0)
+	r.Begin("stdin", 0, DirUpload).Set(5 << 20)
+	frame := stripANSI(strings.Join(r.frame(), "\n"))
+	if strings.Contains(frame, "%") || !strings.Contains(frame, "MiB") {
+		t.Fatalf("a stream without a total: %s", frame)
+	}
+}

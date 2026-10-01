@@ -51,6 +51,11 @@ func (s *Store) downloadRanges(ctx context.Context, src *store.Node, f io.Writer
 			o.Progress(fetched.Load())
 		}
 	}
+	// A destination written in order holds the ranges that arrive early, and
+	// says when the next may start so that it does not have to hold them all.
+	gate, _ := f.(interface {
+		admit(ctx context.Context, off int64) error
+	})
 
 	return parallel.Do(ctx, count, o.concurrency(), func(ctx context.Context, i int) error {
 		if resume != nil && resume.has(i) {
@@ -58,6 +63,11 @@ func (s *Store) downloadRanges(ctx context.Context, src *store.Node, f io.Writer
 		}
 		offset := int64(i) * blockSize
 		n := min(blockSize, src.Size-offset)
+		if gate != nil {
+			if err := gate.admit(ctx, offset); err != nil {
+				return err
+			}
+		}
 
 		resp, err := bc.DownloadStream(ctx, &blob.DownloadStreamOptions{
 			Range:            blob.HTTPRange{Offset: offset, Count: n},

@@ -116,3 +116,54 @@ func TestUploadEncodedLargeSourceIsStaged(t *testing.T) {
 		t.Error("headers were set again with no checksum to add")
 	}
 }
+
+// plain returns its data once, the way a pipe gives it up.
+func plain(data []byte) func() io.ReadCloser {
+	return func() io.ReadCloser { return io.NopCloser(bytes.NewReader(data)) }
+}
+
+// A pipe's length is unknown until it ends. One that ends within a block is
+// still a single request, with its checksum on it from the start.
+func TestUploadEncodedUnknownLengthThatFitsIsOneRequest(t *testing.T) {
+	f := newFakeBlobs()
+	f.put("c", "seed", nil, nil)
+	s, at := fakeStore(t, f, false)
+	src := bytes.Repeat([]byte("piped "), 200)
+
+	if err := s.UploadEncoded(context.Background(), plain(src), -1, at("c/piped"), TransferOptions{PutMD5: true}); err != nil {
+		t.Fatal(err)
+	}
+	b, ok := f.blob("c", "piped")
+	if !ok || !bytes.Equal(b.data, src) || b.md5 != md5Header(src) {
+		t.Fatalf("landed %v: %d bytes, md5 %q", ok, len(b.data), b.md5)
+	}
+	if f.count("put blob") != 1 || f.count("stage block") != 0 || f.count("set properties") != 0 {
+		t.Errorf("a short pipe cost %d puts, %d stages, %d property calls",
+			f.count("put blob"), f.count("stage block"), f.count("set properties"))
+	}
+}
+
+// One that goes on past a block is staged as it arrives, beginning with what
+// was gathered while finding that out.
+func TestUploadEncodedUnknownLengthThatGoesOnIsStaged(t *testing.T) {
+	f := newFakeBlobs()
+	f.put("c", "seed", nil, nil)
+	s, at := fakeStore(t, f, false)
+	src := make([]byte, 3<<20+512)
+	if _, err := rand.NewChaCha8([32]byte{4}).Read(src); err != nil {
+		t.Fatal(err)
+	}
+	o := TransferOptions{PutMD5: true, BlockSize: 1 << 20, Concurrency: 2}
+
+	if err := s.UploadEncoded(context.Background(), plain(src), -1, at("c/long"), o); err != nil {
+		t.Fatal(err)
+	}
+	b, ok := f.blob("c", "long")
+	if !ok || !bytes.Equal(b.data, src) || b.md5 != md5Header(src) {
+		t.Fatalf("landed %v: %d of %d bytes, md5 %q", ok, len(b.data), len(src), b.md5)
+	}
+	if f.count("stage block") < 3 || f.count("commit") != 1 || f.count("put blob") != 0 {
+		t.Errorf("a long pipe cost %d stages, %d commits, %d puts",
+			f.count("stage block"), f.count("commit"), f.count("put blob"))
+	}
+}

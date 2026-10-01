@@ -127,13 +127,19 @@ func (e *Engine) upload(ctx context.Context, t *task, pt *progress.Task) error {
 	if t.src.IsSymlink() {
 		return e.az.PutMarker(ctx, t.dst, opts)
 	}
-	if e.compresses(t.src) {
+	compress := e.compresses(t.src)
+	if compress {
 		// The headers describe the file inside: its own type, and the coding
 		// it arrives in. Guessed from the blob's name they would say "a gzip
 		// file", which is what the encoding header exists to avoid.
 		opts.ContentEncoding = e.opt.Compress.Format.String()
 		opts.ContentType = cmp.Or(e.opt.ContentType, azure.ContentTypeFor(t.src.Name()),
 			"application/octet-stream")
+	}
+	if t.src.IsPipe() {
+		return e.uploadPipe(ctx, t, pt, opts, compress)
+	}
+	if compress {
 		return e.az.UploadEncoded(ctx,
 			func() io.ReadCloser { return e.encoded(ctx, t.src.URL.Path, pt) },
 			t.src.Size, t.dst, opts)
@@ -170,6 +176,17 @@ func (e *Engine) download(ctx context.Context, t *task, pt *progress.Task) error
 		return err
 	}
 	defer f.Close()
+
+	if info, err := f.Stat(); err == nil && !info.Mode().IsRegular() && !e.opt.AttributesOnly {
+		if err := e.downloadStream(ctx, t, f, pt); err != nil {
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return writeError(t, err)
+		}
+		e.restoreAttrs(t)
+		return nil
+	}
 
 	if !e.opt.AttributesOnly {
 		opts := e.transferOptions()
@@ -320,6 +337,10 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 			}
 		}
 		pt.SetSize(written)
+		if t.src.IsPipe() {
+			// Only now is there a length to report.
+			t.src.Size = written
+		}
 	}
 
 	e.applyAttrs(t)
@@ -451,18 +472,56 @@ func destError(t *task, err error) error {
 	}
 	var pathErr *os.PathError
 	if errors.As(err, &pathErr) && pathErr.Op == "open" {
-		cause := pathErr.Err.Error()
-		if cause != "" {
-			cause = strings.ToUpper(cause[:1]) + cause[1:]
-		}
 		switch pathErr.Path {
 		case t.src.URL.Path:
-			return &plainError{msg: fmt.Sprintf("cannot open %s for reading: %s", quote(t.src.URL.Display()), cause), cause: err}
+			return &plainError{msg: fmt.Sprintf("cannot open %s for reading: %s", quote(t.src.URL.Display()), sentence(pathErr.Err)), cause: err}
 		case t.dst.Path:
-			return &plainError{msg: fmt.Sprintf("cannot create regular file %s: %s", quote(t.dst.Display()), cause), cause: err}
+			return &plainError{msg: fmt.Sprintf("cannot create regular file %s: %s", quote(t.dst.Display()), sentence(pathErr.Err)), cause: err}
 		}
 	}
+	if phrased, ok := ioError(t, err); ok {
+		return phrased
+	}
 	return fmt.Errorf("cannot create %s: %w", quote(t.dst.Display()), err)
+}
+
+// ioError phrases a failure to read the source or to write or close the
+// destination the way cp does — "error writing '/dev/stdout': Broken pipe".
+// It reports false for anything else.
+func ioError(t *task, err error) (error, bool) {
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) {
+		return nil, false
+	}
+	var msg string
+	switch {
+	case pathErr.Op == "write" && pathErr.Path == t.dst.Path:
+		msg = "error writing " + quote(t.dst.Display())
+	case pathErr.Op == "read" && pathErr.Path == t.src.URL.Path:
+		msg = "error reading " + quote(t.src.URL.Display())
+	case pathErr.Op == "close" && pathErr.Path == t.dst.Path:
+		msg = "failed to close " + quote(t.dst.Display())
+	default:
+		return nil, false
+	}
+	return &plainError{msg: msg + ": " + sentence(pathErr.Err), cause: err}, true
+}
+
+// writeError is ioError for a caller with nothing better to say otherwise.
+func writeError(t *task, err error) error {
+	if phrased, ok := ioError(t, err); ok {
+		return phrased
+	}
+	return err
+}
+
+// sentence capitalises an error the way strerror reads.
+func sentence(err error) string {
+	cause := err.Error()
+	if cause != "" {
+		cause = strings.ToUpper(cause[:1]) + cause[1:]
+	}
+	return cause
 }
 
 // forceRetryable reports whether -f should clear the destination and try again.
@@ -509,7 +568,7 @@ func (e *Engine) applyAttrs(t *task) {
 // before any data moves, rather than failing partway through.
 func (e *Engine) checkUnsupported(dest *uri.URL) error {
 	if e.opt.CopyContents {
-		e.log.Warn("ignoring --copy-contents: this tool does not copy special files")
+		e.log.Warn("ignoring --copy-contents: a recursive copy skips special files rather than reading them")
 	}
 	if e.opt.SELinux {
 		// Accepted so existing command lines keep working, but nothing here

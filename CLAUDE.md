@@ -385,6 +385,23 @@ The extension is added in the planner's `fileDestination`, beside the one
 `.gz`; `internal/codec` is the single table of formats, encodings and
 extensions the two directions share, which is what keeps them mirrors.
 
+**A pipe is read once and written once.** A fifo named without `-r` is read to
+its end, as `cp` reads one (`plan`'s `IsPipe` case); under `-r` special files
+are still skipped. Its task is marked `stream`, which gives it a single attempt,
+because a whole-file retry would lose what the first attempt read or send twice
+what it wrote; `readOnce` makes a sign-in retry inside `UploadEncoded` say so
+rather than upload whatever is left. An upload from one goes through
+`UploadEncoded` with a length of -1: gathered as far as one block, staged only
+if it goes on. A download into anything the destination's open does not find
+regular — a pipe, a fifo, a terminal — takes `DownloadTo` in
+`store/azure/stream.go`, whose `orderedWriter` puts the parallel ranges back in
+order. `admit` keeps a range from starting until it is within
+`concurrency × blockSize` of the front, which is what bounds the memory, and it
+cannot deadlock because `parallel.Do` hands ranges out in order, so the one at
+the front is always already being fetched. Both directions hash on the way past
+instead of re-reading. A destination that is a pipe or a device (`streamDest`)
+keeps its name, so `--compress` does not aim at `/dev/stdout.gz`.
+
 **The SDK single-shots anything up to 256 MiB.** `blockblob.UploadFile` ignores
 the block size it is given and sends a file of 256 MiB or less in one request,
 which is one unparallelised stream that restarts from nothing if it fails.

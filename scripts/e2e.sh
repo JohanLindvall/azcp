@@ -288,6 +288,26 @@ mkdir -p "$WORK/excluded"
 [ ! -e "$WORK/excluded/logs" ] && ok "a directory exclusion protects the whole remote subtree" \
                               || bad "remote listing copied an excluded subtree"
 
+# --- pipes ------------------------------------------------------------------
+# A pipe has no length until it ends, so it goes up as a stream; and it can only
+# be written front to back, so a download into one has its parallel ranges put
+# back in order. The checksum rides along both ways.
+cat "$SRC/big.bin" | "$AZCP" --put-md5 /dev/stdin "$AZ/piped/big.bin" >/dev/null
+"$AZCP" --check-md5=require "$AZ/piped/big.bin" "$WORK/piped-big.bin" >/dev/null
+cmp -s "$SRC/big.bin" "$WORK/piped-big.bin" \
+  && ok "a multi-block pipe uploads whole, with its checksum" \
+  || bad "a piped upload did not land whole"
+echo "short" | "$AZCP" /dev/stdin "$AZ/piped/short.txt" >/dev/null
+check "a short pipe uploads" "$("$AZCP" "$AZ/piped/short.txt" /dev/stdout)" "short"
+"$AZCP" --part-size=1MiB --part-concurrency=8 --check-md5=require \
+    "$AZ/piped/big.bin" /dev/stdout | cmp -s - "$SRC/big.bin" \
+  && ok "a parallel download into a pipe arrives in order" \
+  || bad "a download into a pipe arrived out of order or short"
+cat "$SRC/big.bin" | "$AZCP" --compress=zstd /dev/stdin "$AZ/piped/" >/dev/null
+"$AZCP" --decompress "$AZ/piped/stdin.zst" /dev/stdout | cmp -s - "$SRC/big.bin" \
+  && ok "a pipe compresses on the way up and expands on the way down" \
+  || bad "a compressed pipe did not round-trip"
+
 # --- metadata ---------------------------------------------------------------
 "$AZCP" --metadata "batch=nightly,source=e2e" "$SRC/file.txt" "$AZ/meta.txt" >/dev/null
 ok "--metadata is accepted on upload"

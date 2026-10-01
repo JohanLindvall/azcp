@@ -55,6 +55,11 @@ func (e *Engine) scan(ctx context.Context, out chan<- *task) error {
 	if err != nil {
 		return err
 	}
+	// Neither a file nor a directory — a pipe such as /dev/stdout, a fifo, a
+	// terminal — is written into as it is, front to back, the way cp writes
+	// into one.
+	e.streamDest = !destIsDir && destErr == nil && !dest.IsRemote() &&
+		destNode.Kind == store.KindOther
 
 	for _, src := range sources {
 		if ctx.Err() != nil {
@@ -349,6 +354,12 @@ func (e *Engine) plan(ctx context.Context, src *store.Node, dst *uri.URL,
 			return nil
 		}
 		return e.planDir(ctx, src, dst, out, display, rel)
+
+	case src.IsPipe() && !e.opt.Recursive:
+		// cp reads a fifo it is given by name, which is what lets a pipe —
+		// /dev/stdin, or <(…) — be copied. Under -r it would recreate one
+		// instead, and that is not done here.
+		return e.emit(ctx, src, dst, out, display)
 
 	case src.Kind == store.KindOther:
 		e.prog.Saw(1)
@@ -702,7 +713,8 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 		backup = name
 	}
 	t := &task{src: src, dst: dst, display: display,
-		backup: backup, removeFirst: e.opt.RemoveDestination}
+		backup: backup, removeFirst: e.opt.RemoveDestination,
+		stream: src.IsPipe() || e.streamDest}
 	if err := e.prepareLocalTask(t); err != nil {
 		e.fail("%v", err)
 		return nil
@@ -740,6 +752,11 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 // Renaming only in the worker lets --decompress bypass -n and makes --delete
 // remove the expanded file as an unexpected destination entry.
 func (e *Engine) fileDestination(src *store.Node, dst *uri.URL) *uri.URL {
+	if e.streamDest {
+		// A pipe or a device is written into under the name it was given;
+		// /dev/stdout.gz is not somewhere to put anything.
+		return dst
+	}
 	if e.opt.Decompress && !e.opt.AttributesOnly && !src.IsDir() &&
 		src.URL.IsRemote() && !dst.IsRemote() && decompressible(src.ContentEncoding) {
 		return dst.WithPathPart(decompressedName(dst.Path))

@@ -119,6 +119,11 @@ func (r *Reporter) frame() []string {
 	lines = append(lines, r.detailLines(width, []string{files, bytes})...)
 	if totalB > 0 {
 		lines = append(lines, r.barLine(width, doneB, totalB, rate, scanning, false))
+	} else if doneB > 0 {
+		// Bytes are moving with no total to measure them against: a pipe,
+		// whose length nobody knows until it ends. The rate still means
+		// something even where a percentage cannot.
+		lines = append(lines, r.barLine(width, doneB, 0, rate, scanning, false))
 	} else {
 		// Empty files still make progress, but a byte rate cannot estimate
 		// how long creating them will take.

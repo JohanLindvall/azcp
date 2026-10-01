@@ -287,6 +287,38 @@ that flat namespace as a tree, so `cp`'s rules keep working: a name with things
 filed under it behaves as a directory, and an empty directory round-trips
 through the zero-byte marker blob every Azure tool uses.
 
+## Pipes
+
+A fifo named on the command line is read to its end, as `cp` reads one, so a
+pipe — `/dev/stdin`, or `<(…)` — can be the source, and a pipe can be the
+destination too:
+
+```
+tar -c ./site | azcp /dev/stdin azure://acct/backup/site.tar
+azcp azure://acct/backup/site.tar /dev/stdout | tar -x
+pg_dump shop | azcp --compress=zstd /dev/stdin azure://acct/dumps/shop.sql
+```
+
+A pipe has no length until it ends, so it goes up the way a compressed file
+does: in one request if it ends within a block, staged block by block as it
+arrives if it does not. With nothing to size them by, the blocks are
+`--part-size` each, and a blob holds at most 50,000 of them — about 390 GiB at
+the default 8 MiB, so raise `--part-size` for a longer stream. A download into a
+pipe still fetches `--part-concurrency` ranges at once and puts them back in
+order before writing them, holding about one range per worker in memory.
+
+What a pipe carries exists only as it passes, so nothing about it can be done
+twice. A transfer that fails is not started again, `--resume` has nothing to
+continue, and the checksum is taken on the way past — on a download, a mismatch
+can be reported only once the bytes have gone. A reader that goes away ends the
+copy with `error writing '/dev/stdout': Broken pipe`. `-v` and `--output=json`
+write to standard output as well, so do not combine them with `/dev/stdout` as
+the destination.
+
+A destination that is a pipe or a device keeps its name: `--compress` adds no
+extension to `/dev/stdout`. `-r` reads no fifos; see
+[Differences from cp](#differences-from-cp).
+
 ## Signing in
 
 Nothing has to be configured. Credentials are looked for in this order:
@@ -674,7 +706,8 @@ no transfer rate.
 
 Log records and `-v` output are interleaved without tearing the display. It
 stands down entirely when stderr is not a terminal or `TERM=dumb`, so in a
-script `azcp` is as quiet as `cp`. `--progress=always|never` overrides that.
+script `azcp` is as quiet as `cp`, and when the copy is itself being written to
+that terminal, as `/dev/stdout` is. `--progress=always|never` overrides that.
 
 It draws at startup and completion and refreshes once a second in between.
 Log output clears the live frame until the next refresh, so verbose copies do
@@ -877,12 +910,13 @@ What remains AzCopy's, by choice:
   and are refused before anything is transferred rather than partway through.
 - `-Z`, `--context` and `--preserve=context` are accepted but do nothing: this
   tool does not set SELinux contexts. Using one logs a warning saying so.
-- Fifos, sockets and devices are not supported as sources. `cp` reads one named
-  on the command line — `producer | cp /dev/stdin file` copies the pipe — and
-  recreates one it meets under `-r`; `azcp` skips it with a message, and exits
-  0 if nothing else went wrong. `--copy-contents`, which makes `cp -r` read
-  them, is accepted with a warning and has no effect. Writing into one that
-  already exists, such as `/dev/null` or a fifo, works as it does in `cp`.
+- Special files are partly supported. A fifo named as a source is read to its
+  end, as `cp` reads one, so a pipe such as `/dev/stdin` copies (see
+  [Pipes](#pipes)), and a fifo or device that already exists as the destination
+  is written into. A device or socket named as a source is skipped with a
+  message, and under `-r` every special file is, where `cp` would recreate it;
+  a skip exits 0 if nothing else went wrong. `--copy-contents`, which makes
+  `cp -r` read special files, is accepted with a warning and has no effect.
 - A missing destination container is an error rather than being created
   silently; `--create-container` opts in. Containers behave more like a mount
   point than a directory, so creating one is not something to do by accident.
