@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/uri"
@@ -146,7 +147,7 @@ func (a *splitAccount) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeXML(w, a.flatXML(prefix, marker))
 		return
 	}
-	writeXML(w, a.hierarchyXML(prefix))
+	writeXML(w, a.hierarchyXML(prefix, marker))
 }
 
 // matching is the window of names a request asks about.
@@ -177,7 +178,7 @@ func (a *splitAccount) flatXML(prefix, marker string) string {
 	return b.String()
 }
 
-func (a *splitAccount) hierarchyXML(prefix string) string {
+func (a *splitAccount) hierarchyXML(prefix, marker string) string {
 	seen := map[string]bool{}
 	var dirs, blobs []string
 	for _, n := range a.matching(prefix, "") {
@@ -194,14 +195,55 @@ func (a *splitAccount) hierarchyXML(prefix string) string {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="utf-8"?>` +
 		`<EnumerationResults ContainerName="c000"><Blobs>`)
-	for _, d := range dirs {
-		fmt.Fprintf(&b, `<BlobPrefix><Name>%s</Name></BlobPrefix>`, d)
+	units := append(dirs, blobs...)
+	slices.Sort(units)
+	units = slices.DeleteFunc(units, func(s string) bool { return s <= marker })
+	next := ""
+	if len(units) > a.pageSize {
+		units = units[:a.pageSize]
+		next = units[len(units)-1]
 	}
-	for _, n := range blobs {
-		b.WriteString(blobXML(n))
+	for _, n := range units {
+		if seen[n] {
+			fmt.Fprintf(&b, `<BlobPrefix><Name>%s</Name></BlobPrefix>`, n)
+		} else {
+			b.WriteString(blobXML(n))
+		}
 	}
-	b.WriteString(`</Blobs><NextMarker/></EnumerationResults>`)
+	fmt.Fprintf(&b, `</Blobs><NextMarker>%s</NextMarker></EnumerationResults>`, next)
 	return b.String()
+}
+
+func TestIncompleteSplitInventoryFallsBackWithoutLosingNames(t *testing.T) {
+	var names []string
+	for i := range maxSplitUnits + 500 {
+		names = append(names, fmt.Sprintf("a%05d/file", i))
+	}
+	names = append(names, "z-last/file")
+	acct := &splitAccount{names: names, pageSize: 500}
+	got := acct.walk(t, 64)
+	slices.Sort(got)
+	if !slices.Equal(got, names) {
+		t.Fatalf("walked %d of %d names; first difference at %d", len(got), len(names), firstDiff(got, names))
+	}
+	if acct.hierarchy == 0 {
+		t.Fatal("test never exercised the split inventory")
+	}
+}
+
+func TestSplitPrefixesContainWholeUnicodeCharacters(t *testing.T) {
+	units := []string{"a/a", "a/b", "é/a", "é/b", "ê/a", "ê/b", "界/a", "界/b", "🌍/a", "🌎/a"}
+	slices.Sort(units)
+	for _, ways := range []int{2, 4, 8, 16} {
+		var prefixes []string
+		for _, r := range splitUnits("", units, ways) {
+			if !utf8.ValidString(r.prefix) {
+				t.Fatalf("invalid UTF-8 prefix %q", r.prefix)
+			}
+			prefixes = append(prefixes, r.prefix)
+		}
+		assertCovers(t, prefixes, units)
+	}
 }
 
 func blobXML(name string) string {

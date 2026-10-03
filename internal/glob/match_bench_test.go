@@ -1,6 +1,9 @@
 package glob
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Only a pattern that can reach the same position by more than one route needs
 // the memo; the common single-wildcard patterns are matched without allocating.
@@ -19,6 +22,19 @@ func TestBacktracksOnlyWhenNeeded(t *testing.T) {
 		p := MustCompile(pat)
 		if got := p.Segs[0].seq.backtracks; got != want {
 			t.Errorf("%q: backtracks = %v, want %v", pat, got, want)
+		}
+	}
+}
+
+// Repeated globstars used to explore every way to divide the path before
+// discovering that its last component could not match.
+func BenchmarkGlobstarNoMatch(b *testing.B) {
+	p := MustCompile(strings.Repeat("**/a/", 6) + "missing")
+	name := strings.Repeat("a/", 18) + "leaf"
+	b.ReportAllocs()
+	for b.Loop() {
+		if p.Match(name) {
+			b.Fatal("matched a missing component")
 		}
 	}
 }

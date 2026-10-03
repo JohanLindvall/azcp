@@ -126,7 +126,7 @@ func (e *Engine) compressLocal(ctx context.Context, t *task, pt *progress.Task) 
 	if e.opt.NoClobber {
 		flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
 	}
-	f, err := e.openDest(t, flags, t.src.Mode.Perm())
+	f, err := e.openDest(t, flags, e.opt.CreationMode(t.src.Mode))
 	if err != nil {
 		return err
 	}

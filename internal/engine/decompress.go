@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/JohanLindvall/azcp/internal/codec"
+	"github.com/JohanLindvall/azcp/internal/store/local"
 )
 
 // A blob written by a web pipeline is often stored already compressed, with
@@ -50,8 +51,8 @@ func decompressTo(ctx context.Context, path, encoding, final string) (string, er
 		return path, fmt.Errorf("cannot decompress %s: %w", path, err)
 	}
 
-	// Written beside the destination and renamed over it, so an interrupted
-	// expansion cannot leave a half-expanded file in place of the real one.
+	// Finish decoding before rewriting the destination, so a corrupt stream
+	// leaves the compressed data available for diagnosis.
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".azcp-decompress-*")
 	if err != nil {
 		r.Close()
@@ -80,6 +81,13 @@ func decompressTo(ctx context.Context, path, encoding, final string) (string, er
 	if tmpErr != nil {
 		os.Remove(tmpName)
 		return path, tmpErr
+	}
+	if final == path {
+		// A copy onto an existing file keeps that file's identity, including
+		// every hard link and any symlink through which it was opened.
+		defer os.Remove(tmpName)
+		_, err := local.CopyFile(ctx, tmpName, path, local.CopyOptions{Mode: info.Mode().Perm()})
+		return final, err
 	}
 
 	if err := os.Rename(tmpName, final); err != nil {

@@ -222,3 +222,24 @@ func TestWalkStopsWhenTheCallerDoes(t *testing.T) {
 		t.Fatalf("walk returned %v, want the caller's own error", err)
 	}
 }
+
+func TestWalkDoesNotReplayAnAlreadyEmittedPage(t *testing.T) {
+	var s *Store
+	requests := 0
+	s, u := transferServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Query().Get("marker") == "" {
+			writeXML(w, `<EnumerationResults><Blobs>`+blobXML("file")+`</Blobs><NextMarker>next</NextMarker></EnumerationResults>`)
+			return
+		}
+		// A concurrent transfer changed credentials while this walk was
+		// consuming a later page. Replaying page one would queue it twice.
+		s.authGen.Add(1)
+		refuse(w, http.StatusForbidden, "AuthorizationPermissionMismatch")
+	})
+	seen := 0
+	err := s.WalkAll(context.Background(), u.WithPathPart("c"), func(_ *uri.URL, err error) error { return err }, func(*store.Node) error { seen++; return nil })
+	if err == nil || seen != 1 || requests != 2 {
+		t.Fatalf("walk: %v; %d emissions, %d requests", err, seen, requests)
+	}
+}

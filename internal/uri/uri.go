@@ -116,6 +116,11 @@ func Parse(s string, opt Options) (*URL, error) {
 		return nil, fmt.Errorf("%s: missing storage account", s)
 	}
 	u.TrailingSlash = strings.HasSuffix(pathPart, "/")
+	// A literal final slash requests a directory; an encoded slash belongs
+	// to the blob name. Decode only after removing that syntax marker.
+	if u.TrailingSlash {
+		pathPart = strings.TrimSuffix(pathPart, "/")
+	}
 
 	suffix := opt.EndpointSuffix
 	if suffix == "" {
@@ -151,7 +156,6 @@ func Parse(s string, opt Options) (*URL, error) {
 		pathPart = decoded
 	}
 	u.Container, u.Key = splitFirst(pathPart)
-	u.Key = strings.Trim(u.Key, "/")
 	return u, nil
 }
 
@@ -200,13 +204,21 @@ func (u *URL) WithPathPart(p string) *URL {
 		return &c
 	}
 	c.Container, c.Key = splitFirst(strings.TrimPrefix(p, "/"))
-	c.Key = strings.Trim(c.Key, "/")
 	c.raw = c.String()
 	return &c
 }
 
 // Join appends path elements.
 func (u *URL) Join(elems ...string) *URL {
+	if u.IsRemote() {
+		// Blob keys are exact names: an empty component or trailing slash
+		// must not alias a different object by being cleaned away.
+		parts := elems
+		if base := u.PathPart(); base != "" {
+			parts = append([]string{base}, elems...)
+		}
+		return u.WithPathPart(strings.Join(parts, "/"))
+	}
 	clean := make([]string, 0, len(elems))
 	for _, e := range elems {
 		if e = strings.Trim(e, "/"); e != "" {
@@ -217,14 +229,7 @@ func (u *URL) Join(elems ...string) *URL {
 		return u.WithPathPart(u.PathPart())
 	}
 	base := u.PathPart()
-	if !u.IsRemote() {
-		// Preserve a local path's exact spelling ("." , "..", leading "/").
-		return u.WithPathPart(path.Join(append([]string{base}, clean...)...))
-	}
-	if base == "" {
-		return u.WithPathPart(strings.Join(clean, "/"))
-	}
-	return u.WithPathPart(strings.TrimRight(base, "/") + "/" + strings.Join(clean, "/"))
+	return u.WithPathPart(path.Join(append([]string{base}, clean...)...))
 }
 
 // Base returns the last path element, which is what cp appends to a directory
@@ -235,6 +240,10 @@ func (u *URL) Join(elems ...string) *URL {
 // it somewhere, and the account is the thing being copied.
 func (u *URL) Base() string {
 	p := strings.TrimRight(u.PathPart(), "/")
+	tail := ""
+	if u.IsRemote() {
+		tail = u.PathPart()[len(p):]
+	}
 	if p == "" {
 		if u.IsRemote() {
 			return u.Account
@@ -242,14 +251,17 @@ func (u *URL) Base() string {
 		return ""
 	}
 	if i := strings.LastIndexByte(p, '/'); i >= 0 {
-		return p[i+1:]
+		return p[i+1:] + tail
 	}
-	return p
+	return p + tail
 }
 
 // Dir returns the location's parent.
 func (u *URL) Dir() *URL {
-	p := strings.TrimRight(u.PathPart(), "/")
+	p := u.PathPart()
+	if !u.IsRemote() {
+		p = strings.TrimRight(p, "/")
+	}
 	i := strings.LastIndexByte(p, '/')
 	if i < 0 {
 		if u.IsRemote() {

@@ -203,6 +203,28 @@ func TestIndexReadsOnceAndToleratesMissing(t *testing.T) {
 	}
 }
 
+func TestIndexAndStatRejectDanglingDestinationLinks(t *testing.T) {
+	d := t.TempDir()
+	write(t, filepath.Join(d, "src"), "contents")
+	if err := os.Symlink("missing", filepath.Join(d, "dst")); err != nil {
+		t.Skip(err)
+	}
+	for _, flag := range []string{"-n", "--update=none", "-u"} {
+		e := newEngine(t, flag, filepath.Join(d, "src"), filepath.Join(d, "dst"))
+		src, err := e.local.Stat(context.Background(), mustURL(t, filepath.Join(d, "src")), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dst := mustURL(t, filepath.Join(d, "dst"))
+		_, _, indexed := e.weighDestination(context.Background(), src, dst)
+		e.destIdx = nil
+		_, _, statted := e.weighDestination(context.Background(), src, dst)
+		if indexed == nil || fmt.Sprint(indexed) != fmt.Sprint(statted) {
+			t.Fatalf("%s: indexed %v, statted %v", flag, indexed, statted)
+		}
+	}
+}
+
 // Eviction bounds the memory, and a directory dropped and asked about again
 // must answer the same way — from a fresh listing, not from nothing.
 func TestIndexEvictsAndStaysCorrect(t *testing.T) {

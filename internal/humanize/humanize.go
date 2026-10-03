@@ -18,19 +18,20 @@ var binaryUnits = [...]string{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
 
 // Bytes renders n as an IEC size with three significant digits, e.g. "9.53 MiB".
 func Bytes(n int64) string {
-	if n < 0 {
-		return "-" + Bytes(-n)
-	}
-	if n < 1024 {
+	if n > -1024 && n < 1024 {
 		return strconv.FormatInt(n, 10) + " B"
 	}
-	val := float64(n)
+	sign := ""
+	if n < 0 {
+		sign = "-"
+	}
+	val := math.Abs(float64(n))
 	i := 0
 	for val >= 1024 && i < len(binaryUnits)-1 {
 		val /= 1024
 		i++
 	}
-	return trimNum(val) + " " + binaryUnits[i]
+	return sign + trimNum(val) + " " + binaryUnits[i]
 }
 
 // Rate renders a transfer rate, e.g. "112 MiB/s". A non-positive or
@@ -64,7 +65,12 @@ func trimNum(v float64) string {
 // "2h04m", "3d01h". Sub-second values render as milliseconds.
 func Duration(d time.Duration) string {
 	if d < 0 {
-		d = -d
+		// Saturating the unrepresentable magnitude loses one nanosecond,
+		// well below the precision of this display.
+		d = -(d + 1)
+		if d < time.Duration(math.MaxInt64) {
+			d++
+		}
 	}
 	switch {
 	case d > 0 && d < time.Millisecond:

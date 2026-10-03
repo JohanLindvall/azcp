@@ -94,11 +94,11 @@ const (
 // messages list them.
 var (
 	reflinkModes = []choice[local.Reflink]{
-		{"always", local.ReflinkAlways}, {"auto", local.ReflinkAuto}, {"never", local.ReflinkNever}}
+		{"auto", local.ReflinkAuto}, {"always", local.ReflinkAlways}, {"never", local.ReflinkNever}}
 	sparseModes = []choice[local.Sparse]{
-		{"always", local.SparseAlways}, {"auto", local.SparseAuto}, {"never", local.SparseNever}}
+		{"never", local.SparseNever}, {"auto", local.SparseAuto}, {"always", local.SparseAlways}}
 	updateModes = []choice[Update]{
-		{"all", UpdateAll}, {"none", UpdateNone}, {"none-fail", UpdateNoneFail}, {"older", UpdateOlder}}
+		{"all", UpdateAll}, {"none", UpdateNone}, {"older", UpdateOlder}}
 	outputModes   = []choice[Output]{{"text", OutputText}, {"json", OutputJSON}}
 	globModes     = []choice[GlobMode]{{"auto", GlobAuto}, {"always", GlobAlways}, {"never", GlobNever}}
 	progressModes = []choice[progress.Mode]{
@@ -147,6 +147,7 @@ type Options struct {
 	CopyContents         bool
 	AttributesOnly       bool
 	Backup               Backup
+	backupSet            bool
 	Suffix               string
 	Force                bool
 	Interactive          bool
@@ -154,6 +155,7 @@ type Options struct {
 	Update               Update
 	Deref                Deref
 	Preserve             local.Preserve
+	NoPreserveMode       bool
 	Parents              bool
 	Reflink              local.Reflink
 	RemoveDestination    bool
@@ -410,8 +412,14 @@ func Parse(argv []string) (*Options, error) {
 	// Applied in order, so that a later option overrides an earlier one the way
 	// cp behaves: "--preserve=all --no-preserve=ownership" drops ownership.
 	for _, f := range res.Flags {
+		if f.Spec.Long == "target-directory" && o.HasTargetDir {
+			return nil, errors.New("multiple target directories specified")
+		}
 		if err := o.apply(f); err != nil {
 			return nil, &UsageError{err}
+		}
+		if o.ShowHelp || o.ShowVersion {
+			return o, nil
 		}
 	}
 	if o.ShowHelp || o.ShowVersion {
@@ -447,6 +455,7 @@ func (o *Options) apply(f cpflags.Flag) error {
 	switch name {
 	// --- cp ----------------------------------------------------------------
 	case "archive", "a":
+		o.NoPreserveMode = false
 		o.Recursive = true
 		o.Deref = DerefNever
 		o.Preserve = local.Preserve{Mode: true, Ownership: true, Timestamps: true,
@@ -458,14 +467,14 @@ func (o *Options) apply(f cpflags.Flag) error {
 		if err != nil {
 			return err
 		}
-		o.Backup = mode
+		o.Backup, o.backupSet = mode, true
 	case "b":
 		// GNU's -b is --backup without the argument.
 		mode, err := parseBackup("", false)
 		if err != nil {
 			return err
 		}
-		o.Backup = mode
+		o.Backup, o.backupSet = mode, true
 	case "copy-contents":
 		// Only affects recursion into special files, which this tool skips
 		// rather than reads; accepted so existing command lines keep working.
@@ -496,6 +505,7 @@ func (o *Options) apply(f cpflags.Flag) error {
 	case "no-dereference", "P":
 		o.Deref = DerefNever
 	case "p":
+		o.NoPreserveMode = false
 		o.Preserve.Mode = true
 		o.Preserve.Ownership = true
 		o.Preserve.Timestamps = true
@@ -505,29 +515,43 @@ func (o *Options) apply(f cpflags.Flag) error {
 			list = "mode,ownership,timestamps"
 		}
 		explicit, err := applyPreserve(&o.Preserve, list, true)
+		if o.Preserve.Mode {
+			o.NoPreserveMode = false
+		}
 		o.ContextExplicit = o.ContextExplicit || explicit
 		return err
 	case "no-preserve":
 		_, err := applyPreserve(&o.Preserve, f.Value, false)
+		// --no-preserve=mode requests default creation permissions, not the
+		// source permissions used by an ordinary copy without -p.
+		for item := range strings.SplitSeq(f.Value, ",") {
+			if name, _ := chooseCP(f.Name(), item, preserveModes); name == "mode" || name == "all" {
+				o.NoPreserveMode = true
+			}
+		}
 		return err
 	case "parents":
 		o.Parents = true
 	case "recursive", "R", "r":
 		o.Recursive = true
 	case "reflink":
-		return setChoice(&o.Reflink, f, valueOr(f, "always"), reflinkModes)
+		return setCPChoice(&o.Reflink, f, valueOr(f, "always"), reflinkModes)
 	case "remove-destination":
 		o.RemoveDestination = true
 	case "sparse":
-		return setChoice(&o.Sparse, f, f.Value, sparseModes)
+		return setCPChoice(&o.Sparse, f, f.Value, sparseModes)
 	case "strip-trailing-slashes":
 		o.StripTrailingSlashes = true
 	case "symbolic-link", "s":
 		o.SymbolicLink = true
 	case "suffix", "S":
-		o.Suffix = f.Value
-		if o.Backup == BackupNone {
-			o.Backup = BackupExisting
+		o.Suffix = validBackupSuffix(f.Value)
+		if !o.backupSet {
+			mode, err := parseBackup("", false)
+			if err != nil {
+				return err
+			}
+			o.Backup = mode
 		}
 	case "target-directory", "t":
 		o.TargetDirectory = f.Value
@@ -537,7 +561,11 @@ func (o *Options) apply(f cpflags.Flag) error {
 	case "u":
 		o.Update = UpdateOlder
 	case "update":
-		return setChoice(&o.Update, f, valueOr(f, "older"), updateModes)
+		if f.Value == "none-fail" {
+			o.Update = UpdateNoneFail
+			return nil
+		}
+		return setCPChoice(&o.Update, f, valueOr(f, "older"), updateModes)
 	case "verbose", "v":
 		o.Verbose = true
 	case "one-file-system", "x":
@@ -677,7 +705,7 @@ func (o *Options) apply(f cpflags.Flag) error {
 }
 
 func valueOr(f cpflags.Flag, dflt string) string {
-	if f.HasValue && f.Value != "" {
+	if f.HasValue {
 		return f.Value
 	}
 	return dflt
@@ -730,9 +758,16 @@ func setSize(dst *int64, f cpflags.Flag) error {
 }
 
 func applyPreserve(p *local.Preserve, list string, on bool) (explicitContext bool, err error) {
+	flag := "--preserve"
+	if !on {
+		flag = "--no-preserve"
+	}
 	for item := range strings.SplitSeq(list, ",") {
-		switch strings.TrimSpace(item) {
-		case "":
+		item, err = chooseCP(flag, item, preserveModes)
+		if err != nil {
+			return false, err
+		}
+		switch item {
 		case "mode":
 			p.Mode = on
 		case "ownership":
@@ -749,9 +784,6 @@ func applyPreserve(p *local.Preserve, list string, on bool) (explicitContext boo
 		case "all":
 			*p = local.Preserve{Mode: on, Ownership: on, Timestamps: on,
 				Links: on, XAttr: on, Context: on}
-		default:
-			return false, fmt.Errorf("invalid attribute %q "+
-				"(want mode, ownership, timestamps, links, xattr, context or all)", item)
 		}
 	}
 	return explicitContext, nil
@@ -761,25 +793,14 @@ func parseBackup(v string, has bool) (Backup, error) {
 	if !has || v == "" {
 		v = os.Getenv("VERSION_CONTROL")
 	}
-	switch v {
-	case "", "existing", "nil":
+	if v == "" {
 		return BackupExisting, nil
-	case "none", "off":
-		return BackupNone, nil
-	case "numbered", "t":
-		return BackupNumbered, nil
-	case "simple", "never":
-		return BackupSimple, nil
 	}
-	return BackupNone, fmt.Errorf("invalid backup type %q "+
-		"(want none, numbered, existing or simple)", v)
+	return chooseCP("backup type", v, backupModes)
 }
 
 func backupSuffixDefault() string {
-	if s := os.Getenv("SIMPLE_BACKUP_SUFFIX"); s != "" {
-		return s
-	}
-	return "~"
+	return validBackupSuffix(os.Getenv("SIMPLE_BACKUP_SUFFIX"))
 }
 
 // stdin is what --files-from=- reads. Tests point it elsewhere.
@@ -845,6 +866,9 @@ func (o *Options) resolveOperands(operands []string) error {
 }
 
 func (o *Options) validate() error {
+	if o.Reflink == local.ReflinkAlways && o.Sparse != local.SparseAuto {
+		return usagef("--reflink can be used only with --sparse=auto")
+	}
 	if o.Benchmark && o.DryRun {
 		return usagef("--benchmark cannot be combined with --dry-run")
 	}
@@ -873,6 +897,15 @@ func (o *Options) validate() error {
 	if o.PartConcurrency < 1 {
 		o.PartConcurrency = 1
 	}
+	if o.PartConcurrency > math.MaxUint16 {
+		return usagef("--part-concurrency must not exceed %d", math.MaxUint16)
+	}
+	if o.Retries > math.MaxInt32 {
+		return usagef("--retries must not exceed %d", math.MaxInt32)
+	}
+	if o.Jobs > (math.MaxInt-64)/max(4, o.PartConcurrency) {
+		return usagef("--jobs and --part-concurrency exceed the supported request budget")
+	}
 	return nil
 }
 
@@ -886,9 +919,22 @@ func (o *Options) DerefSource() bool {
 		return false
 	default:
 		// cp follows links unless it is recursing.
-		return !o.Recursive
+		return o.HardLink || !o.Recursive
 	}
 }
 
 // DerefWalk reports whether links met during recursion should be resolved.
-func (o *Options) DerefWalk() bool { return o.Deref == DerefAlways }
+func (o *Options) DerefWalk() bool {
+	return o.Deref == DerefAlways || (o.Deref == DerefAuto && o.HardLink)
+}
+
+// CreationMode is filtered by the process umask when the destination is made.
+func (o *Options) CreationMode(source os.FileMode) os.FileMode {
+	if o.NoPreserveMode {
+		if source.IsDir() {
+			return 0o777
+		}
+		return 0o666
+	}
+	return source.Perm()
+}

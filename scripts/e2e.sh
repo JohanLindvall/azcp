@@ -190,6 +190,7 @@ ATTR="$WORK/attr"
 mkdir -p "$ATTR/src"
 echo mode > "$ATTR/src/mode.txt"; chmod 4750 "$ATTR/src/mode.txt"
 ln -s mode.txt "$ATTR/src/link.txt"
+ln -s $'../target\n雪' "$ATTR/src/encoded-link"
 touch -d '2021-06-15T10:20:30Z' "$ATTR/src/mode.txt" 2>/dev/null || true
 touch -h -d '2020-01-02T03:04:05Z' "$ATTR/src/link.txt"
 "$AZCP" -a "$ATTR/src" "$AZ/attrs" >/dev/null
@@ -201,6 +202,8 @@ check "-a preserves the mode through blob storage" \
                                    || bad "the symbolic link did not come back"
 check "-a preserves a symbolic link's own timestamp" \
   "$(stat -c '%Y' "$ATTR/back/attrs/link.txt")" "$(stat -c '%Y' "$ATTR/src/link.txt")"
+check "-a preserves symlink targets containing Unicode and controls" \
+  "$(readlink "$ATTR/back/attrs/encoded-link")" $'../target\n雪'
 
 # The same tree fetched without -a: --copy-metadata is what lets a blob that
 # records a symbolic link come back as one instead of as an empty file.
@@ -234,6 +237,20 @@ check "-n protects the expanded destination" "$(cat "$WORK/out")" "keep expanded
 check "--resume works with decompression" "$(cat "$WORK/resumed")" "compressed payload"
 [ ! -e "$WORK/resumed.azcp-part" ] && ok "decompression finalizes the resume record" \
                                       || bad "decompression left a resume record"
+
+# Expanding into an existing file must keep every alias attached to its data.
+for mode in stream resume; do
+  echo old > "$WORK/decode-$mode-target"
+  ln "$WORK/decode-$mode-target" "$WORK/decode-$mode-hardlink"
+  ln -s "$WORK/decode-$mode-target" "$WORK/decode-$mode-link"
+  flags=()
+  [ "$mode" != resume ] || flags+=(--resume)
+  "$AZCP" --decompress "${flags[@]}" "$AZ/page.gz" "$WORK/decode-$mode-link" >/dev/null
+  check "decompression keeps destination links ($mode)" \
+    "$(cat "$WORK/decode-$mode-hardlink")" "compressed payload"
+  [ -L "$WORK/decode-$mode-link" ] && ok "decompression retains the symbolic link ($mode)" \
+                                  || bad "decompression replaced the symbolic link ($mode)"
+done
 
 "$AZCP" --content-encoding=gzip "$WORK/page.gz" "$AZ/encoded/page.gz" >/dev/null
 mkdir -p "$WORK/expanded"
@@ -347,11 +364,34 @@ cmp -s "$SRC/big.bin" "$WORK/resume.bin" && ok "--resume completes a whole trans
                                     || ok "the resume record is cleaned up"
 
 echo partial > "$WORK/restart.txt"
-echo stale > "$WORK/restart.txt.azcp-part"
+echo 'azcp-resume stale' > "$WORK/restart.txt.azcp-part"
 "$AZCP" -n "$AZ/tree/file.txt" "$WORK/restart.txt" >/dev/null
 check "-n restarts an incomplete download without --resume" "$(cat "$WORK/restart.txt")" "hello"
 [ ! -e "$WORK/restart.txt.azcp-part" ] && ok "a restarted download clears the stale record" \
                                      || bad "a restarted download left its stale record"
+
+echo keep > "$WORK/sidecar.txt"
+echo unrelated > "$WORK/sidecar.txt.azcp-part"
+"$AZCP" -n --resume "$AZ/tree/file.txt" "$WORK/sidecar.txt" >/dev/null
+check "an unrelated sidecar cannot bypass -n" "$(cat "$WORK/sidecar.txt")" "keep"
+check "an unrelated sidecar remains untouched" "$(cat "$WORK/sidecar.txt.azcp-part")" "unrelated"
+
+# A downloaded blob name must never race with another download's record.
+mkdir -p "$WORK/resume-collision-src" "$WORK/resume-collision-dst"
+echo first > "$WORK/resume-collision-src/file"
+echo second > "$WORK/resume-collision-src/file.azcp-part"
+"$AZCP" -rT "$WORK/resume-collision-src" "$AZ/resume-collision" >/dev/null
+if "$AZCP" -rT --resume "$AZ/resume-collision" "$WORK/resume-collision-dst" >/dev/null 2>&1; then
+  bad "resume record collision was accepted"
+else
+  ok "resume record collision is rejected"
+fi
+
+# Flat listings and remote destinations must retain significant key slashes.
+"$AZCP" "$SRC/file.txt" "$AZ/exact-keys/a//file" >/dev/null
+"$AZCP" -rT "$AZ/exact-keys" "$AZ/exact-keys-copy" >/dev/null
+"$AZCP" "$AZ/exact-keys-copy/a//file" "$WORK/exact-key" >/dev/null
+check "remote tree copy keeps repeated key slashes" "$(cat "$WORK/exact-key")" "hello"
 
 # --- delete -----------------------------------------------------------------
 mkdir -p "$WORK/sync/keep"
@@ -374,6 +414,16 @@ mkdir -p "$WORK/sync-back"
 "$AZCP" -rT "$AZ/synced" "$WORK/sync-back" >/dev/null
 [ -d "$WORK/sync-back/vanish" ] && bad "--delete left an empty directory's marker behind" \
                                 || ok "--delete removes an empty directory's marker"
+
+# A prefix can contain another slash at its end; its marker needs one more.
+mkdir -p "$WORK/empty-source"
+"$AZCP" -rT "$WORK/empty-source" "$AZ/synced/repeated//" >/dev/null
+"$AZCP" -rT --delete "$WORK/sync" "$AZ/synced" >/dev/null
+if "$AZCP" -rT "$AZ/synced/repeated//" "$WORK/repeated-check" >/dev/null 2>&1; then
+  bad "--delete left a marker whose directory name ends in a slash"
+else
+  ok "--delete removes markers with repeated slashes"
+fi
 
 # --- machine-readable output ------------------------------------------------
 summary=$("$AZCP" --output=json "$SRC/file.txt" "$AZ/json.txt" 2>/dev/null | tail -1)

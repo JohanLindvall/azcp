@@ -4,6 +4,7 @@ import (
 	"context"
 	"iter"
 	"strings"
+	"sync"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 
@@ -17,25 +18,10 @@ import (
 func (s *Store) WalkAll(ctx context.Context, u *uri.URL,
 	onError func(*uri.URL, error) error, fn func(*store.Node) error) error {
 
-	// A walk streams results to fn, so it cannot simply be run twice. The
-	// sign-in retry covers the first listing request, which is where a
-	// rejected credential shows up; anything failing later has already
-	// produced output and is reported as it is.
-	first := true
-	return s.withSignIn(ctx, func() error {
-		if !first {
-			s.log.Debug("restarting the listing after signing in", "path", u.Display())
-		}
-		first = false
-		return s.walkAll(ctx, u, onError, fn)
-	})
-}
-
-func (s *Store) walkAll(ctx context.Context, u *uri.URL,
-	onError func(*uri.URL, error) error, fn func(*store.Node) error) error {
-
 	if u.Container == "" {
-		containers, err := s.listContainers(ctx, u)
+		containers, err := withSignInValue(ctx, s, func() ([]*store.Node, error) {
+			return s.listContainers(ctx, u)
+		})
 		if err != nil {
 			return err
 		}
@@ -79,7 +65,8 @@ func (s *Store) walkContainers(ctx context.Context, containers []*store.Node,
 	onError func(*uri.URL, error) error, fn func(*store.Node) error) error {
 
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	var wg sync.WaitGroup
+	defer func() { cancel(); wg.Wait() }()
 
 	type listing struct {
 		container *store.Node
@@ -93,7 +80,7 @@ func (s *Store) walkContainers(ctx context.Context, containers []*store.Node,
 	// finite on an account with a hundred thousand containers.
 	pending := make(chan *listing, s.listAhead())
 
-	go func() {
+	wg.Go(func() {
 		defer close(pending)
 		for _, c := range containers {
 			l := &listing{
@@ -106,7 +93,7 @@ func (s *Store) walkContainers(ctx context.Context, containers []*store.Node,
 			case <-ctx.Done():
 				return
 			}
-			go func(c *store.Node, l *listing) {
+			wg.Go(func() {
 				defer close(l.nodes)
 				l.err <- s.walkContainer(ctx, c.URL, func(n *store.Node) error {
 					select {
@@ -116,9 +103,9 @@ func (s *Store) walkContainers(ctx context.Context, containers []*store.Node,
 						return ctx.Err()
 					}
 				})
-			}(c, l)
+			})
 		}
-	}()
+	})
 
 	for l := range pending {
 		if err := fn(l.container); err != nil {
@@ -141,13 +128,30 @@ func (s *Store) walkContainers(ctx context.Context, containers []*store.Node,
 // walkContainer emits every blob under u, and the directories a filesystem
 // would have had on the way down to each.
 func (s *Store) walkContainer(ctx context.Context, u *uri.URL, fn func(*store.Node) error) error {
+	// Retrying an already consumed listing would replay overwrite decisions
+	// and queue concurrent writes to the same destinations. Only an attempt
+	// that has emitted nothing may restart after authentication changes.
+	emitted := false
+	for {
+		gen := s.authGen.Load()
+		err := s.walkContainerOnce(ctx, u, func(n *store.Node) error {
+			emitted = true
+			return fn(n)
+		})
+		if err == nil || emitted || !s.refreshAuth(ctx, gen, err) {
+			return s.explainAuth(err)
+		}
+	}
+}
+
+func (s *Store) walkContainerOnce(ctx context.Context, u *uri.URL, fn func(*store.Node) error) error {
 	cc, err := s.containerClient(ctx, u)
 	if err != nil {
 		return err
 	}
 	prefix := ""
 	if u.Key != "" {
-		prefix = strings.TrimSuffix(u.Key, "/") + "/"
+		prefix = u.Key + "/"
 	}
 	// Building the nodes is the listing goroutine's work, so a divided listing
 	// shares that out along with the waiting.

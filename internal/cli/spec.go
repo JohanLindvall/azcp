@@ -214,8 +214,8 @@ var specs = []cpflags.Spec{
 	{Long: "access-tier", Arg: cpflags.RequiredArg, Meta: "TIER",
 		Help: "set the blob access tier: Hot, Cool, Cold or Archive"},
 
-	{Long: "help", Arg: cpflags.NoArg, Help: "show this help and exit"},
-	{Long: "version", Arg: cpflags.NoArg, Help: "show version information and exit"},
+	{Long: "help", Arg: cpflags.NoArg, Stop: true, Help: "show this help and exit"},
+	{Long: "version", Arg: cpflags.NoArg, Stop: true, Help: "show version information and exit"},
 }
 
 const usageHead = `Usage: azcp [OPTION]... [-T] SOURCE DEST

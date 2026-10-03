@@ -152,32 +152,36 @@ func (p *Pattern) Match(path string) bool {
 // element `from`, match. It is the entry point used by walkers that have
 // already consumed the literal prefix.
 func (p *Pattern) MatchFrom(from int, path string) bool {
-	if from > len(p.Segs) {
+	if from < 0 || from > len(p.Segs) {
 		return false
 	}
 	return matchSegs(p.Segs, from, SplitPath(path), 0)
 }
 
 func matchSegs(segs []Segment, si int, parts []string, pi int) bool {
-	for si < len(segs) {
-		seg := segs[si]
-		if seg.Kind == SegDoubleStar {
-			// "**" absorbs zero or more elements; try every split. Trailing
-			// "**" segments collapse, so this stays linear in practice.
-			for k := pi; k <= len(parts); k++ {
-				if matchSegs(segs, si+1, parts, k) {
-					return true
-				}
-			}
+	// Only the most recent ** needs to grow on a mismatch. Recursing over
+	// every split revisits the same states exponentially on patterns such as
+	// **/a/**/a/**/missing, even though the answer is simply false.
+	star, consumed := -1, pi
+	for pi < len(parts) {
+		switch {
+		case si < len(segs) && segs[si].Kind == SegDoubleStar:
+			star, consumed = si, pi
+			si++
+		case si < len(segs) && segs[si].Match(parts[pi]):
+			si++
+			pi++
+		case star >= 0:
+			consumed++
+			pi, si = consumed, star+1
+		default:
 			return false
 		}
-		if pi >= len(parts) || !seg.Match(parts[pi]) {
-			return false
-		}
-		si++
-		pi++
 	}
-	return pi == len(parts)
+	for si < len(segs) && segs[si].Kind == SegDoubleStar {
+		si++
+	}
+	return si == len(segs)
 }
 
 // SplitPath splits a "/"-separated path into elements, dropping empty elements

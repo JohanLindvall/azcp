@@ -146,6 +146,9 @@ type authenticator interface {
 // that can make a browser open or a code appear, which is what makes "at most
 // one prompt per run" checkable.
 func (c *Credentials) authenticate(ctx context.Context, a authenticator) (azidentity.AuthenticationRecord, error) {
+	if c.prompts != 0 {
+		return azidentity.AuthenticationRecord{}, errors.New("an interactive sign-in has already been attempted")
+	}
 	ctx, cancel := context.WithTimeout(ctx, interactiveTimeout)
 	defer cancel()
 	c.prompts++

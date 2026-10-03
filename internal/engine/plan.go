@@ -43,7 +43,7 @@ func (e *Engine) scan(ctx context.Context, out chan<- *task) error {
 	}
 	// One unrenamed source tree cannot collide with itself. Avoid retaining
 	// per-file bookkeeping on the common large recursive copy.
-	if len(sources) == 1 && !e.opt.Decompress && !e.opt.Compress.On() {
+	if len(sources) == 1 && !e.opt.Decompress && !e.opt.Compress.On() && !e.opt.Resume {
 		e.scheduled = nil
 	}
 
@@ -52,6 +52,13 @@ func (e *Engine) scan(ctx context.Context, out chan<- *task) error {
 		return fmt.Errorf("cannot access %s: %s", quote(dest.Display()), brief(destErr))
 	}
 	destIsDir, err := e.destIsDirectory(dest, destNode, len(sources))
+	// A single recursive source can create the directory named by DEST/.
+	// The slash does not make that nonexistent directory a containing target.
+	if err != nil && destNode == nil && !dest.IsRemote() && dest.TrailingSlash &&
+		len(sources) == 1 && sources[0].IsDir() && e.opt.Recursive &&
+		!e.opt.HasTargetDir && !e.opt.Parents {
+		destIsDir, err = false, nil
+	}
 	if err != nil {
 		return err
 	}
@@ -132,7 +139,12 @@ func (e *Engine) braceExpand(ctx context.Context, arg string) []string {
 			}
 		}
 	}
-	return glob.ExpandBraces(arg)
+	expansions, err := glob.ExpandBraces(arg)
+	if err != nil {
+		e.fail("cannot expand %s: %s", quote(arg), err)
+		return nil
+	}
+	return expansions
 }
 
 // resolveSource stats or expands one source location.
@@ -254,8 +266,7 @@ func (e *Engine) targetFor(ctx context.Context, dest *uri.URL, destIsDir bool, s
 		target := dest.Join(parts...)
 		// Recreate the intermediate directories the source path implies.
 		if len(parts) > 1 && !e.opt.DryRun {
-			parent := dest.Join(parts[:len(parts)-1]...)
-			if err := e.storeFor(parent).MkdirAll(ctx, parent, 0o755); err != nil {
+			if err := e.prepareParents(ctx, src, dest, parts[:len(parts)-1]); err != nil {
 				return nil, err
 			}
 		}
@@ -323,6 +334,17 @@ func (e *Engine) plan(ctx context.Context, src *store.Node, dst *uri.URL,
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// A symlink is resolved here rather than at transfer time, so everything
+	// downstream, including file filters, sees what it is actually copying.
+	if src.IsSymlink() && e.derefAt(top) {
+		resolved, err := e.storeFor(src.URL).Stat(ctx, src.URL, true)
+		if err != nil || resolved.IsSymlink() {
+			// Nothing at the other end: cp reports the link as unstattable.
+			e.fail("cannot stat %s: No such file or directory", quote(src.URL.Display()))
+			return nil
+		}
+		src = resolved
+	}
 	// A named source is filtered too, so --exclude means the same thing
 	// whether a file was reached by recursion or spelled out.
 	if e.filter.active() && !src.IsDir() &&
@@ -332,19 +354,8 @@ func (e *Engine) plan(ctx context.Context, src *store.Node, dst *uri.URL,
 		e.markSkipped()
 		return nil
 	}
-	// A symlink is resolved here rather than at transfer time, so everything
-	// downstream sees the kind of thing it is actually copying.
 	if src.IsSymlink() {
-		if !e.derefAt(top) {
-			return e.planSymlink(ctx, src, dst, out, display)
-		}
-		resolved, err := e.storeFor(src.URL).Stat(ctx, src.URL, true)
-		if err != nil || resolved.IsSymlink() {
-			// Nothing at the other end: cp reports the link as unstattable.
-			e.fail("cannot stat %s: No such file or directory", quote(src.URL.Display()))
-			return nil
-		}
-		src = resolved
+		return e.planSymlink(ctx, src, dst, out, display)
 	}
 
 	switch {
@@ -383,7 +394,7 @@ func (e *Engine) derefAt(top bool) bool {
 	case cli.DerefCmdline:
 		return top
 	default:
-		return !e.opt.Recursive
+		return e.opt.HardLink || !e.opt.Recursive
 	}
 }
 
@@ -483,9 +494,8 @@ func (e *Engine) recordKept(dst *uri.URL) {
 		return
 	}
 	for _, root := range e.pruner.roots {
-		if r, ok := store.RelUnder(root.PathPart(), dst.PathPart()); ok && r != "" {
+		if r, ok := relativeDestination(root, dst); ok && r != "" {
 			e.pruner.wrote(root, r)
-			return
 		}
 	}
 }
@@ -522,7 +532,7 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 
 	base := src.URL.PathPart()
 	if base != "" {
-		base = strings.TrimSuffix(base, "/") + "/"
+		base += "/"
 	}
 	made := map[string]bool{}
 	// Tracked only when the destination is blob storage, which needs a marker
@@ -555,7 +565,7 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 			}
 		}
 		filterRel := joinRel(rootRel, rel)
-		target := dst.Join(strings.Split(rel, "/")...)
+		target := dst.Join(rel)
 		e.recordKept(e.fileDestination(n, target))
 		if n.IsDir() {
 			if !e.filter.descend(filterRel) {
@@ -687,6 +697,17 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 
 	dst = e.fileDestination(src, dst)
 	e.prog.Saw(1)
+	var err error
+	if !dst.IsRemote() {
+		src, err = e.refreshLocalSource(ctx, src)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			e.fail("%v", err)
+			return nil
+		}
+	}
 	if proceed, err := e.reserveDestination(ctx, src, dst); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -720,9 +741,18 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 		return nil
 	}
 	dst = t.dst
-	if e.scheduled != nil {
+	if err := e.awaitLocalAccess(ctx, t); err != nil {
+		return err
+	}
+	if e.scheduled != nil || t.destID != nil || t.sourceID != nil {
 		t.done = make(chan struct{})
+	}
+	e.recordLocalAccess(t)
+	if e.scheduled != nil {
 		e.scheduled[destinationKey(dst)] = plannedCopy{source: destinationKey(src.URL), done: t.done}
+		if e.reservesResumeRecord(src, dst) {
+			e.scheduled[destinationKey(dst)+azure.ResumeSuffix] = plannedCopy{sidecar: true}
+		}
 	}
 	e.destIdx.planned(dst)
 
@@ -795,8 +825,43 @@ func (e *Engine) weighDestination(ctx context.Context, src *store.Node,
 	}
 
 	dn, err := e.storeFor(dst).Stat(ctx, dst, false)
+	if err == nil && !dst.IsRemote() && len(e.existingDests) > 0 {
+		info := dn.Info
+		if dn.IsSymlink() {
+			info, _ = os.Stat(dst.Path)
+		}
+		if info != nil {
+			if id, _, ok := local.IDOf(dst.Path, info); ok {
+				waited, werr := e.awaitDestination(ctx, id)
+				if werr != nil {
+					return false, "", werr
+				}
+				if waited {
+					// -u, -i and backups must see the preceding copy's result.
+					dn, err = e.storeFor(dst).Stat(ctx, dst, false)
+				}
+			}
+		}
+	}
 	switch {
 	case err == nil:
+		if !dst.IsRemote() && dn.IsSymlink() && e.followsDestLink(src) {
+			if _, err := os.Stat(dst.Path); os.IsNotExist(err) {
+				if _, posix := os.LookupEnv("POSIXLY_CORRECT"); !posix {
+					return false, "", plainf("not writing through dangling symlink %s", quote(dst.Display()))
+				}
+				return true, "", nil
+			} else if err != nil {
+				return false, "", fmt.Errorf("cannot access %s: %s", quote(dst.Display()), brief(err))
+			}
+			if e.opt.Update == cli.UpdateOlder {
+				// -u compares the file being written, not the link's own time.
+				dn, err = e.local.Stat(ctx, dst, true)
+				if err != nil {
+					return false, "", err
+				}
+			}
+		}
 		return e.decideOverwrite(src, dn)
 	case store.IsNotExist(err):
 		return true, "", nil
@@ -843,6 +908,27 @@ func (e *Engine) decideOverwrite(src, dst *store.Node) (bool, string, error) {
 	}
 	if e.opt.NoClobber {
 		return false, "", nil
+	}
+	if e.opt.Update != cli.UpdateNone && e.opt.Update != cli.UpdateNoneFail &&
+		!src.URL.IsRemote() && !dst.URL.IsRemote() && src.Info != nil && dst.Info != nil &&
+		os.SameFile(src.Info, dst.Info) {
+		// cp rejects a same-file copy before -u can skip it or -i can ask.
+		// Reuse the identity guard's exceptions for links, unlink and -bf.
+		var backup string
+		if e.opt.Backup != cli.BackupNone {
+			var err error
+			backup, err = e.backupName(dst.URL.Path)
+			if err != nil {
+				return false, "", err
+			}
+		}
+		t := &task{src: src, dst: dst.URL, backup: backup, removeFirst: e.opt.RemoveDestination}
+		if err := e.prepareLocalTask(t); err != nil {
+			return false, "", err
+		}
+		if t.dst != dst.URL {
+			return true, backup, nil // -bf copies onto the backup name
+		}
 	}
 	switch e.opt.Update {
 	case cli.UpdateNone:
@@ -892,7 +978,7 @@ func (e *Engine) promptOverwrite(dst *uri.URL) (bool, error) {
 	var line string
 	var readErr error
 	logx.WithTerminal(func() {
-		fmt.Fprintf(os.Stderr, "%s: overwrite %s? ", cli.Program, quote(dst.Display()))
+		fmt.Fprint(os.Stderr, logx.Redact(fmt.Sprintf("%s: overwrite %s? ", cli.Program, quote(dst.Display()))))
 		line, readErr = e.promptIn.ReadString('\n')
 	})
 	if readErr != nil {

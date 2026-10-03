@@ -9,7 +9,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 
@@ -177,12 +176,22 @@ func (e *Engine) download(ctx context.Context, t *task, pt *progress.Task) error
 	}
 	defer f.Close()
 
-	if info, err := f.Stat(); err == nil && !info.Mode().IsRegular() && !e.opt.AttributesOnly {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	decodeStream := e.opt.Decompress && !e.opt.Resume && decompressible(t.src.ContentEncoding)
+	if !e.opt.AttributesOnly && (!info.Mode().IsRegular() || decodeStream) {
 		if err := e.downloadStream(ctx, t, f, pt); err != nil {
 			return err
 		}
 		if err := f.Close(); err != nil {
 			return writeError(t, err)
+		}
+		if info.Mode().IsRegular() {
+			if err := azure.RemoveResumeRecord(t.dst.Path); err != nil {
+				return err
+			}
 		}
 		e.restoreAttrs(t)
 		return nil
@@ -200,14 +209,15 @@ func (e *Engine) download(ctx context.Context, t *task, pt *progress.Task) error
 		return fmt.Errorf("cannot write %s: %w", quote(t.dst.Display()), err)
 	}
 	if e.opt.Decompress && !e.opt.AttributesOnly && decompressible(t.src.ContentEncoding) {
+		if e.opt.Resume {
+			// Once expansion starts these compressed ranges must never be
+			// trusted again, even if rewriting the destination is interrupted.
+			if err := azure.ResetResumeRecord(t.dst.Path); err != nil {
+				return err
+			}
+		}
 		_, derr := decompressTo(ctx, t.dst.Path, t.src.ContentEncoding, t.dst.Path)
 		if derr != nil {
-			if e.opt.Resume {
-				// No completed compressed ranges can vouch for a failed decode.
-				if err := os.WriteFile(t.dst.Path+azure.ResumeSuffix, nil, 0o600); err != nil {
-					e.log.Warn("cannot reset the resume record", "path", t.dst.Display(), "error", err)
-				}
-			}
 			return derr
 		}
 		if e.opt.Resume {
@@ -264,7 +274,7 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 
 	switch {
 	case e.opt.SymbolicLink:
-		return e.replace(t, func() error {
+		err := e.replace(t, func() error {
 			if !filepath.IsAbs(srcPath) {
 				cwd, err := os.Stat(".")
 				if err != nil {
@@ -280,8 +290,22 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 			}
 			return os.Symlink(srcPath, dstPath)
 		})
-	case e.opt.HardLink && !t.src.IsSymlink():
-		return e.replace(t, func() error { return os.Link(srcPath, dstPath) })
+		return linkError(t, "symbolic", err)
+	case e.opt.HardLink:
+		linkPath := srcPath
+		if !t.src.IsSymlink() {
+			info, err := os.Lstat(srcPath)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				linkPath, err = filepath.EvalSymlinks(srcPath)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		return linkError(t, "hard", e.replace(t, func() error { return os.Link(linkPath, dstPath) }))
 	case t.src.IsSymlink():
 		return e.replace(t, func() error { return local.CopySymlink(srcPath, dstPath) })
 	}
@@ -301,7 +325,7 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 
 	switch {
 	case e.opt.AttributesOnly:
-		f, err := e.openDest(t, os.O_WRONLY|os.O_CREATE, t.src.Mode.Perm())
+		f, err := e.openDest(t, os.O_WRONLY|os.O_CREATE, e.opt.CreationMode(t.src.Mode))
 		if err != nil {
 			return err
 		}
@@ -316,9 +340,9 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 		opts := local.CopyOptions{
 			Reflink:  e.opt.Reflink,
 			Sparse:   e.opt.Sparse,
-			Mode:     t.src.Mode.Perm(),
+			Mode:     e.opt.CreationMode(t.src.Mode),
 			Progress: pt.Add,
-			Excl:     e.opt.NoClobber,
+			Excl:     e.opt.NoClobber && !t.followDangling,
 		}
 		written, err := local.CopyFile(ctx, srcPath, dstPath, opts)
 		if err != nil {
@@ -347,6 +371,23 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 	return nil
 }
 
+func linkError(t *task, kind string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var plain *plainError
+	if errors.As(err, &plain) {
+		return err
+	}
+	cause := err
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		cause = linkErr.Err
+	}
+	return &plainError{msg: fmt.Sprintf("cannot create %s link %s to %s: %s",
+		kind, quote(t.dst.Display()), quote(t.src.URL.Display()), sentence(cause)), cause: err}
+}
+
 // linkFuture is the promise the first copy of a hard-linked file makes to the
 // others: done closes once the copy has settled, and path names the file to
 // link to when ok says it landed.
@@ -367,7 +408,7 @@ type linkClaim struct {
 // a claim when this task is the one that must copy the data, and neither for
 // a file with a single name.
 func (e *Engine) awaitHardLink(ctx context.Context, t *task) (linked bool, claim *linkClaim, err error) {
-	info, statErr := os.Lstat(t.src.URL.Path)
+	info, statErr := sourceInfo(t.src)
 	if statErr != nil {
 		return false, nil, nil // let the copy itself report the problem
 	}
@@ -430,7 +471,8 @@ func (e *Engine) replace(t *task, fn func() error) error {
 		e.applyAttrs(t)
 		return nil
 	}
-	if !errors.Is(err, os.ErrExist) || e.opt.NoClobber {
+	if !errors.Is(err, os.ErrExist) || e.opt.NoClobber ||
+		((e.opt.AttributesOnly || (e.opt.HardLink && !t.src.IsSymlink() && !e.opt.Interactive) || e.opt.SymbolicLink) && !e.opt.Force) {
 		return err
 	}
 	if rmErr := os.Remove(t.dst.Path); rmErr != nil {
@@ -446,6 +488,9 @@ func (e *Engine) replace(t *task, fn func() error) error {
 // openDest opens a local destination, applying -f by clearing an unwritable
 // file out of the way.
 func (e *Engine) openDest(t *task, flags int, mode os.FileMode) (*os.File, error) {
+	if t.followDangling {
+		flags &^= os.O_EXCL
+	}
 	f, err := os.OpenFile(t.dst.Path, flags, mode)
 	if err == nil {
 		return f, nil
@@ -551,13 +596,13 @@ func (e *Engine) applyAttrs(t *task) {
 	if !e.opt.Preserve.Any() || t.dst.IsRemote() || t.src.URL.IsRemote() {
 		return
 	}
-	info, err := sourceInfo(t.src)
+	info, err := sourceAttrs(t.src)
 	if err != nil {
 		e.log.Warn("cannot read source attributes",
 			"path", t.src.URL.Display(), "error", err)
 		return
 	}
-	errs := local.ApplyAttrs(t.src.URL.Path, t.dst.Path, info, e.opt.Preserve, t.src.IsSymlink())
+	errs := local.ApplyAttrs(t.src.URL.Path, t.dst.Path, info, e.opt.Preserve, t.src.IsSymlink() || e.opt.SymbolicLink)
 	for _, err := range errs {
 		e.log.Warn("cannot preserve attribute",
 			"path", t.dst.Display(), "error", err)
@@ -626,46 +671,4 @@ func (e *Engine) backupName(path string) (string, error) {
 		return path + e.opt.Suffix, nil
 	}
 	return "", errors.New("no backup requested")
-}
-
-func hasNumberedBackups(path string) bool {
-	n, err := highestNumberedBackup(path)
-	return err == nil && n > 0
-}
-
-func nextNumbered(path string) (string, error) {
-	n, err := highestNumberedBackup(path)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%s.~%d~", path, n+1), nil
-}
-
-// highestNumberedBackup reads the directory and matches names by hand rather
-// than globbing for them: the path being backed up may itself contain glob
-// metacharacters ("report[1].pdf"), which filepath.Glob would interpret.
-func highestNumberedBackup(path string) (int, error) {
-	dir, base := filepath.Split(path)
-	if dir == "" {
-		dir = "."
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0, err
-	}
-	highest := 0
-	for _, e := range entries {
-		rest, ok := strings.CutPrefix(e.Name(), base+".~")
-		if !ok {
-			continue
-		}
-		num, ok := strings.CutSuffix(rest, "~")
-		if !ok {
-			continue
-		}
-		if n, err := strconv.Atoi(num); err == nil && n > highest {
-			highest = n
-		}
-	}
-	return highest, nil
 }

@@ -11,11 +11,18 @@ func TestBytes(t *testing.T) {
 		0: "0 B", 512: "512 B", 1024: "1.00 KiB", 1536: "1.50 KiB",
 		10 * 1024: "10.0 KiB", 999 * 1024: "999 KiB", 1 << 20: "1.00 MiB",
 		10_000_000: "9.54 MiB", 1 << 40: "1.00 TiB", -2048: "-2.00 KiB",
+		math.MinInt64: "-8.00 EiB",
 	}
 	for in, want := range cases {
 		if got := Bytes(in); got != want {
 			t.Errorf("Bytes(%d) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestMinimumDurationDoesNotWrap(t *testing.T) {
+	if got, want := Duration(time.Duration(math.MinInt64)), Duration(time.Duration(math.MaxInt64)); got != want {
+		t.Fatalf("minimum duration = %q, want %q", got, want)
 	}
 }
 

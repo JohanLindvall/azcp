@@ -115,6 +115,26 @@ func wantsDigest(blobMD5 []byte, mode MD5Check) bool {
 	return mode != MD5Off && len(blobMD5) > 0
 }
 
+// checkedReader validates a sequential source before publishing EOF. The
+// stream uploader commits only after EOF, so a mismatch leaves staged blocks
+// uncommitted instead of replacing the destination with corrupt data.
+type checkedReader struct {
+	io.Reader
+	sum   hash.Hash
+	check func([]byte) error
+}
+
+func (r *checkedReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.sum.Write(p[:n])
+	if errors.Is(err, io.EOF) {
+		if checkErr := r.check(r.sum.Sum(nil)); checkErr != nil {
+			return n, checkErr
+		}
+	}
+	return n, err
+}
+
 // checkDigest weighs got, the MD5 of what arrived, against the one the service
 // reported for the blob, as mode says to.
 func (s *Store) checkDigest(got, blobMD5 []byte, mode MD5Check, display string) error {

@@ -58,6 +58,7 @@ func (s *Store) node(u *uri.URL, fi fs.FileInfo) *store.Node {
 		Mode:    fi.Mode(),
 		ModTime: fi.ModTime(),
 		Sys:     fi.Sys(),
+		Info:    fi,
 	}
 	switch {
 	case fi.Mode()&fs.ModeSymlink != 0:

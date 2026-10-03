@@ -6,6 +6,7 @@
 package codec
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -182,8 +183,8 @@ func ByEncoding(encoding string) (Format, bool) {
 
 // NewReader returns a reader that expands the stream r, whose Content-Encoding
 // is encoding. "deflate" is ambiguous in the wild — the specification says
-// zlib and a good deal of software means raw — so the correct one is tried
-// first and, if r can be rewound, the other is fallen back to.
+// zlib and a good deal of software means raw — so inspect the zlib header
+// without consuming it. This must work on pipes as well as seekable files.
 func NewReader(r io.Reader, encoding string) (io.ReadCloser, error) {
 	f, ok := ByEncoding(encoding)
 	if !ok {
@@ -193,17 +194,15 @@ func NewReader(r io.Reader, encoding string) (io.ReadCloser, error) {
 	case Gzip:
 		return gzip.NewReader(r)
 	case Deflate:
-		if zr, err := zlib.NewReader(r); err == nil {
-			return zr, nil
+		br := bufio.NewReader(r)
+		header, _ := br.Peek(2)
+		if len(header) == 2 && header[0]&0x0f == 8 && header[0]>>4 <= 7 &&
+			(uint16(header[0])<<8|uint16(header[1]))%31 == 0 {
+			return zlib.NewReader(br)
 		}
-		if s, ok := r.(io.Seeker); ok {
-			if _, err := s.Seek(0, io.SeekStart); err != nil {
-				return nil, err
-			}
-		}
-		return flate.NewReader(r), nil
+		return flate.NewReader(br), nil
 	default:
-		d, err := zstd.NewReader(r)
+		d, err := zstd.NewReader(r, zstd.WithDecoderConcurrency(1))
 		if err != nil {
 			return nil, err
 		}

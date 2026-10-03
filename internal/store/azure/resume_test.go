@@ -3,6 +3,7 @@ package azure
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -105,13 +106,13 @@ func TestRemoveResumeRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.close()
-	if err := removeResumeRecord(dst); err != nil {
+	if err := RemoveResumeRecord(dst); err != nil {
 		t.Fatal(err)
 	}
 	if IncompleteDownload(dst) {
 		t.Error("completed record was left behind")
 	}
-	if err := removeResumeRecord(dst); err != nil {
+	if err := RemoveResumeRecord(dst); err != nil {
 		t.Errorf("removing an absent record should be quiet: %v", err)
 	}
 }
@@ -203,7 +204,7 @@ func TestUnfinishedRecordSurvivesCrashMidWrite(t *testing.T) {
 	// A record whose header line is torn (no newline, partial content) must be
 	// treated as describing nothing, not trusted.
 	dst := filepath.Join(t.TempDir(), "blob.bin")
-	if err := os.WriteFile(dst+ResumeSuffix, []byte("azcp-resu"), 0o600); err != nil {
+	if err := os.WriteFile(dst+ResumeSuffix, []byte("azcp-resume 2 torn"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	r, err := openResumeFile(dst, testNode(t, `"e"`, 100), 10)
@@ -213,5 +214,69 @@ func TestUnfinishedRecordSurvivesCrashMidWrite(t *testing.T) {
 	defer r.close()
 	if r.has(0) {
 		t.Error("a torn record was believed")
+	}
+}
+
+func TestResumeDoesNotOverwriteUnrelatedSidecar(t *testing.T) {
+	for _, want := range []string{"", "an ordinary file with a coincidental suffix", "azcp-resu"} {
+		t.Run(fmt.Sprintf("bytes=%d", len(want)), func(t *testing.T) {
+			dst := filepath.Join(t.TempDir(), "blob.bin")
+			path := dst + ResumeSuffix
+			if err := os.WriteFile(path, []byte(want), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if IncompleteDownload(dst) {
+				t.Fatal("a filename alone was accepted as an incomplete download")
+			}
+			if _, err := openResumeFile(dst, testNode(t, `"e"`, 100), 10); !errors.Is(err, errNotResumeRecord) {
+				t.Fatalf("open = %v", err)
+			}
+			if err := RemoveResumeRecord(dst); err != nil {
+				t.Fatal(err)
+			}
+			if err := ResetResumeRecord(dst); !errors.Is(err, errNotResumeRecord) {
+				t.Fatalf("reset = %v", err)
+			}
+			if got, err := os.ReadFile(path); err != nil || string(got) != want {
+				t.Fatalf("unrelated file changed: %q, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestResumeDoesNotWriteThroughSidecarLinks(t *testing.T) {
+	for _, symlink := range []bool{true, false} {
+		t.Run(fmt.Sprint(symlink), func(t *testing.T) {
+			d := t.TempDir()
+			dst, other := filepath.Join(d, "blob"), filepath.Join(d, "other")
+			const want = "azcp-resume stale\n"
+			if err := os.WriteFile(other, []byte(want), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			link := os.Link
+			if symlink {
+				link = os.Symlink
+			}
+			if err := link(other, dst+ResumeSuffix); err != nil {
+				t.Skip(err)
+			}
+			r, err := openResumeFile(dst, testNode(t, `"e"`, 100), 10)
+			if symlink {
+				if !errors.Is(err, errNotResumeRecord) {
+					t.Fatalf("symlink record = %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := r.mark(0); err != nil {
+					t.Fatal(err)
+				}
+				r.close()
+			}
+			if got, err := os.ReadFile(other); err != nil || string(got) != want {
+				t.Fatalf("sidecar alias changed: %q, %v", got, err)
+			}
+		})
 	}
 }

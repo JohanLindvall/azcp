@@ -8,12 +8,14 @@ import (
 
 	"github.com/JohanLindvall/azcp/internal/cli"
 	"github.com/JohanLindvall/azcp/internal/store"
+	"github.com/JohanLindvall/azcp/internal/store/azure"
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
 type plannedCopy struct {
-	source string
-	done   <-chan struct{}
+	source  string
+	done    <-chan struct{}
+	sidecar bool
 }
 
 func destinationKey(u *uri.URL) string {
@@ -36,7 +38,15 @@ func (e *Engine) reserveDestination(ctx context.Context, src *store.Node, dst *u
 	}
 	previous, exists := e.scheduled[destinationKey(dst)]
 	if !exists {
+		if e.reservesResumeRecord(src, dst) {
+			if _, exists := e.scheduled[destinationKey(dst)+azure.ResumeSuffix]; exists {
+				return false, plainf("cannot resume %s: its resume record is also a copy destination", quote(dst.Display()))
+			}
+		}
 		return true, nil
+	}
+	if previous.sidecar {
+		return false, plainf("cannot copy to %s: the name is reserved for another download's resume record", quote(dst.Display()))
 	}
 	if e.opt.NoClobber || e.opt.Update == cli.UpdateNone {
 		return false, nil
@@ -60,4 +70,8 @@ func (e *Engine) reserveDestination(ctx context.Context, src *store.Node, dst *u
 	case <-ctx.Done():
 		return false, ctx.Err()
 	}
+}
+
+func (e *Engine) reservesResumeRecord(src *store.Node, dst *uri.URL) bool {
+	return e.opt.Resume && !e.opt.AttributesOnly && !e.streamDest && src.URL.IsRemote() && !dst.IsRemote()
 }

@@ -242,12 +242,18 @@ make build     # ./bin/azcp, with the version stamped from git describe
 make check     # formatting, vet, tests, race detector
 make e2e       # the blob paths, against the Azurite emulator in Docker
 make release   # stripped binaries for every platform into ./dist
+python3 scripts/cp-compat.py  # compare local copies with GNU cp 9.4, after build
 ```
 
-`make check` needs no credentials and no network: the pattern matcher is
+Once Go dependencies are installed, `make check` needs no credentials or external
+services. HTTP fixtures listen on loopback. The pattern matcher is
 differential-tested against real `bash` run with `globstar` and `extglob`, and
 the copy semantics are tested against temporary directories. `make e2e` needs
 Docker, and starts and stops the emulator around itself.
+
+The optional `scripts/cp-compat.py` check requires Python 3, Unix symlinks and
+GNU coreutils 9.4. It compares exit status, bytes, permissions, preserved
+timestamps and link relationships across local-copy option combinations.
 
 CI runs the tests natively on Linux and Windows, on x86-64 and arm64. All six
 release targets, including macOS, are also cross-compiled. macOS release builds
@@ -286,6 +292,13 @@ Blob storage has no directories, only names containing slashes. `azcp` presents
 that flat namespace as a tree, so `cp`'s rules keep working: a name with things
 filed under it behaves as a directory, and an empty directory round-trips
 through the zero-byte marker blob every Azure tool uses.
+
+Blob keys retain repeated slashes and dot components when copied between remote
+locations. A literal final slash asserts a directory; `%2F` names a slash that
+belongs to the key. Downloading a tree rejects names that the local filesystem
+would collapse or reinterpret, rather than writing two blobs onto one file or
+escaping the destination tree. An explicit local filename can still receive
+an individually named blob.
 
 ## Pipes
 
@@ -329,8 +342,14 @@ Nothing has to be configured. Credentials are looked for in this order:
 4. `AZURE_STORAGE_KEY` (with `AZURE_STORAGE_ACCOUNT`),
 5. the ambient Azure identity — environment variables, workload identity,
    managed identity, `az login`, `azd auth login`,
-6. an interactive device-code sign-in, if a terminal is attached,
-7. anonymous, for containers that allow public read.
+6. a saved interactive sign-in,
+7. an interactive browser or device-code sign-in, if a terminal is attached,
+8. anonymous, for containers that allow public read.
+
+A connection string applies only to the account it names. When
+`AZURE_STORAGE_ACCOUNT` is set, the environment SAS and account key are also
+restricted to that account; a copy involving another account discovers that
+account's credentials separately. A SAS on a URL always applies to that URL.
 
 A SAS need not cover the whole account. One scoped to a single container
 (`sr=c`) works: `rl` to copy out of it, `rwl` to copy into it, and `d` as well
@@ -371,6 +390,8 @@ answer nobody can see.
 
 It asks at most once per run, however many transfers are rejected at the same
 moment.
+A browser sign-in that was started and then failed or was cancelled does not
+open a second device-code prompt in the same run.
 
 `--auth` pins the choice to `identity`, `browser`, `device` or `anonymous` when
 the automatic one is not what you want, and `--tenant` selects the directory to
@@ -435,6 +456,13 @@ that records it), and what lets a blob-to-blob copy carry metadata on every
 route — without it, metadata survives only where the service copies it itself,
 which covers whole-blob copies but not blobs large enough to be staged in
 blocks.
+
+Recorded symbolic-link targets can contain Unicode, whitespace and control
+bytes. Ordinary ASCII targets retain the `azcp_symlink` metadata field;
+targets that cannot safely fit in an HTTP header use `azcp_symlink_base64`.
+Older versions that do not recognize the latter field cannot restore those
+links. Invalid mode and owner metadata is ignored rather than passed to the
+operating system after integer truncation.
 
 ## Verifying a copy
 
@@ -588,10 +616,23 @@ and invalidates the saved ranges so `--resume -n` fetches them again.
 Without `--resume`, an incomplete download is restarted in full, even with
 `-n`, and its stale record is removed after a successful copy.
 
+The record's name is `FILE.azcp-part`. Only a regular file beginning with
+`azcp-resume ` is recognized as a record. Unrelated files, empty files and
+symlinks at that name cannot override `-n` and are never overwritten as resume
+state. If a download needs the name and it is occupied by one of these, the
+download fails; move the conflicting file before retrying. A tree that also
+contains a blob named `FILE.azcp-part` cannot download both names with resume
+enabled, and reports the collision. Rewriting a recognized record replaces
+the record itself, leaving any other hard links to its previous contents alone.
+
 With `--decompress`, overwrite checks, dry-run output and deletion tracking all
 use the expanded filename. For example, downloading `page.gz` produces `page`,
 and `-n` protects an existing `page`. A resumed download keeps its record until
-decompression finishes. `--attributes-only` leaves the existing contents and
+decompression finishes, invalidating its compressed ranges before rewriting
+the destination. Existing destination hard links and symlinks keep their
+identity. Without resume, decoding streams directly into that destination;
+with resume, expansion uses a temporary file before copying the expanded bytes
+back. `--attributes-only` leaves the existing contents and
 filename alone, even when `--decompress` is also given.
 
 Stopping a run with Ctrl-C says how much was left unfinished and whether it can
@@ -622,6 +663,8 @@ Semantics follow bash with `globstar` and `extglob` enabled, and the test suite
 checks that by running bash and comparing its expansions with ours. By default a local path that exists exactly as
 written is never treated as a pattern, so a file genuinely called
 `report[final].pdf` still copies. `--glob=always|never` overrides that.
+Brace expansion is limited to 8,192 results per argument. Exceeding the limit
+is an error, not a silently shortened list of sources.
 
 Deep patterns are cheap against blob storage: a `**` turns into one prefixed
 listing rather than a request per directory.
@@ -640,6 +683,10 @@ leaves the filesystem defaults to four instead: there the disk is the
 bottleneck, and seeking between many files makes it slower rather than faster.
 The HTTP connection pool is sized to match, so a busy run is not re-establishing
 a connection for every request.
+
+Local tasks whose source or destination names alias a file used by an earlier
+task wait for that task, preserving operand order. Copies of unrelated files
+remain parallel.
 
 That default also decides how many sockets a run opens: HTTP/1.1 carries one
 request per connection, and each job may have `--part-concurrency` of them
@@ -677,9 +724,17 @@ copy needs no additional update. `--attributes-only` updates an existing blob's
 properties and metadata without copying its contents, including blob-to-blob
 invocations.
 
-Every network request is retried `--retries` times with jittered backoff,
-honouring `Retry-After`. Retries are decided from the failure: a timeout, a
-dropped connection, a 429 or a 5xx is worth another attempt; a 404, a 403 or a
+All copy routes retain a source MD5 when present. A copy streamed through this
+host checks the source checksum before committing the upload, according to
+`--check-md5`. Checksum and content-header updates after an upload or copy are
+conditional on the destination version observed by that operation. Metadata
+and content-header changes made by `--attributes-only` use the same safeguard.
+
+Each network request gets up to `--retries` attempts in total, including the
+first attempt, with jittered backoff and support for `Retry-After`. Whole-file
+restarts have a separate budget of at most three attempts, reduced to one by
+`--retries=1`; pipes are never restarted. Retries are decided from the failure:
+a timeout, a dropped connection, a 429 or a 5xx is worth another attempt; a 404, a 403 or a
 full disk is not. Each one is logged, so a slow transfer never looks like a
 silent hang.
 Transfer durations and relative ages must be nonnegative and within the supported

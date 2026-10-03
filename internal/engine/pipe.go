@@ -69,9 +69,8 @@ type failedReader struct{ err error }
 
 func (r failedReader) Read([]byte) (int, error) { return 0, r.err }
 
-// downloadStream writes a blob into a pipe or a device. With --decompress the
-// bytes are expanded on their way through rather than in place afterwards,
-// since there is no afterwards to go back to.
+// downloadStream writes a blob in order, either into a pipe or a device, or
+// through a decoder into a regular file when no resume ranges must be saved.
 func (e *Engine) downloadStream(ctx context.Context, t *task, f *os.File, pt *progress.Task) error {
 	opts := e.transferOptions()
 	opts.Progress = pt.Set
@@ -108,8 +107,12 @@ func decodeTo(w io.Writer, r io.Reader, encoding, display string) error {
 	for {
 		n, rerr := dec.Read(buf)
 		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
+			nw, werr := w.Write(buf[:n])
+			if werr != nil {
 				return werr
+			}
+			if nw != n {
+				return io.ErrShortWrite
 			}
 		}
 		if errors.Is(rerr, io.EOF) {

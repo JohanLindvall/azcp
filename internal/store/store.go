@@ -70,6 +70,9 @@ type Node struct {
 	// Sys carries the platform-specific stat result for local files, used for
 	// ownership, timestamps and hard-link detection.
 	Sys any
+	// Info is the local stat snapshot from discovery, before reading contents
+	// changes the access time. Attribute preservation uses this snapshot.
+	Info fs.FileInfo
 }
 
 // IsDir reports whether n is a directory. A nil node is not.

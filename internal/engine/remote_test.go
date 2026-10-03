@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -14,6 +15,77 @@ import (
 	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/store/azure"
 )
+
+func TestDecompressionPreservesDestinationLinks(t *testing.T) {
+	data := payload()
+	encoded := compress(t, "gzip", data)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(len(encoded)))
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("ETag", `"one"`)
+		if r.Method != http.MethodHead {
+			_, _ = w.Write(encoded)
+		}
+	}))
+	defer srv.Close()
+	for _, resume := range []bool{false, true} {
+		for _, symlink := range []bool{false, true} {
+			t.Run(fmt.Sprintf("resume=%v/symlink=%v", resume, symlink), func(t *testing.T) {
+				d := t.TempDir()
+				original, dst := filepath.Join(d, "original"), filepath.Join(d, "copy")
+				write(t, original, "old contents")
+				link := os.Link
+				if symlink {
+					link = os.Symlink
+				}
+				if err := link(original, dst); err != nil {
+					t.Skip(err)
+				}
+				before, err := os.Stat(original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				args := []string{"--auth=anonymous", "--retries=1", "--decompress", srv.URL + "/devstoreaccount1/c/source.gz", dst}
+				if resume {
+					args = append([]string{"--resume"}, args...)
+				}
+				if n := run(t, d, args...); n != 0 {
+					t.Fatal(n)
+				}
+				if !bytes.Equal([]byte(read(t, original)), data) || !bytes.Equal([]byte(read(t, dst)), data) {
+					t.Fatal("link aliases did not see decompressed data")
+				}
+				after, err := os.Stat(dst)
+				if err != nil || !os.SameFile(before, after) {
+					t.Fatalf("destination identity changed: %v", err)
+				}
+				if resume && exists(dst+azure.ResumeSuffix) {
+					t.Fatal("successful expansion left a resume record")
+				}
+			})
+		}
+	}
+}
+
+func TestUnrelatedSidecarDoesNotBypassNoClobber(t *testing.T) {
+	d := t.TempDir()
+	dst := filepath.Join(d, "copy")
+	write(t, dst, "keep")
+	write(t, dst+azure.ResumeSuffix, "unrelated file")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Error("skipped file was downloaded")
+		}
+		w.Header().Set("Content-Length", "10")
+	}))
+	defer srv.Close()
+	if n := run(t, d, "--auth=anonymous", "-n", srv.URL+"/devstoreaccount1/c/source", dst); n != 0 {
+		t.Fatal(n)
+	}
+	if read(t, dst) != "keep" || read(t, dst+azure.ResumeSuffix) != "unrelated file" {
+		t.Fatal("no-clobber changed user data")
+	}
+}
 
 func TestRemoteAttributesOnlyDoesNotCopyData(t *testing.T) {
 	var metadata atomic.Int32
@@ -62,7 +134,7 @@ func TestIncompleteDownloadWithoutResumeOverridesNoClobber(t *testing.T) {
 	d := t.TempDir()
 	dst := filepath.Join(d, "download")
 	write(t, dst, "partial")
-	write(t, dst+azure.ResumeSuffix, "stale record")
+	write(t, dst+azure.ResumeSuffix, "azcp-resume stale record\n")
 	src := srv.URL + "/devstoreaccount1/c/source"
 	if n := run(t, d, "--auth=anonymous", "--retries=1", "-n", src, dst); n != 0 {
 		t.Fatalf("unfinished destination was not repaired: %d failures", n)

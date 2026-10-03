@@ -68,6 +68,8 @@ func ownerOf(fs.FileInfo) (int, int, bool) { return 0, 0, false }
 
 func lchown(string, int, int) error { return nil }
 
+func chown(string, int, int) error { return nil }
+
 // deviceOfSys reports nothing, so --one-file-system does not apply here. The
 // volume serial is available only by opening the file, which is too expensive
 // to do for every entry of a walk.

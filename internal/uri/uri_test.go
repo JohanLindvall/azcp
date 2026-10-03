@@ -101,6 +101,27 @@ func TestSASNotLeaked(t *testing.T) {
 	}
 }
 
+func TestBlobKeySlashesAreSignificant(t *testing.T) {
+	for raw, want := range map[string]string{
+		"azure://foo/c/a//b": "a//b",
+		"azure://foo/c//a":   "/a",
+		"azure://foo/c/a%2F": "a/",
+		"azure://foo/c/a/":   "a",
+	} {
+		u, err := Parse(raw, Options{})
+		if err != nil || u.Key != want {
+			t.Fatalf("Parse(%q) = %+v, %v", raw, u, err)
+		}
+		if got := u.WithPathPart("c/" + want).Key; got != want {
+			t.Fatalf("WithPathPart changed %q to %q", want, got)
+		}
+		root, _ := Parse("azure://foo/d/prefix", Options{})
+		if got := root.Join(want).Key; got != "prefix/"+want {
+			t.Fatalf("Join changed key to %q", got)
+		}
+	}
+}
+
 func contains(h, n string) bool {
 	for i := 0; i+len(n) <= len(h); i++ {
 		if h[i:i+len(n)] == n {

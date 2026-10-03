@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	azruntime "github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
@@ -410,6 +411,12 @@ func (s *Store) children(ctx context.Context, cc *container.Client, prefix, skip
 			}
 		}
 	}
+	if pager.More() {
+		// A partial inventory cannot describe a partition of the whole
+		// namespace. Fall back to the original flat pager; otherwise names
+		// beyond this sample can lie outside every range we construct.
+		return nil
+	}
 	// A hierarchical listing returns prefixes and blobs in separate groups;
 	// the division below reads them as one sorted sequence.
 	slices.Sort(out)
@@ -515,6 +522,11 @@ func largestDivisible(groups []*group) *group {
 // divideGroup cuts sorted, disjoint units at the byte where they first differ.
 func divideGroup(units []string) []*group {
 	shared := len(commonPrefix(units))
+	// A service prefix must be valid UTF-8. A byte shared by two different
+	// runes cannot be sent as a prefix on its own.
+	for shared > 0 && !utf8.ValidString(units[0][:shared]) {
+		shared--
+	}
 	for _, u := range units {
 		if len(u) == shared {
 			// A unit that is exactly the shared prefix cannot be told from
@@ -524,11 +536,13 @@ func divideGroup(units []string) []*group {
 	}
 	var out []*group
 	for i := 0; i < len(units); {
+		_, width := utf8.DecodeRuneInString(units[i][shared:])
+		prefix := units[i][:shared+width]
 		j := i
-		for j < len(units) && units[j][shared] == units[i][shared] {
+		for j < len(units) && strings.HasPrefix(units[j], prefix) {
 			j++
 		}
-		out = append(out, &group{prefix: units[i][:shared+1], units: units[i:j]})
+		out = append(out, &group{prefix: prefix, units: units[i:j]})
 		i = j
 	}
 	return out

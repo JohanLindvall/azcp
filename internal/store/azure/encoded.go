@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 
 	"github.com/JohanLindvall/azcp/internal/uri"
@@ -85,7 +86,7 @@ func (s *Store) uploadEncoded(ctx context.Context, r io.Reader, sourceSize int64
 	// than the source, where a file just under the limit could go over it. A
 	// pipe gives nothing to size by, so its blocks are --part-size, and
 	// 50,000 of those is as long as it can be.
-	_, err = bb.UploadStream(ctx, r, &blockblob.UploadStreamOptions{
+	uploaded, err := bb.UploadStream(ctx, r, &blockblob.UploadStreamOptions{
 		BlockSize:        o.blockSize(sourceSize + sourceSize/8),
 		Concurrency:      o.concurrency(),
 		HTTPHeaders:      o.httpHeaders(dst.Key),
@@ -102,6 +103,10 @@ func (s *Store) uploadEncoded(ctx context.Context, r io.Reader, sourceSize int64
 	if err != nil {
 		return err
 	}
-	_, err = bc.SetHTTPHeaders(ctx, *o.httpHeadersWithMD5(dst.Key, sum.Sum(nil)), nil)
+	_, err = bc.SetHTTPHeaders(ctx, *o.httpHeadersWithMD5(dst.Key, sum.Sum(nil)), &blob.SetHTTPHeadersOptions{
+		AccessConditions: &blob.AccessConditions{ModifiedAccessConditions: &blob.ModifiedAccessConditions{
+			IfMatch: uploaded.ETag,
+		}},
+	})
 	return err
 }

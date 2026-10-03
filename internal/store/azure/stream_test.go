@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net/http"
 	"strings"
@@ -133,6 +134,27 @@ func TestOrderedWriterRefusalIsFinal(t *testing.T) {
 type refusingWriter struct{ err error }
 
 func (w refusingWriter) Write([]byte) (int, error) { return 0, w.err }
+
+type partialWriter struct{ err error }
+
+func (w partialWriter) Write(p []byte) (int, error) { return len(p) / 2, w.err }
+
+func TestOrderedWriterCountsPartialWritesAndRejectsShortSuccess(t *testing.T) {
+	for _, cause := range []error{nil, errors.New("pipe closed")} {
+		o := newOrderedWriter(partialWriter{cause}, 64)
+		n, err := o.WriteAt([]byte("abcd"), 0)
+		want := cause
+		if want == nil {
+			want = io.ErrShortWrite
+		}
+		if n != 2 || o.written() != 2 || !errors.Is(err, want) {
+			t.Fatalf("write = %d, %v; accounted %d bytes", n, err, o.written())
+		}
+		if _, err := o.WriteAt([]byte("ef"), 2); !errors.Is(err, want) {
+			t.Fatal("short write was not final")
+		}
+	}
+}
 
 // rangeStart is where a ranged GET begins.
 func rangeStart(r *http.Request) int64 {

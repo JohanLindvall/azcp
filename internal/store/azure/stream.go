@@ -121,20 +121,23 @@ func (o *orderedWriter) WriteAt(p []byte, off int64) (int, error) {
 	defer func() { o.writing = false }()
 	for chunk, own := p, true; ; own = false {
 		o.mu.Unlock()
-		_, err := o.w.Write(chunk)
+		n, err := o.w.Write(chunk)
+		if n != len(chunk) && err == nil {
+			err = io.ErrShortWrite
+		}
 		o.mu.Lock()
+		o.next += int64(n)
 		if err != nil {
 			o.err = err
 			close(o.moved)
 			if own {
-				return 0, err
+				return n, err
 			}
 			// p itself landed; the failure belongs to a range that has
 			// already been told otherwise, and every call from now on hears
 			// about it.
 			return len(p), nil
 		}
-		o.next += int64(len(chunk))
 		close(o.moved)
 		o.moved = make(chan struct{})
 		var ok bool

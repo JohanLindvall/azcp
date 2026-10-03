@@ -2,6 +2,7 @@ package azure
 
 import (
 	"context"
+	"crypto/md5"
 	"errors"
 	"fmt"
 	"io"
@@ -353,11 +354,14 @@ func (s *Store) PutAttrs(ctx context.Context, dst *uri.URL, o TransferOptions) e
 			if err != nil {
 				return err
 			}
+			// A file created since the properties request must keep its data.
+			create := o
+			create.NoClobber = true
 			_, err = bb.Upload(ctx, streaming.NopCloser(strings.NewReader("")),
 				&blockblob.UploadOptions{
 					Metadata:         o.metadata(),
 					HTTPHeaders:      o.httpHeaders(dst.Key),
-					AccessConditions: o.accessConditions(),
+					AccessConditions: create.accessConditions(),
 					Tier:             o.tier(),
 				})
 			return err
@@ -368,10 +372,13 @@ func (s *Store) PutAttrs(ctx context.Context, dst *uri.URL, o TransferOptions) e
 		if o.NoClobber {
 			return os.ErrExist
 		}
+		conditions := &blob.AccessConditions{ModifiedAccessConditions: &blob.ModifiedAccessConditions{IfMatch: props.ETag}}
 		if m := o.metadata(); m != nil {
-			if _, err := bc.SetMetadata(ctx, m, nil); err != nil {
+			updated, err := bc.SetMetadata(ctx, m, &blob.SetMetadataOptions{AccessConditions: conditions})
+			if err != nil {
 				return err
 			}
+			conditions.ModifiedAccessConditions.IfMatch = updated.ETag
 		}
 		if o.anyHeader() {
 			// Set Blob Properties clears every header it is not given, so the
@@ -389,7 +396,7 @@ func (s *Store) PutAttrs(ctx context.Context, dst *uri.URL, o TransferOptions) e
 				BlobContentLanguage:    keep(o.ContentLanguage, props.ContentLanguage),
 				BlobCacheControl:       keep(o.CacheControl, props.CacheControl),
 				BlobContentMD5:         props.ContentMD5,
-			}, nil)
+			}, &blob.SetHTTPHeadersOptions{AccessConditions: conditions})
 			if err != nil {
 				return err
 			}
@@ -435,14 +442,14 @@ func (s *Store) Download(ctx context.Context, src *store.Node, f *os.File, o Tra
 		// A checksum failure invalidates every completed range. Keep an empty
 		// record so -n still knows the file needs repair on the next run.
 		if o.Resume && errors.Is(err, retryx.ErrRetryable) {
-			if resetErr := os.WriteFile(f.Name()+ResumeSuffix, nil, 0o600); resetErr != nil {
+			if resetErr := ResetResumeRecord(f.Name()); resetErr != nil {
 				s.log.Warn("cannot reset the resume record", "path", f.Name()+ResumeSuffix, "error", resetErr)
 			}
 		}
 		return err
 	}
 	if !o.KeepResumeRecord {
-		return removeResumeRecord(f.Name())
+		return RemoveResumeRecord(f.Name())
 	}
 	return nil
 }
@@ -464,8 +471,7 @@ func (s *Store) download(ctx context.Context, src *store.Node, f *os.File, o Tra
 	if o.Resume {
 		r, err := openResumeFile(f.Name(), src, o.blockSize(src.Size))
 		if err != nil {
-			s.log.Warn("cannot use the resume record, starting again",
-				"blob", src.URL.Display(), "error", err)
+			return fmt.Errorf("cannot use the resume record: %w", err)
 		} else {
 			resume = r
 			defer resume.close()
@@ -543,7 +549,7 @@ func (s *Store) copy(ctx context.Context, src *store.Node, dst *uri.URL, o Trans
 					"source", src.URL.Display(), "destination", dst.Display())
 				return nil
 			}
-			if isCancellation(err) {
+			if stopCopyFallback(err) {
 				return err
 			}
 			s.noteCopyFailure(dst, routeSync, src.URL, err)
@@ -557,13 +563,23 @@ func (s *Store) copy(ctx context.Context, src *store.Node, dst *uri.URL, o Trans
 				"source", src.URL.Display(), "destination", dst.Display())
 			return nil
 		}
-		if isCancellation(err) {
+		if stopCopyFallback(err) {
 			return err
 		}
 		s.noteCopyFailure(dst, routeAsync, src.URL, err)
 	}
 
 	return s.streamCopy(ctx, src, dst, o)
+}
+
+func stopCopyFallback(err error) bool {
+	var response *azcore.ResponseError
+	// A failed source/destination condition is an identity conflict, not an
+	// unsupported route. In particular, retrying through a streamed upload
+	// after a conditional header update failed would overwrite the newer blob
+	// that the condition was meant to protect.
+	return isCancellation(err) || errors.Is(err, errCopyReplaced) ||
+		(errors.As(err, &response) && response.StatusCode == http.StatusPreconditionFailed)
 }
 
 // copyRoute names one of the server-side copy mechanisms.
@@ -691,6 +707,8 @@ func (o TransferOptions) asyncCopyHeaders(src *store.Node) *blob.HTTPHeaders {
 	return o.httpHeadersWithMD5(src.Name(), src.MD5)
 }
 
+var errCopyReplaced = errors.New("destination was replaced during the server-side copy")
+
 // awaitCopy polls until the service reports the copy finished. Polling starts
 // quickly, since most copies within a region complete almost at once, and backs
 // off so a large cross-region copy does not generate needless traffic.
@@ -712,10 +730,11 @@ func (s *Store) awaitCopy(ctx context.Context, dstBlob *blob.Client, copyID stri
 
 		props, err := dstBlob.GetProperties(ctx, nil)
 		if err != nil {
-			if ctx.Err() != nil {
-				s.abandonCopy(dstBlob, copyID, dst)
-			}
+			s.abandonCopy(dstBlob, copyID, dst)
 			return nil, err
+		}
+		if deref(props.CopyID) != copyID || copyID == "" {
+			return nil, fmt.Errorf("%s: %w", dst.Display(), errCopyReplaced)
 		}
 		status := blob.CopyStatusTypePending
 		if props.CopyStatus != nil {
@@ -839,7 +858,7 @@ func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 			Metadata:                       o.metadata(),
 			AccessConditions:               o.accessConditions(),
 			Tier:                           o.tier(),
-			HTTPHeaders:                    o.httpHeaders(dst.Key),
+			HTTPHeaders:                    o.httpHeadersWithMD5(dst.Key, src.MD5),
 		})
 		if err != nil {
 			return err
@@ -882,7 +901,7 @@ func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 		Metadata:         o.metadata(),
 		AccessConditions: o.accessConditions(),
 		Tier:             o.tier(),
-		HTTPHeaders:      o.httpHeaders(dst.Key),
+		HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, src.MD5),
 	})
 	if err != nil {
 		return fmt.Errorf("commit block list: %w", err)
@@ -893,6 +912,9 @@ func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 // streamCopy pulls the source down and pushes it back up, used when the service
 // cannot be asked to do the copy itself.
 func (s *Store) streamCopy(ctx context.Context, src *store.Node, dst *uri.URL, o TransferOptions) error {
+	if len(src.MD5) == 0 && o.CheckMD5 == MD5Require {
+		return s.checkDigest(nil, nil, o.CheckMD5, src.URL.Display())
+	}
 	r, err := s.OpenRead(ctx, src)
 	if err != nil {
 		return err
@@ -903,6 +925,11 @@ func (s *Store) streamCopy(ctx context.Context, src *store.Node, dst *uri.URL, o
 	if o.Progress != nil {
 		counted = &countingReader{r: r, report: o.Progress}
 	}
+	if wantsDigest(src.MD5, o.CheckMD5) {
+		counted = &checkedReader{Reader: counted, sum: md5.New(), check: func(got []byte) error {
+			return s.checkDigest(got, src.MD5, o.CheckMD5, src.URL.Display())
+		}}
+	}
 	c, err := s.client(ctx, dst)
 	if err != nil {
 		return err
@@ -911,7 +938,7 @@ func (s *Store) streamCopy(ctx context.Context, src *store.Node, dst *uri.URL, o
 		BlockSize:        o.blockSize(src.Size),
 		Concurrency:      o.concurrency(),
 		Metadata:         o.metadata(),
-		HTTPHeaders:      o.httpHeaders(dst.Key),
+		HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, src.MD5),
 		AccessConditions: o.accessConditions(),
 		AccessTier:       o.tier(),
 	})

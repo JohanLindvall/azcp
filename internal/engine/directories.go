@@ -3,10 +3,35 @@ package engine
 import (
 	"context"
 	"os"
+	"strings"
 
 	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
+
+// --parents carries each intermediate source directory's permissions and
+// requested attributes too. Making all parents with a fixed mode loses that
+// information and leaves restrictive directories impossible to populate.
+func (e *Engine) prepareParents(ctx context.Context, src *store.Node, dest *uri.URL, parts []string) error {
+	if src.URL.IsRemote() {
+		parent := dest.Join(parts...)
+		return e.storeFor(parent).MkdirAll(ctx, parent, 0o755)
+	}
+	for i := range parts {
+		prefix := strings.Join(parts[:i+1], "/")
+		if strings.HasPrefix(src.URL.Path, "/") {
+			prefix = "/" + prefix
+		}
+		parent, err := e.local.Stat(ctx, src.URL.WithPathPart(prefix), true)
+		if err != nil {
+			return err
+		}
+		if err := e.prepareDirectory(ctx, parent, dest.Join(parts[:i+1]...)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // prepareDirectory leaves existing permissions alone unless --preserve asks
 // otherwise. A new local directory starts with the source's mode and the
@@ -17,7 +42,7 @@ func (e *Engine) prepareDirectory(ctx context.Context, src *store.Node, dst *uri
 	}
 	mode := os.FileMode(0o755)
 	if !src.URL.IsRemote() {
-		mode = src.Mode.Perm()
+		mode = e.opt.CreationMode(src.Mode)
 	}
 	err := os.Mkdir(dst.Path, mode)
 	created := err == nil
@@ -36,7 +61,7 @@ func (e *Engine) prepareDirectory(ctx context.Context, src *store.Node, dst *uri
 	if src.URL.IsRemote() {
 		return nil
 	}
-	info, err := sourceInfo(src)
+	info, err := sourceAttrs(src)
 	if err != nil {
 		return err
 	}

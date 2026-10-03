@@ -13,28 +13,33 @@ const maxBraceResults = 8192
 // ExpandBraces performs bash-style brace expansion, handling nesting,
 // comma lists and {a..b[..step]} sequences. A string with no expandable group
 // is returned unchanged as the sole result.
-func ExpandBraces(s string) []string {
+func ExpandBraces(s string) ([]string, error) {
 	out := make([]string, 0, 1)
-	expandInto(s, &out)
-	if len(out) == 0 {
-		return []string{s}
+	if err := expandInto(s, &out); err != nil {
+		return nil, err
 	}
-	return out
+	if len(out) == 0 {
+		return []string{s}, nil
+	}
+	return out, nil
 }
 
-func expandInto(s string, out *[]string) {
+func expandInto(s string, out *[]string) error {
 	if len(*out) >= maxBraceResults {
-		return
+		return fmt.Errorf("brace expansion exceeds %d results", maxBraceResults)
 	}
 	open, closeIdx, items, ok := findGroup(s)
 	if !ok {
 		*out = append(*out, s)
-		return
+		return nil
 	}
 	prefix, suffix := s[:open], s[closeIdx+1:]
 	for _, it := range items {
-		expandInto(prefix+it+suffix, out)
+		if err := expandInto(prefix+it+suffix, out); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // findGroup locates the leftmost brace group that is a real expansion — one
@@ -126,15 +131,18 @@ func expandSequence(body string) []string {
 	if len(parts) != 2 && len(parts) != 3 {
 		return nil
 	}
-	step := 1
+	step := uint(1)
 	if len(parts) == 3 {
 		n, err := strconv.Atoi(parts[2])
-		if err != nil || n == 0 {
+		if err != nil {
 			return nil
 		}
-		step = n
-		if step < 0 {
-			step = -step
+		if n == 0 {
+			n = 1 // bash treats a zero increment as the default increment
+		}
+		step = uint(n)
+		if n < 0 {
+			step = uint(-(n + 1)) + 1
 		}
 	}
 	if lo, errA := strconv.Atoi(parts[0]); errA == nil {
@@ -150,29 +158,42 @@ func expandSequence(body string) []string {
 		for v := lo; (lo <= hi && v <= hi) || (lo > hi && v >= hi); {
 			out = append(out, formatSeqInt(v, width))
 			if len(out) > maxBraceResults {
-				return nil
+				return out // the caller reports the expansion limit
 			}
 			if lo <= hi {
-				v += step
+				if step > uint(hi)-uint(v) {
+					break
+				}
+				v = int(uint(v) + step)
 			} else {
-				v -= step
+				if step > uint(v)-uint(hi) {
+					break
+				}
+				v = int(uint(v) - step)
 			}
 		}
 		return out
 	}
 	a, b := []rune(parts[0]), []rune(parts[1])
-	if len(a) != 1 || len(b) != 1 {
+	letter := func(s string) bool { return len(s) == 1 && (s[0] >= 'a' && s[0] <= 'z' || s[0] >= 'A' && s[0] <= 'Z') }
+	if !letter(parts[0]) || !letter(parts[1]) {
 		return nil
 	}
 	var out []string
 	for r := a[0]; (a[0] <= b[0] && r <= b[0]) || (a[0] > b[0] && r >= b[0]); {
 		out = append(out, string(r))
 		if len(out) > maxBraceResults {
-			return nil
+			return out
 		}
 		if a[0] <= b[0] {
+			if step > uint(b[0]-r) {
+				break
+			}
 			r += rune(step)
 		} else {
+			if step > uint(r-b[0]) {
+				break
+			}
 			r -= rune(step)
 		}
 	}

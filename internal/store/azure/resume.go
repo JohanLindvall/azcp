@@ -5,9 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,8 +35,9 @@ import (
 
 // ResumeSuffix names the record. It sits beside the destination so that
 // removing the destination removes the reason to keep it. It is exported
-// because a caller already listing the destination directory can spot one
-// there, and so answer what IncompleteDownload answers without a stat.
+// because a caller already listing the destination directory can identify
+// candidates without probing every destination. Its contents still establish
+// ownership before it is trusted as a record.
 const ResumeSuffix = ".azcp-part"
 
 // resumeFile records which ranges of a download have landed.
@@ -51,17 +55,82 @@ type resumeFile struct {
 // was last touched: to -n and -u it is indistinguishable from a finished copy,
 // and skipping it would leave it that way for good.
 func IncompleteDownload(path string) bool {
-	_, err := os.Stat(path + ResumeSuffix)
-	return err == nil
+	f, err := readResumeRecord(path + ResumeSuffix)
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
 }
 
-// removeResumeRecord discards a record beside path. A download that ran without
+// RemoveResumeRecord discards a record beside path. A download that ran without
 // --resume has just written the whole file, so any record left by an earlier
 // attempt describes something that no longer exists.
-func removeResumeRecord(path string) error {
-	err := os.Remove(path + ResumeSuffix)
+func RemoveResumeRecord(path string) error {
+	f, err := readResumeRecord(path + ResumeSuffix)
+	if os.IsNotExist(err) || errors.Is(err, errNotResumeRecord) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	f.Close()
+	err = os.Remove(path + ResumeSuffix)
 	if err != nil && os.IsNotExist(err) {
 		return nil
+	}
+	return err
+}
+
+var errNotResumeRecord = errors.New("not an azcp resume record")
+
+// A suffix alone is not proof of ownership: users can copy files bearing that
+// suffix too. Never follow a sidecar symlink or read a pipe as a record.
+func readResumeRecord(path string) (*os.File, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: %w", path, errNotResumeRecord)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		f.Close()
+		return nil, fmt.Errorf("%s changed while opening the resume record", path)
+	}
+	const magic = "azcp-resume "
+	var prefix [len(magic)]byte
+	n, err := io.ReadFull(f, prefix[:])
+	owned := string(prefix[:n]) == magic
+	if !owned || (err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF)) {
+		f.Close()
+		return nil, fmt.Errorf("%s: %w", path, errNotResumeRecord)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// ResetResumeRecord invalidates ranges after a checksum or decoding failure.
+// Replace the sidecar instead of truncating a path that may be a link.
+func ResetResumeRecord(dst string) error {
+	f, err := readResumeRecord(dst + ResumeSuffix)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if f != nil {
+		f.Close()
+	}
+	r, err := rewriteResumeRecord(dst+ResumeSuffix, "azcp-resume invalid", nil)
+	if r != nil {
+		r.Close()
 	}
 	return err
 }
@@ -76,39 +145,70 @@ func openResumeFile(dst string, src *store.Node, blockSize int64) (*resumeFile, 
 		identity, strings.Trim(src.ETag, `"`), src.Size, blockSize)
 
 	r := &resumeFile{have: map[int]bool{}}
-	if existing, err := os.Open(path); err == nil {
+	if existing, err := readResumeRecord(path); err == nil {
 		matched := r.read(existing, header, src.Size, blockSize)
 		existing.Close()
 		fi, err := os.Stat(dst)
 		matched = matched && err == nil && fi.Size() == src.Size && src.ETag != ""
 		if !matched {
 			r.have = map[int]bool{}
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return nil, err
-			}
 		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
 	}
 
-	fresh := len(r.have) == 0
-	// A fresh record truncates at open rather than truncating the handle
-	// afterwards: Windows refuses Truncate on a file opened for appending,
-	// which quietly left --resume downloads there with no record at all.
-	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
-	if fresh {
-		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
-	}
-	f, err := os.OpenFile(path, flags, 0o600)
+	f, err := rewriteResumeRecord(path, header, r.have)
 	if err != nil {
 		return nil, err
 	}
 	r.f = f
-	if fresh {
-		if _, err := fmt.Fprintln(f, header); err != nil {
-			f.Close()
+	return r, nil
+}
+
+// Replacing the record breaks hard-link aliases and publishes the header and
+// prior ranges together. The record is closed before renaming for Windows.
+func rewriteResumeRecord(path, header string, have map[int]bool) (*os.File, error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".azcp-resume-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+	if header != "" {
+		if _, err := fmt.Fprintln(tmp, header); err != nil {
 			return nil, err
 		}
 	}
-	return r, nil
+	indices := make([]int, 0, len(have))
+	for i := range have {
+		indices = append(indices, i)
+	}
+	slices.Sort(indices)
+	for _, i := range indices {
+		if _, err := fmt.Fprintln(tmp, i); err != nil {
+			return nil, err
+		}
+	}
+	info, err := tmp.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		f.Close()
+		return nil, fmt.Errorf("%s changed while opening the resume record", path)
+	}
+	return f, nil
 }
 
 // read loads a record, reporting whether it describes the same blob.

@@ -16,6 +16,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
 	"github.com/JohanLindvall/azcp/internal/logx"
+	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
 // storageScope is the OAuth scope for the Blob service.
@@ -41,8 +42,8 @@ type AuthMode string
 
 const (
 	// AuthAuto walks the whole chain: SAS in the URL, connection string,
-	// account key, the ambient Azure identity, an interactive device-code
-	// sign-in, and finally anonymous access.
+	// environment SAS, account key, the ambient Azure identity, a saved
+	// sign-in, browser/device sign-in, and finally anonymous access.
 	AuthAuto AuthMode = "auto"
 	// AuthIdentity restricts the chain to DefaultAzureCredential.
 	AuthIdentity AuthMode = "identity"
@@ -280,11 +281,9 @@ func (c *Credentials) signInAs(ctx context.Context, mode AuthMode) (azcore.Token
 				c.saveRecord(rec)
 				return cred, "browser", nil
 			}
-			if mode == AuthBrowser {
-				return nil, "", aerr
-			}
-			c.logger().Warn("browser sign-in did not complete, asking for a device code instead",
-				"error", aerr)
+			// A cancelled or failed prompt spends the run's one sign-in.
+			// Falling back now would ask the same person a second time.
+			return nil, "", aerr
 		}
 	}
 	cred, err := c.deviceCode()
@@ -428,15 +427,42 @@ type staticCredentials struct {
 func lookupStatic(account string) staticCredentials {
 	var s staticCredentials
 	s.connectionString = os.Getenv("AZURE_STORAGE_CONNECTION_STRING")
-	s.sas = strings.TrimPrefix(firstEnv("AZURE_STORAGE_SAS_TOKEN", "AZURE_STORAGE_SAS"), "?")
-	// A key only applies to the account it was issued for. When
-	// AZURE_STORAGE_ACCOUNT names a different account, ignore the key rather
-	// than sending a signature that cannot verify.
+	if named := connectionAccount(s.connectionString); named != "" && named != account {
+		// A connection string includes an endpoint, so using the wrong one
+		// would silently send this account's reads and writes to another.
+		s.connectionString = ""
+	}
+	// Static secrets apply only to the account they were issued for.
 	named := os.Getenv("AZURE_STORAGE_ACCOUNT")
 	if named == "" || named == account {
+		s.sas = strings.TrimPrefix(firstEnv("AZURE_STORAGE_SAS_TOKEN", "AZURE_STORAGE_SAS"), "?")
 		s.accountKey = firstEnv("AZURE_STORAGE_KEY", "AZURE_STORAGE_ACCOUNT_KEY")
 	}
 	return s
+}
+
+func connectionAccount(connection string) string {
+	var endpoint string
+	for _, field := range strings.Split(connection, ";") {
+		key, value, _ := strings.Cut(field, "=")
+		switch key {
+		case "AccountName":
+			return value
+		case "UseDevelopmentStorage":
+			if strings.EqualFold(value, "true") {
+				return "devstoreaccount1"
+			}
+		case "BlobEndpoint":
+			endpoint = value
+		}
+	}
+	// SAS-only connection strings can name the account only in the endpoint.
+	if endpoint != "" {
+		if u, err := uri.Parse(endpoint, uri.Options{}); err == nil && u.IsRemote() {
+			return u.Account
+		}
+	}
+	return ""
 }
 
 func firstEnv(names ...string) string {

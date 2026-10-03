@@ -38,6 +38,9 @@ type Spec struct {
 	// ways (-R and -r). Parsing treats the two specs separately; this only
 	// affects how they are listed.
 	Alt rune
+	// Stop ends parsing after this option (GNU --help and --version exit
+	// immediately, so later invalid options are never examined).
+	Stop bool
 }
 
 // Flag is one parsed occurrence of an option.
@@ -91,6 +94,9 @@ func Parse(specs []Spec, argv []string) (*Result, error) {
 				return nil, err
 			}
 			i += consumed
+			if res.Flags[len(res.Flags)-1].Spec.Stop {
+				return res, nil
+			}
 
 		case len(a) > 1 && a[0] == '-':
 			consumed, err := parseShort(byShort, argv, i, res)

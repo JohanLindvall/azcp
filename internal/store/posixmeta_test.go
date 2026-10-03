@@ -2,6 +2,7 @@ package store
 
 import (
 	"io/fs"
+	"strings"
 	"testing"
 	"time"
 )
@@ -26,6 +27,34 @@ func TestPosixMetaRoundTrip(t *testing.T) {
 	}
 	if !got.ATime.Equal(when.Add(-time.Hour)) {
 		t.Errorf("atime = %v", got.ATime)
+	}
+}
+
+func TestSymlinkMetadataKeepsNonHeaderTargets(t *testing.T) {
+	for _, target := range []string{"../雪", "a\nb", " a ", "\xfftarget"} {
+		m := (PosixMeta{SymlinkDest: target}).Encode()
+		for _, value := range m {
+			if strings.ContainsFunc(value, func(r rune) bool { return r < 0x20 || r >= 0x7f }) {
+				t.Fatalf("non-header metadata: %q", value)
+			}
+		}
+		if got := DecodePosixMeta(m).SymlinkDest; got != target {
+			t.Fatalf("%q became %q", target, got)
+		}
+	}
+}
+
+func TestPosixMetadataRejectsValuesThatWouldTruncate(t *testing.T) {
+	for _, value := range []string{"-1", "4294967295", "4294967296"} {
+		if got := DecodePosixMeta(map[string]string{MetaUID: value, MetaGID: "1"}); got.HasOwner {
+			t.Fatalf("invalid owner %s accepted", value)
+		}
+	}
+	if DecodePosixMeta(map[string]string{MetaMode: "010000"}).HasMode {
+		t.Fatal("invalid mode accepted")
+	}
+	if DecodePosixMeta(map[string]string{MetaSymlinkBase64: "bad encoding"}).IsSymlink() {
+		t.Fatal("invalid encoded link accepted")
 	}
 }
 

@@ -99,6 +99,8 @@ func ownerOf(fi fs.FileInfo) (uid, gid int, ok bool) {
 
 func lchown(path string, uid, gid int) error { return os.Lchown(path, uid, gid) }
 
+func chown(path string, uid, gid int) error { return os.Chown(path, uid, gid) }
+
 func deviceOfSys(sys any) (uint64, bool) {
 	st, ok := sys.(*syscall.Stat_t)
 	if !ok {

@@ -26,7 +26,7 @@ func (e *Engine) uploadMetadata(src *store.Node) map[string]string {
 		return m
 	}
 
-	info, err := sourceInfo(src)
+	info, err := sourceAttrs(src)
 	if err != nil {
 		e.log.Warn("cannot read attributes to preserve",
 			"path", src.URL.Display(), "error", err)
@@ -57,6 +57,13 @@ func (e *Engine) uploadMetadata(src *store.Node) map[string]string {
 	return m
 }
 
+func sourceAttrs(src *store.Node) (os.FileInfo, error) {
+	if src.Info != nil {
+		return src.Info, nil
+	}
+	return sourceInfo(src)
+}
+
 // restoreAttrs applies attributes carried in a blob's metadata to the local
 // file just written from it. Anything absent is left as it is rather than
 // invented.
@@ -70,7 +77,7 @@ func (e *Engine) restoreAttrs(t *task) {
 	// Ownership first: a successful chown clears the setuid and setgid bits,
 	// so setting the mode afterwards is the only way they survive.
 	if e.opt.Preserve.Ownership && p.HasOwner {
-		if err := local.Lchown(path, p.UID, p.GID); err != nil {
+		if err := local.Chown(path, p.UID, p.GID, p.IsSymlink()); err != nil {
 			// Restoring ownership needs privilege the caller usually lacks;
 			// worth saying, not worth failing the copy over.
 			e.log.Warn("cannot restore ownership",
@@ -94,7 +101,7 @@ func (e *Engine) restoreAttrs(t *task) {
 			atime = mtime
 		}
 		if !mtime.IsZero() {
-			if err := local.Lutimes(path, atime, mtime); err != nil {
+			if err := local.Chtimes(path, atime, mtime, p.IsSymlink()); err != nil {
 				e.log.Warn("cannot restore timestamps", "path", t.dst.Display(), "error", err)
 			}
 		}

@@ -52,14 +52,20 @@ jobs:
 
       - name: Work out the version
         id: version
+        env:
+          REQUESTED_VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            version="${{ github.event.inputs.version }}"
+          if [ -n "$REQUESTED_VERSION" ]; then
+            version="$REQUESTED_VERSION"
           elif [ "${GITHUB_REF_TYPE}" = tag ]; then
             version="${GITHUB_REF_NAME}"
           else
             version="$(git describe --tags --always)"
+          fi
+          if [[ ! "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
+            echo "invalid image version" >&2
+            exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "building $version"
@@ -110,10 +116,13 @@ jobs:
           push-to-registry: true
 
       - name: Report
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
           echo "### Published" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "$IMAGE_TAGS" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "digest: ${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "digest: $IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"

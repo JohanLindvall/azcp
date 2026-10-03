@@ -51,6 +51,7 @@ const (
 // dirEntries is one directory's names.
 type dirEntries struct {
 	names map[string]struct{}
+	links map[string]struct{}
 	// parts holds the names an unfinished download left a record for, which is
 	// the one thing that outranks -n. It is nil in the ordinary case where no
 	// download was interrupted, so asking costs nothing.
@@ -74,7 +75,18 @@ func (d *destIndex) lookup(u *uri.URL) (exists, partial, ok bool) {
 		return false, false, false
 	}
 	_, exists = entries.names[name]
+	if _, symlink := entries.links[name]; symlink {
+		// A symlink is present, but a copy that writes through it may find
+		// its target missing. GNU cp checks that even with -n.
+		return false, false, false
+	}
 	_, partial = entries.parts[name]
+	if partial {
+		// Only rare unfinished files need this read. Ordinary reruns still
+		// answer from the directory alone, while unrelated suffix names and
+		// symlinks cannot override -n.
+		partial = azure.IncompleteDownload(u.Path)
+	}
 	return exists, partial, true
 }
 
@@ -91,6 +103,10 @@ func (d *destIndex) planned(u *uri.URL) {
 	// record a file that is not written yet would cost the very listing this
 	// is here to avoid.
 	if entries, ok := d.dirs[dir]; ok {
+		if _, linked := entries.links[name]; linked {
+			delete(entries.links, name)
+			d.names--
+		}
 		if _, partial := entries.parts[name]; partial {
 			delete(entries.parts, name)
 			d.names--
@@ -116,15 +132,22 @@ func (d *destIndex) read(dir string) *dirEntries {
 	f, err := os.Open(dir)
 	switch {
 	case err == nil:
-		names, rerr := f.Readdirnames(-1)
+		names, rerr := f.ReadDir(-1)
 		f.Close()
 		if rerr != nil {
 			// A listing that stopped part-way would report files that are
 			// there as missing, which -n would answer by overwriting them.
 			return nil
 		}
-		for _, n := range names {
+		for _, entry := range names {
+			n := entry.Name()
 			entries.names[n] = struct{}{}
+			if entry.Type()&os.ModeSymlink != 0 {
+				if entries.links == nil {
+					entries.links = map[string]struct{}{}
+				}
+				entries.links[n] = struct{}{}
+			}
 			if base, cut := strings.CutSuffix(n, azure.ResumeSuffix); cut {
 				if entries.parts == nil {
 					entries.parts = map[string]struct{}{}
@@ -139,7 +162,7 @@ func (d *destIndex) read(dir string) *dirEntries {
 
 	d.dirs[dir] = entries
 	d.lru = append(d.lru, dir)
-	d.names += len(entries.names) + len(entries.parts)
+	d.names += len(entries.names) + len(entries.parts) + len(entries.links)
 	d.evict()
 	return entries
 }
@@ -164,7 +187,7 @@ func (d *destIndex) evict() {
 	for len(d.lru) > 1 && (len(d.lru) > maxIndexDirs || d.names > maxIndexNames) {
 		oldest := d.lru[0]
 		if entries, ok := d.dirs[oldest]; ok {
-			d.names -= len(entries.names) + len(entries.parts)
+			d.names -= len(entries.names) + len(entries.parts) + len(entries.links)
 			delete(d.dirs, oldest)
 		}
 		d.lru = d.lru[1:]

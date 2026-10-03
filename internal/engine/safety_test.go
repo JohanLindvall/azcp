@@ -431,7 +431,7 @@ func TestDereferenceCopiesAliasesButRejectsCycles(t *testing.T) {
 func TestPartialDestinationQueuedOnlyOnce(t *testing.T) {
 	d := t.TempDir()
 	write(t, filepath.Join(d, "file"), "partial")
-	write(t, filepath.Join(d, "file.azcp-part"), "record")
+	write(t, filepath.Join(d, "file.azcp-part"), "azcp-resume stale record\n")
 	e := newEngine(t, "-n", "--resume", "src", "dst")
 	src := &store.Node{URL: mustURL(t, "azure://acct/c/file"), Kind: store.KindFile}
 	dst := mustURL(t, filepath.Join(d, "file"))

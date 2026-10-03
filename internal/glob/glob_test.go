@@ -93,6 +93,16 @@ func TestMatch(t *testing.T) {
 	}
 }
 
+func TestManyGlobstarsDoNotRevisitEveryCombination(t *testing.T) {
+	p := MustCompile(strings.Repeat("**/a/", 30) + "missing")
+	if p.Match(strings.Repeat("a/", 100) + "present") {
+		t.Fatal("matched a missing final segment")
+	}
+	if !p.Match(strings.Repeat("a/", 100) + "missing") {
+		t.Fatal("lost a valid match")
+	}
+}
+
 func TestLiteralPrefix(t *testing.T) {
 	cases := []struct {
 		pat, prefix string
@@ -152,6 +162,10 @@ func TestExpandBraces(t *testing.T) {
 		{"{1..4}", []string{"1", "2", "3", "4"}},
 		{"{01..04}", []string{"01", "02", "03", "04"}},
 		{"{1..7..3}", []string{"1", "4", "7"}},
+		{"{1..3..0}", []string{"1", "2", "3"}},
+		{"{a..c..0}", []string{"a", "b", "c"}},
+		{"{é..ê}", []string{"{é..ê}"}},
+		{"{a..1}", []string{"{a..1}"}},
 		{"{5..1}", []string{"5", "4", "3", "2", "1"}},
 		{"{a..e}", []string{"a", "b", "c", "d", "e"}},
 		{"{}", []string{"{}"}},
@@ -160,7 +174,7 @@ func TestExpandBraces(t *testing.T) {
 		{"logs/{app,web}/*.log", []string{"logs/app/*.log", "logs/web/*.log"}},
 	}
 	for _, c := range cases {
-		if got := ExpandBraces(c.in); !reflect.DeepEqual(got, c.want) {
+		if got, err := ExpandBraces(c.in); err != nil || !reflect.DeepEqual(got, c.want) {
 			t.Errorf("ExpandBraces(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}

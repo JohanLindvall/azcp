@@ -60,7 +60,11 @@ func newFilter(includes, excludes []string, newerThan, olderThan time.Time) (*fi
 func compilePatterns(raw []string, flag string) ([]pattern, error) {
 	var out []pattern
 	for _, r := range raw {
-		for _, expanded := range glob.ExpandBraces(r) {
+		expansions, err := glob.ExpandBraces(r)
+		if err != nil {
+			return nil, fmt.Errorf("bad pattern %q for %s: %w", r, flag, err)
+		}
+		for _, expanded := range expansions {
 			p, err := glob.Compile(expanded)
 			if err != nil {
 				return nil, fmt.Errorf("bad pattern %q for %s: %w", expanded, flag, err)

@@ -197,7 +197,10 @@ func sanitizeURL(u *url.URL) string {
 // use. Credential discovery happens once per process and is shared by every
 // account, except where a URL carries its own SAS token.
 func (s *Store) client(ctx context.Context, u *uri.URL) (*azblob.Client, error) {
-	key := u.ServiceURL() + "|" + u.SAS
+	// An old client may finish construction after a sign-in cleared the
+	// cache. Give each credential generation its own key so that late result
+	// cannot put the rejected credential back into circulation.
+	key := fmt.Sprintf("%s|%s|%d", u.ServiceURL(), u.SAS, s.authGen.Load())
 	s.mu.Lock()
 	c, ok := s.clients[key]
 	s.mu.Unlock()
@@ -446,7 +449,7 @@ func (s *Store) readDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) 
 	}
 	prefix := ""
 	if u.Key != "" {
-		prefix = strings.TrimSuffix(u.Key, "/") + "/"
+		prefix = u.Key + "/"
 	}
 	var out []*store.Node
 	pager := cc.NewListBlobsHierarchyPager("/", &container.ListBlobsHierarchyOptions{
@@ -592,7 +595,7 @@ func (s *Store) MkdirMarker(ctx context.Context, u *uri.URL) error {
 	if err != nil {
 		return err
 	}
-	name := strings.TrimSuffix(u.Key, "/") + "/"
+	name := u.Key + "/"
 	_, err = cc.NewBlockBlobClient(name).UploadBuffer(ctx, nil, nil)
 	if err != nil {
 		return fmt.Errorf("create directory marker %s: %w", u.Display(), err)
@@ -627,6 +630,25 @@ func (s *Store) Remove(ctx context.Context, u *uri.URL) error {
 		}
 	}
 	return notExist(u, err)
+}
+
+// RemoveMarker deletes only the marker belonging to a directory. A blob and
+// a directory may share a name, and a directory key may itself end in a slash;
+// trying the unsuffixed name first could delete an unrelated blob in either
+// case. Callers that know they are removing a directory use this method.
+func (s *Store) RemoveMarker(ctx context.Context, u *uri.URL) error {
+	if u.Key == "" {
+		return fmt.Errorf("refusing to delete container %q: this tool only removes blobs", u.Container)
+	}
+	cc, err := s.containerClient(ctx, u)
+	if err != nil {
+		return err
+	}
+	err = deleteBlob(ctx, cc, u.Key+"/")
+	if isNotFound(err) {
+		return notExist(u, err)
+	}
+	return err
 }
 
 func deleteBlob(ctx context.Context, cc *container.Client, key string) error {
@@ -682,6 +704,7 @@ func fileNode(u *uri.URL, name string, p blobProps) *store.Node {
 	}
 	if n.Size == 0 && strings.HasSuffix(name, "/") {
 		n.Kind, n.Mode = store.KindDir, fs.ModeDir|0o755
+		n.URL = u.WithPathPart(strings.TrimSuffix(u.PathPart(), "/"))
 	}
 	return n
 }

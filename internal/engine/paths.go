@@ -9,7 +9,35 @@ import (
 
 	"github.com/JohanLindvall/azcp/internal/cli"
 	"github.com/JohanLindvall/azcp/internal/store"
+	"github.com/JohanLindvall/azcp/internal/store/local"
+	"github.com/JohanLindvall/azcp/internal/uri"
 )
+
+func relativeDestination(root, child *uri.URL) (string, bool) {
+	if root.IsRemote() != child.IsRemote() {
+		return "", false
+	}
+	if root.IsRemote() {
+		if !root.SameAccount(child) {
+			return "", false
+		}
+		if root.PathPart() == "" {
+			return child.PathPart(), true
+		}
+		if root.PathPart() == child.PathPart() {
+			return "", true
+		}
+		return strings.CutPrefix(child.PathPart(), root.PathPart()+"/")
+	}
+	rel, err := filepath.Rel(root.Path, child.Path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	if rel == "." {
+		return "", true
+	}
+	return filepath.ToSlash(rel), true
+}
 
 // resolvedPath follows the existing part of a path before appending any new
 // suffix. Comparing operand strings misses absolute aliases and destinations
@@ -76,6 +104,11 @@ func (e *Engine) prepareLocalTask(t *task) error {
 		if err != nil {
 			return err
 		}
+		if si.Mode().IsRegular() {
+			if id, _, ok := local.IDOf(t.src.URL.Path, si); ok {
+				t.sourceID = &id
+			}
+		}
 		if t.backup != "" {
 			if backup, err := os.Stat(t.backup); err == nil && os.SameFile(si, backup) {
 				return plainf("backing up %s might destroy source;  %s not copied", quote(t.dst.Display()), quote(t.src.URL.Display()))
@@ -92,24 +125,50 @@ func (e *Engine) prepareLocalTask(t *task) error {
 	if di.IsDir() {
 		return plainf("cannot overwrite directory %s with non-directory", quote(t.dst.Display()))
 	}
+	separateLinks := false
 	if !t.src.IsSymlink() {
 		if di.Mode()&os.ModeSymlink != 0 {
 			target, err := os.Stat(t.dst.Path)
 			_, posix := os.LookupEnv("POSIXLY_CORRECT")
-			replacesLink := t.backup != "" || t.removeFirst || e.opt.HardLink || e.opt.SymbolicLink ||
-				(t.src.URL.IsRemote() && store.DecodePosixMeta(t.src.Metadata).IsSymlink())
-			if os.IsNotExist(err) && !posix && !replacesLink {
-				return plainf("not writing through dangling symlink %s", quote(t.dst.Display()))
+			if os.IsNotExist(err) && e.followsDestLink(t.src) {
+				if !posix {
+					return plainf("not writing through dangling symlink %s", quote(t.dst.Display()))
+				}
+				t.followDangling = true
 			}
 			if err == nil {
 				di = target
 			}
 		}
 	}
+	if !di.Mode().IsRegular() && !t.removeFirst && t.backup == "" &&
+		!e.opt.HardLink && !e.opt.SymbolicLink && !t.src.IsSymlink() {
+		// A pipe discovered inside a destination tree has the same single-
+		// attempt contract as one named directly on the command line.
+		t.stream = true
+	}
+	if di.Mode().IsRegular() {
+		if id, links, ok := local.IDOf(t.dst.Path, di); ok {
+			t.destID = &id
+			if e.opt.Preserve.Links && links > 1 && !t.removeFirst && t.backup == "" &&
+				!e.opt.HardLink && !e.opt.SymbolicLink && !t.src.IsSymlink() {
+				// Preserving the source's link graph also means separating
+				// destination names that the source does not link together.
+				separateLinks = true
+			}
+		}
+	}
 	if t.src.URL.IsRemote() {
+		t.removeFirst = t.removeFirst || separateLinks
 		return nil
 	}
+	if t.src.IsSymlink() && e.opt.AttributesOnly {
+		if target, err := os.Stat(t.src.URL.Path); err == nil && os.SameFile(target, di) {
+			return plainf("%s and %s are the same file", quote(t.src.URL.Display()), quote(t.dst.Display()))
+		}
+	}
 	if !os.SameFile(si, di) {
+		t.removeFirst = t.removeFirst || separateLinks
 		return nil
 	}
 	if e.opt.HardLink && !t.src.IsSymlink() {
@@ -143,4 +202,10 @@ func (e *Engine) prepareLocalTask(t *task) error {
 		return nil
 	}
 	return plainf("%s and %s are the same file", quote(t.src.URL.Display()), quote(t.dst.Display()))
+}
+
+func (e *Engine) followsDestLink(src *store.Node) bool {
+	return !src.IsSymlink() && !e.opt.RemoveDestination && !e.opt.HardLink &&
+		!e.opt.SymbolicLink && e.opt.Backup == cli.BackupNone &&
+		!(src.URL.IsRemote() && store.DecodePosixMeta(src.Metadata).IsSymlink())
 }

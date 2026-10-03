@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/base64"
 	"io/fs"
 	"strconv"
 	"strings"
@@ -33,6 +34,9 @@ const (
 	// MetaSymlink is the link target. A blob carrying it is a symbolic link,
 	// stored as a zero-length blob because the target is the whole content.
 	MetaSymlink = "azcp_symlink"
+	// MetaSymlinkBase64 carries targets that cannot survive an ASCII HTTP
+	// header, including non-ASCII bytes and leading or trailing whitespace.
+	MetaSymlinkBase64 = "azcp_symlink_base64"
 )
 
 // PosixMeta is the attribute set that survives a round trip through blob
@@ -64,7 +68,12 @@ func (p PosixMeta) Encode() map[string]string {
 		m[MetaATime] = p.ATime.UTC().Format(time.RFC3339Nano)
 	}
 	if p.SymlinkDest != "" {
-		m[MetaSymlink] = p.SymlinkDest
+		if strings.TrimSpace(p.SymlinkDest) != p.SymlinkDest ||
+			strings.ContainsFunc(p.SymlinkDest, func(r rune) bool { return r < 0x20 || r >= 0x7f }) {
+			m[MetaSymlinkBase64] = base64.StdEncoding.EncodeToString([]byte(p.SymlinkDest))
+		} else {
+			m[MetaSymlink] = p.SymlinkDest
+		}
 	}
 	if len(m) == 0 {
 		return nil
@@ -94,13 +103,13 @@ func DecodePosixMeta(m map[string]string) PosixMeta {
 		return ""
 	}
 	if v := get(MetaMode); v != "" {
-		if bits, err := strconv.ParseUint(v, 8, 32); err == nil {
+		if bits, err := strconv.ParseUint(v, 8, 32); err == nil && bits <= 0o7777 {
 			p.Mode, p.HasMode = FileModeFromBits(uint32(bits)), true
 		}
 	}
 	uid, uerr := strconv.Atoi(get(MetaUID))
 	gid, gerr := strconv.Atoi(get(MetaGID))
-	if uerr == nil && gerr == nil {
+	if uerr == nil && gerr == nil && uid >= 0 && gid >= 0 && uint64(uid) < 1<<32-1 && uint64(gid) < 1<<32-1 {
 		p.UID, p.GID, p.HasOwner = uid, gid, true
 	}
 	if t, err := time.Parse(time.RFC3339Nano, get(MetaMTime)); err == nil {
@@ -110,6 +119,12 @@ func DecodePosixMeta(m map[string]string) PosixMeta {
 		p.ATime = t
 	}
 	p.SymlinkDest = get(MetaSymlink)
+	if encoded := get(MetaSymlinkBase64); encoded != "" {
+		p.SymlinkDest = ""
+		if decoded, err := base64.StdEncoding.DecodeString(encoded); err == nil {
+			p.SymlinkDest = string(decoded)
+		}
+	}
 	return p
 }
 

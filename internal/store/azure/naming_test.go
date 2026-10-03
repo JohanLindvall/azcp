@@ -491,3 +491,25 @@ func TestMkdirMarkerAndRemove(t *testing.T) {
 		t.Error("a container deletion was attempted")
 	}
 }
+
+func TestRemoveMarkerKeepsTheUnsuffixedBlob(t *testing.T) {
+	f := newFakeBlobs()
+	s, at := fakeStore(t, f, false)
+	for _, key := range []string{"dir", "dir/"} {
+		f.put("c", key, []byte("keep"), nil)
+		f.put("c", key+"/", nil, nil)
+		u := at("c").WithPathPart("c/" + key)
+		if err := s.RemoveMarker(context.Background(), u); err != nil {
+			t.Fatal(err)
+		}
+		if !f.has("c", key) || f.has("c", key+"/") {
+			t.Fatalf("removing directory %q removed the wrong object", key)
+		}
+	}
+	if err := s.RemoveMarker(context.Background(), at("c/missing")); !store.IsNotExist(err) {
+		t.Fatalf("missing marker: %v", err)
+	}
+	if err := s.RemoveMarker(context.Background(), at("c")); err == nil {
+		t.Fatal("container removal was allowed")
+	}
+}

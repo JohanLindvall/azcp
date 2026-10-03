@@ -84,6 +84,15 @@ type Engine struct {
 	// scheduled belongs to the scanner. Conflicting operands must be settled
 	// before workers can write the same destination concurrently.
 	scheduled map[string]plannedCopy
+	// existingDests serialises writes through different names of one existing
+	// file. It is populated from the destination check already made for each
+	// queued local write, and is owned by the scanner.
+	existingDests map[local.FileID]<-chan struct{}
+	// localReads prevents a later destination alias from changing a source
+	// while an earlier task is still reading it. Completed readers are swept
+	// periodically, so a new tree does not retain one entry per file.
+	localReads map[local.FileID][]<-chan struct{}
+	localPlans int
 	// streamDest says the destination is a pipe or a device, written into
 	// front to back under its own name. It too belongs to the scanner; a
 	// worker learns it from its task.
@@ -168,7 +177,7 @@ func New(cfg Config) (*Engine, error) {
 }
 
 // maxWholeFileAttempts bounds how many times a whole file is restarted. The SDK
-// pipeline already retries each HTTP request --retries times, so this layer
+// pipeline already gives each HTTP request --retries total attempts, so this layer
 // only needs to cover failures that survive that, such as a stream that cannot
 // be resumed. Keeping it small stops the two layers multiplying.
 func maxWholeFileAttempts(retries int) int {
@@ -208,8 +217,13 @@ type task struct {
 	// stream marks a copy from or to a pipe, which can be attempted only
 	// once: a second attempt would lose what the first one read, or send
 	// twice what it wrote.
-	stream bool
-	done   chan struct{}
+	stream   bool
+	done     chan struct{}
+	destID   *local.FileID
+	sourceID *local.FileID
+	// followDangling is GNU cp's POSIXLY_CORRECT exception: -n may create a
+	// missing symlink target, despite the link itself already existing.
+	followDangling bool
 }
 
 // Run performs the copy and reports how many files failed.
@@ -415,8 +429,6 @@ func (e *Engine) applyDeferredDirs() {
 		}
 	}
 }
-
-func quote(s string) string { return "'" + s + "'" }
 
 // fileEvent is one file in --output=json: a copy made (with -v), or one that
 // would be (under --dry-run). Beside where it goes, it carries the two facts

@@ -61,3 +61,14 @@ func TestRecursiveCopyRequiresDestinationParent(t *testing.T) {
 		t.Fatal("created an unrequested parent directory")
 	}
 }
+
+func TestRecursiveCopyCreatesDestinationWithTrailingSlash(t *testing.T) {
+	d := t.TempDir()
+	write(t, filepath.Join(d, "src/file"), "contents")
+	if n := run(t, d, "-r", "src", "dst/"); n != 0 {
+		t.Fatal(n)
+	}
+	if got := read(t, filepath.Join(d, "dst/file")); got != "contents" {
+		t.Fatal(got)
+	}
+}

@@ -224,10 +224,23 @@ must never be made on a fact a directory listing cannot supply. The index also
 records what the scanner has just queued, since two source arguments naming the
 same relative path would otherwise both be written — and under `--resume`, which
 deliberately does not open the destination exclusively, both at once.
+Symlink entries fall back to stat: GNU cp checks dangling targets even under
+`-n`, and `-u` compares the target's timestamp when copying through a link.
+An entry ending in `.azcp-part` is only a candidate resume record; its magic and
+regular-file identity must be checked before it can override no-clobber.
+
+**Aliases impose dependencies; unrelated files stay parallel.**
+`engine/dependencies.go` keeps scanner-owned completion channels for local
+writes and outstanding reads. A later source waits for an earlier writer to
+its inode, and a later writer waits for all earlier readers. Serialising only
+destination writes is insufficient: truncating a file that another task is
+still reading silently produces a short copy. Completed readers are swept so
+copying a new tree does not retain one entry per file.
 
 **There are two retry layers and they must not multiply.** The SDK pipeline
-retries each HTTP request `--retries` times; `Store.shouldRetry` is where that
-decision is made and logged. `retryx` sits above it for whole-file restarts and
+allows `--retries` total attempts per HTTP request, including the first;
+`Store.shouldRetry` is where the retry decision is made and logged.
+`retryx` sits above it for whole-file restarts and
 is capped at 3 attempts. Raising either without thinking about the other turns
 a 6× budget into 36 requests.
 
@@ -495,10 +508,18 @@ vouches for. The record is written per range but never fsynced: it guards
 against the process ending, not the power, and the data it vouches for is not
 flushed either, so an fsync would cost a disk round trip per range for no added
 promise.
+Only a regular sidecar beginning with `azcp-resume ` belongs to this tool.
+Never truncate or delete an unrelated suffix name or follow a sidecar symlink.
+Header resets replace the sidecar atomically to avoid modifying a hard-link
+alias. A resumed decompression invalidates compressed ranges before rewriting
+the destination, and keeps the destination's existing inode and link identity.
 
 **Blob storage has no directories.** `store/azure` synthesises them: a prefix
 with children behaves as a directory, `WalkAll` emits ancestor prefixes so `**`
 sees a tree, and an empty directory is the zero-byte `name/` marker blob.
+Keys retain significant repeated slashes. Pruning a directory uses
+`RemoveMarker`, because trying its unsuffixed name first can delete a distinct
+blob and cannot identify markers whose directory key already ends in a slash.
 
 **`store.Store` is the naming half only.** Bulk data is dispatched concretely
 by scheme pair in `engine/copy.go`, because each pairing has its own fast

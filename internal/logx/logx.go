@@ -86,7 +86,7 @@ func Errf(format string, args ...any) {
 // and permissions) stays visible, because that is exactly what someone
 // debugging a 403 needs to see.
 var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)((?:\?|&|\\u0026|^)sig=)[^&\s"'<>\\]+`),
+	regexp.MustCompile(`(?i)((?:\?|&|\\u0026|^)(?:s|%73|%53)(?:i|%69|%49)(?:g|%67|%47)=)[^&\s"'<>\\]+`),
 	regexp.MustCompile(`(?i)(AccountKey=)[^;\s"'<>\\]+`),
 	regexp.MustCompile(`(?i)(Bearer\s+)[A-Za-z0-9._~+/-]{16,}=*`),
 	regexp.MustCompile(`(?i)(SharedKey\s+[A-Za-z0-9]+:)[A-Za-z0-9+/=]{16,}`),

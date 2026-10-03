@@ -5,7 +5,34 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/flate"
 )
+
+func TestRawDeflateOnANonSeekableReader(t *testing.T) {
+	want := strings.Repeat("raw deflate through a pipe\n", 1000)
+	var compressed bytes.Buffer
+	w, err := flate.NewWriter(&compressed, flate.DefaultCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(w, want); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Hide both Seek and ReadByte so header detection must buffer the input.
+	r, err := NewReader(struct{ io.Reader }{bytes.NewReader(compressed.Bytes())}, "deflate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got, err := io.ReadAll(r)
+	if err != nil || string(got) != want {
+		t.Fatalf("decode lost data: %d bytes, %v", len(got), err)
+	}
+}
 
 func TestParse(t *testing.T) {
 	accepted := map[string]Spec{

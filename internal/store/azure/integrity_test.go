@@ -121,7 +121,7 @@ func TestEmptyDownloadClearsStaleRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if err := os.WriteFile(path+ResumeSuffix, []byte("stale"), 0o600); err != nil {
+	if err := os.WriteFile(path+ResumeSuffix, []byte("azcp-resume stale\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s := New(Config{Auth: AuthAnonymous})

@@ -297,7 +297,7 @@ func ApplyAttrs(srcPath, dstPath string, fi fs.FileInfo, p Preserve, isSymlink b
 
 	if p.Ownership {
 		if uid, gid, ok := ownerOf(fi); ok {
-			if err := os.Lchown(dstPath, uid, gid); err != nil {
+			if err := Chown(dstPath, uid, gid, isSymlink); err != nil {
 				errs = append(errs, fmt.Errorf("preserve ownership: %w", err))
 			}
 		}
@@ -317,7 +317,7 @@ func ApplyAttrs(srcPath, dstPath string, fi fs.FileInfo, p Preserve, isSymlink b
 		}
 	}
 	if p.Timestamps {
-		if err := lutimes(dstPath, accessTimeOf(fi), fi.ModTime()); err != nil {
+		if err := Chtimes(dstPath, accessTimeOf(fi), fi.ModTime(), isSymlink); err != nil {
 			errs = append(errs, fmt.Errorf("preserve timestamps: %w", err))
 		}
 	}
@@ -334,23 +334,32 @@ func specialBits(m fs.FileMode) fs.FileMode {
 // recreate hard links between copied files (cp --preserve=links).
 type FileID struct{ Dev, Ino uint64 }
 
-// IDOf returns the file identity, along with its link count, so only
-// multiply-linked files need tracking. The path is needed as well as the stat
-// result because Windows does not carry a file index in either, and the file
-// has to be opened to be identified.
+// IDOf returns the file identity and link count. The path is needed as well as
+// the stat result because Windows does not carry a file index in it, and the
+// file has to be opened to be identified.
 func IDOf(path string, fi fs.FileInfo) (FileID, int, bool) { return fileIdentity(path, fi) }
 
 // OwnerOf returns the numeric owner and group from a stat result, and whether
 // the platform records them at all.
 func OwnerOf(fi fs.FileInfo) (uid, gid int, ok bool) { return ownerOf(fi) }
 
-// Lchown sets the owner and group of path without following a symlink. Where
-// the platform has no numeric owners to set it does nothing, rather than
-// failing on every file a -a download restores.
-func Lchown(path string, uid, gid int) error { return lchown(path, uid, gid) }
+// Chown follows destination links when copying a regular file through them,
+// and changes the link itself when recreating a symbolic link. It does nothing
+// on platforms without numeric owners.
+func Chown(path string, uid, gid int, isSymlink bool) error {
+	if isSymlink {
+		return lchown(path, uid, gid)
+	}
+	return chown(path, uid, gid)
+}
 
-// Lutimes sets timestamps on path itself, including when it is a symlink.
-func Lutimes(path string, atime, mtime time.Time) error { return lutimes(path, atime, mtime) }
+// Chtimes uses the same destination dereferencing rule as Chown.
+func Chtimes(path string, atime, mtime time.Time, isSymlink bool) error {
+	if isSymlink {
+		return lutimes(path, atime, mtime)
+	}
+	return os.Chtimes(path, atime, mtime)
+}
 
 // AccessTimeOf returns the last access time, falling back to the modification
 // time where the platform does not record one.

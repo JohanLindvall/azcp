@@ -45,7 +45,7 @@ func newPruner() *pruner {
 func (p *pruner) root(dst *uri.URL) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	k := dst.PathPart()
+	k := destinationKey(dst)
 	if _, seen := p.roots[k]; !seen {
 		p.roots[k] = dst
 		p.keep[k] = map[string]bool{}
@@ -59,7 +59,7 @@ func (p *pruner) wrote(root *uri.URL, rel string) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if m, ok := p.keep[root.PathPart()]; ok {
+	if m, ok := p.keep[destinationKey(root)]; ok {
 		m[rel] = true
 	}
 }
@@ -86,7 +86,9 @@ func (e *Engine) prune(ctx context.Context) int64 {
 		root, keep := e.pruner.roots[key], e.pruner.keep[key]
 		var extra []*store.Node
 
+		reported := false
 		onError := func(u *uri.URL, err error) error {
+			reported = true
 			e.fail("cannot read %s to work out what to delete: %s",
 				quote(u.Display()), brief(err))
 			return err
@@ -98,13 +100,24 @@ func (e *Engine) prune(ctx context.Context) int64 {
 			namespace = local.New(e.log, false)
 		}
 		walkErr := namespace.WalkAll(ctx, root, onError, func(n *store.Node) error {
-			rel, ok := store.RelUnder(root.PathPart(), n.URL.PathPart())
-			if !ok || rel == "" || keep[rel] {
+			rel, ok := relativeDestination(root, n.URL)
+			if !ok || rel == "" {
 				return nil
 			}
 			// An excluded entry is none of this copy's business; deleting it
 			// would go well beyond what the exclusion asked for.
-			if e.filter.active() && !e.filter.allow(rel) {
+			if keep[rel] || (e.filter.active() && !e.filter.allow(rel)) {
+				// A retained child also retains every directory containing it.
+				// The walk may already have queued those directories as extras.
+				keep[rel] = true
+				for parent := rel; ; {
+					i := strings.LastIndexByte(parent, '/')
+					if i < 0 {
+						break
+					}
+					parent = parent[:i]
+					keep[parent] = true
+				}
 				e.log.Debug("not deleting an excluded entry", "path", n.URL.Display())
 				return nil
 			}
@@ -112,6 +125,12 @@ func (e *Engine) prune(ctx context.Context) int64 {
 			return nil
 		})
 		if walkErr != nil {
+			if e.opt.DryRun && store.IsNotExist(walkErr) {
+				continue
+			}
+			if !reported && !interrupted(ctx, walkErr) {
+				e.fail("cannot read %s to work out what to delete: %s", quote(root.Display()), brief(walkErr))
+			}
 			e.note("not deleting anything under %s: it could not be listed in full",
 				quote(root.Display()))
 			continue
@@ -124,12 +143,21 @@ func (e *Engine) prune(ctx context.Context) int64 {
 			if ctx.Err() != nil {
 				return removed
 			}
+			if rel, ok := relativeDestination(root, n.URL); ok && keep[rel] {
+				continue
+			}
 			if e.opt.DryRun {
 				e.reportRemoval(n.URL, true)
 				removed++
 				continue
 			}
-			if err := e.storeFor(n.URL).Remove(ctx, n.URL); err != nil {
+			var err error
+			if n.IsDir() && n.URL.IsRemote() {
+				err = e.az.RemoveMarker(ctx, n.URL)
+			} else {
+				err = e.storeFor(n.URL).Remove(ctx, n.URL)
+			}
+			if err != nil {
 				if store.IsNotExist(err) {
 					continue
 				}

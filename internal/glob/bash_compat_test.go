@@ -46,6 +46,7 @@ func TestMatchesBash(t *testing.T) {
 		"@(foo|bar).txt", "*(a|b)*.txt", "?(*.gz|*.md)",
 		"usr/local/*(bin|sbin)",
 		"data/{2023,2024}/logs/*.gz", "{a,data}/*", "r{1,2}.txt",
+		"r{1..2..0}.txt", "**/**/logs/**/**", "**/a/**/missing",
 	}
 
 	for _, pattern := range patterns {
@@ -84,7 +85,11 @@ func bashExpand(t *testing.T, bash, root, pattern string) []string {
 func ourExpand(t *testing.T, names []string, pattern string) []string {
 	t.Helper()
 	var out []string
-	for _, raw := range ExpandBraces(pattern) {
+	expansions, err := ExpandBraces(pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range expansions {
 		p, err := Compile(raw)
 		if err != nil {
 			t.Fatalf("Compile(%q): %v", raw, err)

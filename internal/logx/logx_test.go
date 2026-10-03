@@ -12,6 +12,7 @@ import (
 // URL; every form of credential that can reach output must come out.
 func TestRedactStripsCredentials(t *testing.T) {
 	cases := []struct{ name, in, mustKeep, mustLose string }{
+		{"encoded SAS name", "https://a.blob.core.windows.net/c?%73%69%67=secret&sp=r", "sp=r", "secret"},
 		{"JSON escaped query", `{"error":"https://a.blob.core.windows.net/c?sv=1\u0026sig=topsecret123"}`, "blob.core.windows.net", "topsecret123"},
 		{"sas signature",
 			"GET https://acct.blob.core.windows.net/c/b?sv=2024-01-01&se=2026-01-01&sig=AbCd%2F123secret&sp=r",

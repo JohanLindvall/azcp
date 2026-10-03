@@ -51,9 +51,9 @@ func TestEnumeratedValues(t *testing.T) {
 // --help gives them, so the message can be acted on without opening the help.
 func TestRejectedValuesNameTheOption(t *testing.T) {
 	cases := map[string]string{
-		"--reflink=maybe":         `invalid argument "maybe" for '--reflink' (want always, auto or never)`,
-		"--sparse=x":              `invalid argument "x" for '--sparse' (want always, auto or never)`,
-		"--update=x":              `invalid argument "x" for '--update' (want all, none, none-fail or older)`,
+		"--reflink=maybe":         "invalid argument 'maybe' for '--reflink'\nValid arguments are:",
+		"--sparse=x":              "invalid argument 'x' for '--sparse'\nValid arguments are:",
+		"--update=x":              "invalid argument 'x' for '--update'\nValid arguments are:",
 		"--output=xml":            `invalid argument "xml" for '--output' (want text or json)`,
 		"--glob=x":                `invalid argument "x" for '--glob' (want auto, always or never)`,
 		"--check-md5=maybe":       `invalid argument "maybe" for '--check-md5' (want off, warn, fail or require)`,
