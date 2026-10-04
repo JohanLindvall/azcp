@@ -72,3 +72,47 @@ func TestRecursiveCopyCreatesDestinationWithTrailingSlash(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestRecursiveCopyRejectsDestinationDirectorySymlinks(t *testing.T) {
+	for _, flag := range []string{"", "-L", "-n", "-b", "--remove-destination", "--dry-run"} {
+		t.Run(flag, func(t *testing.T) {
+			d := t.TempDir()
+			write(t, filepath.Join(d, "src/sub/file"), "replacement")
+			write(t, filepath.Join(d, "outside/file"), "keep")
+			write(t, filepath.Join(d, "dst/extra"), "keep on failure")
+			if err := os.Symlink("../outside", filepath.Join(d, "dst/sub")); err != nil {
+				t.Skip(err)
+			}
+			args := []string{"-rT", "--delete", "src", "dst"}
+			if flag != "" {
+				args = append(args, flag)
+			}
+			if n := run(t, d, args...); n != 1 {
+				t.Fatalf("failed = %d, want 1", n)
+			}
+			if read(t, filepath.Join(d, "outside/file")) != "keep" || !exists(filepath.Join(d, "dst/extra")) {
+				t.Fatal("rejected directory copy changed existing data")
+			}
+		})
+	}
+}
+
+func TestRecursiveCopyIntoNamedDirectorySymlink(t *testing.T) {
+	d := t.TempDir()
+	write(t, filepath.Join(d, "src/file"), "contents")
+	if err := os.Mkdir(filepath.Join(d, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(d, "dst")); err != nil {
+		t.Skip(err)
+	}
+	if n := run(t, d, "-r", "src", "dst"); n != 0 {
+		t.Fatal(n)
+	}
+	if read(t, filepath.Join(d, "real/src/file")) != "contents" {
+		t.Fatal("named target directory was not followed")
+	}
+	if n := run(t, d, "-rT", "src", "dst"); n != 1 {
+		t.Fatalf("-T accepted a directory symlink: %d", n)
+	}
+}

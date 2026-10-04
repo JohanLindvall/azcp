@@ -43,7 +43,7 @@ func (e *Engine) scan(ctx context.Context, out chan<- *task) error {
 	}
 	// One unrenamed source tree cannot collide with itself. Avoid retaining
 	// per-file bookkeeping on the common large recursive copy.
-	if len(sources) == 1 && !e.opt.Decompress && !e.opt.Compress.On() && !e.opt.Resume {
+	if len(sources) == 1 && !e.opt.Decompress && !e.opt.Compress.On() && !e.opt.Resume && e.opt.Backup == cli.BackupNone {
 		e.scheduled = nil
 	}
 
@@ -258,7 +258,9 @@ func (e *Engine) targetFor(ctx context.Context, dest *uri.URL, destIsDir bool, s
 		}
 	}
 	if e.opt.Parents {
-		parts := glob.SplitPath(src.URL.PathPart())
+		// An explicit dot is a directory whose attributes --parents carries
+		// too. Pattern splitting drops it, losing ./src's parent permissions.
+		parts := strings.FieldsFunc(src.URL.PathPart(), func(r rune) bool { return r == '/' })
 		if len(parts) == 0 {
 			return nil, fmt.Errorf("with --parents, %s has no path to reproduce",
 				quote(src.URL.Display()))
@@ -430,11 +432,9 @@ func (e *Engine) planDir(ctx context.Context, src *store.Node, dst *uri.URL,
 		// The top of a recursive copy is the only place a deletion may reach.
 		e.pruner.root(dst)
 	}
-	if !e.opt.DryRun {
-		if err := e.prepareDirectory(ctx, src, dst); err != nil {
-			e.fail("cannot create directory %s: %s", quote(dst.Display()), brief(err))
-			return nil
-		}
+	if err := e.prepareDirectory(ctx, src, dst, false); err != nil {
+		e.directoryFailure(dst, err)
+		return nil
 	}
 
 	// A remote subtree is enumerated in one go rather than a request per
@@ -534,7 +534,7 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 	if base != "" {
 		base += "/"
 	}
-	made := map[string]bool{}
+	made := map[string]bool{dst.PathPart(): true}
 	// Tracked only when the destination is blob storage, which needs a marker
 	// blob to represent an empty directory.
 	var empty *emptyDirs
@@ -578,11 +578,14 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 		}
 
 		if n.IsDir() {
-			e.ensureDir(ctx, target, made)
-			empty.dir(target)
+			if e.ensureDir(ctx, n, target, made) {
+				empty.dir(target)
+			}
 			return nil
 		}
-		e.ensureDir(ctx, target.Dir(), made)
+		if !e.ensureDir(ctx, &store.Node{URL: n.URL.Dir(), Kind: store.KindDir}, target.Dir(), made) {
+			return nil
+		}
 		empty.file(target)
 		return e.emit(ctx, n, target, out, display+"/"+rel)
 	})
@@ -663,18 +666,23 @@ func (e *emptyDirs) leaves() []*uri.URL {
 
 // ensureDir creates a destination directory once. A large tree would otherwise
 // re-issue the same request for every file in it.
-func (e *Engine) ensureDir(ctx context.Context, u *uri.URL, made map[string]bool) {
+func (e *Engine) ensureDir(ctx context.Context, src *store.Node, u *uri.URL, made map[string]bool) bool {
 	key := u.PathPart()
-	if made[key] {
-		return
+	if ready, seen := made[key]; seen {
+		return ready
+	}
+	// The flat walk emits parents first. A refused directory protects its
+	// descendants too, and should produce only one diagnostic.
+	made[key] = false
+	if ready, seen := made[u.Dir().PathPart()]; seen && !ready {
+		return false
+	}
+	if err := e.prepareDirectory(ctx, src, u, false); err != nil {
+		e.directoryFailure(u, err)
+		return false
 	}
 	made[key] = true
-	if e.opt.DryRun {
-		return
-	}
-	if err := e.storeFor(u).MkdirAll(ctx, u, 0o755); err != nil {
-		e.fail("cannot create directory %s: %s", quote(u.Display()), brief(err))
-	}
+	return true
 }
 
 func (e *Engine) planSymlink(ctx context.Context, src *store.Node, dst *uri.URL,
@@ -718,23 +726,29 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 		e.markSkipped()
 		return nil
 	}
-	var backup string
+	var decision overwriteDecision
 	if e.needsDestCheck() {
-		proceed, name, err := e.weighDestination(ctx, src, dst)
+		decision, err = e.weighDestination(ctx, src, dst)
 		if err != nil {
 			e.fail("%v", err)
 			return nil
 		}
-		if !proceed {
+		if !decision.proceed {
 			e.log.Debug("skipping existing destination",
 				"source", src.URL.Display(), "destination", dst.Display())
 			e.markSkipped()
 			return nil
 		}
-		backup = name
+	}
+	if err := e.awaitBackup(ctx, decision.backup); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		e.fail("%v", err)
+		return nil
 	}
 	t := &task{src: src, dst: dst, display: display,
-		backup: backup, removeFirst: e.opt.RemoveDestination,
+		backup: decision.backup, hardLink: decision.link, removeFirst: e.opt.RemoveDestination,
 		stream: src.IsPipe() || e.streamDest}
 	if err := e.prepareLocalTask(t); err != nil {
 		e.fail("%v", err)
@@ -744,12 +758,16 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 	if err := e.awaitLocalAccess(ctx, t); err != nil {
 		return err
 	}
+	e.planHardLink(t)
 	if e.scheduled != nil || t.destID != nil || t.sourceID != nil {
 		t.done = make(chan struct{})
 	}
 	e.recordLocalAccess(t)
 	if e.scheduled != nil {
 		e.scheduled[destinationKey(dst)] = plannedCopy{source: destinationKey(src.URL), done: t.done}
+		if t.backup != "" {
+			e.scheduled[destinationKey(dst.WithPathPart(t.backup))] = plannedCopy{done: t.done, backup: true}
+		}
 		if e.reservesResumeRecord(src, dst) {
 			e.scheduled[destinationKey(dst)+azure.ResumeSuffix] = plannedCopy{sidecar: true}
 		}
@@ -765,6 +783,9 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 		}
 		pt := e.prog.Begin(display, src.Size, direction(src.URL, dst))
 		pt.Done(nil)
+		if t.linkClaim != nil {
+			e.settleLink(t.linkClaim, dst.Path, true)
+		}
 		if t.done != nil {
 			close(t.done)
 		}
@@ -797,6 +818,12 @@ func (e *Engine) fileDestination(src *store.Node, dst *uri.URL) *uri.URL {
 	return dst
 }
 
+type overwriteDecision struct {
+	proceed bool
+	backup  string
+	link    *linkFuture
+}
+
 // weighDestination applies the overwrite rules to whatever is already at dst,
 // and reports whether the copy goes ahead and what the existing file is backed
 // up to first.
@@ -805,21 +832,30 @@ func (e *Engine) fileDestination(src *store.Node, dst *uri.URL) *uri.URL {
 // and the difference is two system calls each against one directory listing for
 // all of them — on the scanner's goroutine, which the workers are waiting on.
 func (e *Engine) weighDestination(ctx context.Context, src *store.Node,
-	dst *uri.URL) (bool, string, error) {
+	dst *uri.URL) (overwriteDecision, error) {
 
+	if e.opt.Update == cli.UpdateOlder {
+		if prior := e.priorHardLink(src, dst); prior != nil {
+			// A successful earlier copy can override -u to preserve links.
+			// If it failed, a newer destination must still be left alone.
+			if err := awaitTask(ctx, prior.done); err != nil {
+				return overwriteDecision{}, err
+			}
+		}
+	}
 	if e.existenceDecides() {
 		if exists, partial, ok := e.destIdx.lookup(dst); ok {
 			switch {
 			case !exists:
-				return true, "", nil
+				return overwriteDecision{proceed: true}, nil
 			case partial && src.URL.IsRemote():
 				// A download that stopped part-way, which outranks -n for the
 				// reason unfinishedDownload gives.
-				return true, "", nil
+				return overwriteDecision{proceed: true}, nil
 			case e.opt.Update == cli.UpdateNoneFail && !e.opt.NoClobber:
-				return false, "", fmt.Errorf("not replacing %s", quote(dst.Display()))
+				return overwriteDecision{}, fmt.Errorf("not replacing %s", quote(dst.Display()))
 			default:
-				return false, "", nil
+				return overwriteDecision{}, nil
 			}
 		}
 	}
@@ -834,7 +870,7 @@ func (e *Engine) weighDestination(ctx context.Context, src *store.Node,
 			if id, _, ok := local.IDOf(dst.Path, info); ok {
 				waited, werr := e.awaitDestination(ctx, id)
 				if werr != nil {
-					return false, "", werr
+					return overwriteDecision{}, werr
 				}
 				if waited {
 					// -u, -i and backups must see the preceding copy's result.
@@ -848,25 +884,25 @@ func (e *Engine) weighDestination(ctx context.Context, src *store.Node,
 		if !dst.IsRemote() && dn.IsSymlink() && e.followsDestLink(src) {
 			if _, err := os.Stat(dst.Path); os.IsNotExist(err) {
 				if _, posix := os.LookupEnv("POSIXLY_CORRECT"); !posix {
-					return false, "", plainf("not writing through dangling symlink %s", quote(dst.Display()))
+					return overwriteDecision{}, plainf("not writing through dangling symlink %s", quote(dst.Display()))
 				}
-				return true, "", nil
+				return overwriteDecision{proceed: true}, nil
 			} else if err != nil {
-				return false, "", fmt.Errorf("cannot access %s: %s", quote(dst.Display()), brief(err))
+				return overwriteDecision{}, fmt.Errorf("cannot access %s: %s", quote(dst.Display()), brief(err))
 			}
 			if e.opt.Update == cli.UpdateOlder {
 				// -u compares the file being written, not the link's own time.
 				dn, err = e.local.Stat(ctx, dst, true)
 				if err != nil {
-					return false, "", err
+					return overwriteDecision{}, err
 				}
 			}
 		}
 		return e.decideOverwrite(src, dn)
 	case store.IsNotExist(err):
-		return true, "", nil
+		return overwriteDecision{proceed: true}, nil
 	default:
-		return false, "", fmt.Errorf("cannot access %s: %s", quote(dst.Display()), brief(err))
+		return overwriteDecision{}, fmt.Errorf("cannot access %s: %s", quote(dst.Display()), brief(err))
 	}
 }
 
@@ -899,15 +935,15 @@ func (e *Engine) needsDestCheck() bool {
 }
 
 // decideOverwrite applies -n, -i, -u and -b to an existing destination.
-func (e *Engine) decideOverwrite(src, dst *store.Node) (bool, string, error) {
+func (e *Engine) decideOverwrite(src, dst *store.Node) (overwriteDecision, error) {
 	if unfinishedDownload(src, dst) {
 		// Not a destination to be weighed against the source: it is this copy,
 		// stopped part-way. Left alone it stays broken, and it is the one thing
 		// on disk that looks finished without being it.
-		return true, "", nil
+		return overwriteDecision{proceed: true}, nil
 	}
 	if e.opt.NoClobber {
-		return false, "", nil
+		return overwriteDecision{}, nil
 	}
 	if e.opt.Update != cli.UpdateNone && e.opt.Update != cli.UpdateNoneFail &&
 		!src.URL.IsRemote() && !dst.URL.IsRemote() && src.Info != nil && dst.Info != nil &&
@@ -919,50 +955,55 @@ func (e *Engine) decideOverwrite(src, dst *store.Node) (bool, string, error) {
 			var err error
 			backup, err = e.backupName(dst.URL.Path)
 			if err != nil {
-				return false, "", err
+				return overwriteDecision{}, err
 			}
 		}
 		t := &task{src: src, dst: dst.URL, backup: backup, removeFirst: e.opt.RemoveDestination}
 		if err := e.prepareLocalTask(t); err != nil {
-			return false, "", err
+			return overwriteDecision{}, err
 		}
 		if t.dst != dst.URL {
-			return true, backup, nil // -bf copies onto the backup name
+			return overwriteDecision{proceed: true, backup: backup}, nil // -bf copies onto the backup name
 		}
 	}
 	switch e.opt.Update {
 	case cli.UpdateNone:
-		return false, "", nil
+		return overwriteDecision{}, nil
 	case cli.UpdateNoneFail:
-		return false, "", fmt.Errorf("not replacing %s", quote(dst.URL.Display()))
+		return overwriteDecision{}, fmt.Errorf("not replacing %s", quote(dst.URL.Display()))
 	case cli.UpdateOlder:
 		// Compared on the timestamps -p restores, so a blob carrying its
 		// file's original mtime is measured against that rather than against
 		// the moment it was uploaded — otherwise `-au` out of blob storage
 		// copies everything again on every run. Blob timestamps have
 		// millisecond resolution, so an equal time means "not newer".
-		if !blobMTime(src).After(blobMTime(dst)) {
-			return false, "", nil
+		if !blobMTime(src).After(blobMTime(dst)) && e.priorHardLink(src, dst.URL) == nil {
+			// cp -au uses even a newer, skipped destination as the first
+			// name in the preserved link graph. Later aliases link to it.
+			if link := e.keepHardLink(src, dst.URL); link != nil {
+				return overwriteDecision{proceed: true, link: link}, nil
+			}
+			return overwriteDecision{}, nil
 		}
 	}
 	if e.opt.Interactive {
 		ok, err := e.promptOverwrite(dst.URL)
 		if err != nil || !ok {
-			return false, "", err
+			return overwriteDecision{}, err
 		}
 	}
 	if e.opt.Backup != cli.BackupNone {
 		if dst.URL.IsRemote() {
-			return false, "", fmt.Errorf("--backup is not supported for blob destinations (%s)",
+			return overwriteDecision{}, fmt.Errorf("--backup is not supported for blob destinations (%s)",
 				quote(dst.URL.Display()))
 		}
 		name, err := e.backupName(dst.URL.Path)
 		if err != nil {
-			return false, "", err
+			return overwriteDecision{}, err
 		}
-		return true, name, nil
+		return overwriteDecision{proceed: true, backup: name}, nil
 	}
-	return true, "", nil
+	return overwriteDecision{proceed: true}, nil
 }
 
 // promptOverwrite asks on the terminal, with the live display stood down.

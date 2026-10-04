@@ -130,3 +130,80 @@ func TestNoPreserveModeUsesDefaultCreationMode(t *testing.T) {
 		t.Fatalf("default creation permissions were not used: %v, %v", got, err)
 	}
 }
+
+func TestParentsPreservesExplicitDotDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions")
+	}
+	d := t.TempDir()
+	write(t, filepath.Join(d, "src/file"), "contents")
+	if err := os.Chmod(d, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(d, "dst"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if n := run(t, d, "-a", "--parents", "./src/file", "dst"); n != 0 {
+		t.Fatal(n)
+	}
+	info, err := os.Stat(filepath.Join(d, "dst"))
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("explicit dot's permissions were lost: %v, %v", info, err)
+	}
+}
+
+func TestParentsFollowsIntermediateDirectorySymlinks(t *testing.T) {
+	for _, root := range []bool{false, true} {
+		t.Run(map[bool]string{false: "intermediate", true: "root"}[root], func(t *testing.T) {
+			d := t.TempDir()
+			write(t, filepath.Join(d, "src/file"), "contents")
+			if err := os.Mkdir(filepath.Join(d, "real"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			link, target, copied := "dst", "real", "real/src/file"
+			if !root {
+				if err := os.Mkdir(filepath.Join(d, "dst"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				link, target, copied = "dst/src", "../real", "real/file"
+			}
+			if err := os.Symlink(target, filepath.Join(d, link)); err != nil {
+				t.Skip(err)
+			}
+			if n := run(t, d, "-a", "--parents", "./src/file", "dst"); n != 0 {
+				t.Fatal(n)
+			}
+			if read(t, filepath.Join(d, copied)) != "contents" {
+				t.Fatal("file did not land through the intermediate directory")
+			}
+			if got, err := os.Readlink(filepath.Join(d, link)); err != nil || got != target {
+				t.Fatalf("intermediate link changed: %q, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestParentsLeavesCompleteExistingParentAttributes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions")
+	}
+	d := t.TempDir()
+	write(t, filepath.Join(d, "src/file"), "contents")
+	if err := os.MkdirAll(filepath.Join(d, "dst/src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, mode := range map[string]os.FileMode{"src": 0o700, "dst": 0o755, "dst/src": 0o750} {
+		if err := os.Chmod(filepath.Join(d, path), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := run(t, d, "-a", "--parents", "./src/file", "dst"); n != 0 {
+		t.Fatal(n)
+	}
+	for path, mode := range map[string]os.FileMode{"dst": 0o755, "dst/src": 0o750} {
+		info, err := os.Stat(filepath.Join(d, path))
+		if err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("existing parent %s lost its mode: %v, %v", path, info, err)
+		}
+	}
+}

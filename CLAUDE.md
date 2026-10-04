@@ -145,7 +145,17 @@ It uses the buffered route under `--reflink=auto` and refuses `always`.
 
 **Collision tracking follows name transformations.** Even one source tree can
 collide with itself under `--compress` or `--decompress`. Only an untransformed
-tree can omit the scheduled-destination map.
+tree without backups can omit the scheduled-destination map. A backup creates
+a destination name too: a later operand must wait for its rename before weighing
+that name, and a backup must wait for earlier readers and writers of its name.
+
+**A copied directory must not follow a destination symlink.** GNU cp permits a
+symlink as the containing target directory named on the command line, but rejects
+one in place of a directory being copied, including with `-T`. The flat remote
+walk must remember failed directories and skip their descendants too; otherwise
+a download can overwrite files outside the destination tree.
+The intermediate path recreated by `--parents` is another containing path:
+existing directory symlinks there are permitted too.
 
 **Block workers are reused.** `internal/parallel.Do` handles bounded execution,
 cancellation, the first error, and joining workers for all block transfer routes
@@ -236,6 +246,10 @@ its inode, and a later writer waits for all earlier readers. Serialising only
 destination writes is insufficient: truncating a file that another task is
 still reading silently produces a short copy. Completed readers are swept so
 copying a new tree does not retain one entry per file.
+Hard-link preservation also follows scanner order. Under `-au`, a newer first
+destination supplies the links for later aliases and keeps its own attributes.
+An earlier copy must succeed before its link claim can override a later `-u`
+decision; a failed copy must leave that newer destination alone.
 
 **There are two retry layers and they must not multiply.** The SDK pipeline
 allows `--retries` total attempts per HTTP request, including the first;
@@ -462,6 +476,9 @@ reported. For a copier that is data corruption, not a convenience.
 `store/azure/download.go`: the SDK dereferences a `Content-Length` the service
 does not send for an encoded blob and panics, and resuming needs to know which
 ranges landed, which only the code issuing them can know.
+The streamed blob-to-blob fallback also checks the scanned length before
+handing EOF to the uploader: a clean HTTP EOF must not commit an incomplete
+blob, even when no MD5 is available.
 
 **Cancelling is not failing.** Ctrl-C ends every transfer in flight at the same
 moment, and the error each one comes back with cannot be trusted to say so: Go

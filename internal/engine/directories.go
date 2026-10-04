@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 
@@ -13,9 +14,16 @@ import (
 // requested attributes too. Making all parents with a fixed mode loses that
 // information and leaves restrictive directories impossible to populate.
 func (e *Engine) prepareParents(ctx context.Context, src *store.Node, dest *uri.URL, parts []string) error {
+	parent := dest.Join(parts...)
 	if src.URL.IsRemote() {
-		parent := dest.Join(parts...)
 		return e.storeFor(parent).MkdirAll(ctx, parent, 0o755)
+	}
+	if !parent.IsRemote() {
+		if info, err := os.Stat(parent.Path); err == nil && info.IsDir() {
+			// GNU cp leaves the ancestors' attributes alone when the complete
+			// parent path already exists. Only creating parents preserves them.
+			return nil
+		}
 	}
 	for i := range parts {
 		prefix := strings.Join(parts[:i+1], "/")
@@ -26,7 +34,7 @@ func (e *Engine) prepareParents(ctx context.Context, src *store.Node, dest *uri.
 		if err != nil {
 			return err
 		}
-		if err := e.prepareDirectory(ctx, parent, dest.Join(parts[:i+1]...)); err != nil {
+		if err := e.prepareDirectory(ctx, parent, dest.Join(parts[:i+1]...), true); err != nil {
 			return err
 		}
 	}
@@ -36,9 +44,39 @@ func (e *Engine) prepareParents(ctx context.Context, src *store.Node, dest *uri.
 // prepareDirectory leaves existing permissions alone unless --preserve asks
 // otherwise. A new local directory starts with the source's mode and the
 // process umask, just like a newly copied regular file.
-func (e *Engine) prepareDirectory(ctx context.Context, src *store.Node, dst *uri.URL) error {
+func (e *Engine) prepareDirectory(ctx context.Context, src *store.Node, dst *uri.URL, parent bool) error {
 	if dst.IsRemote() {
+		if e.opt.DryRun {
+			return nil
+		}
 		return e.az.MkdirAll(ctx, dst, 0)
+	}
+	checkExisting := func() error {
+		stat := os.Lstat
+		if parent {
+			// --parents reproduces the path leading to an operand; cp permits
+			// existing directory links along that path, as in the target root.
+			stat = os.Stat
+		}
+		info, err := stat(dst.Path)
+		if err != nil {
+			return err
+		}
+		// A directory being copied must not write through a destination
+		// symlink. The containing directory explicitly named as an operand
+		// has already been resolved by targetFor, as GNU cp permits.
+		if !info.IsDir() {
+			return plainf("cannot overwrite non-directory %s with directory %s",
+				quote(dst.Display()), quote(src.URL.Display()))
+		}
+		return nil
+	}
+	if e.opt.DryRun {
+		err := checkExisting()
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	mode := os.FileMode(0o755)
 	if !src.URL.IsRemote() {
@@ -50,11 +88,7 @@ func (e *Engine) prepareDirectory(ctx context.Context, src *store.Node, dst *uri
 		if !os.IsExist(err) {
 			return err
 		}
-		info, statErr := os.Stat(dst.Path)
-		if statErr != nil {
-			return statErr
-		}
-		if !info.IsDir() {
+		if err := checkExisting(); err != nil {
 			return err
 		}
 	}
@@ -85,4 +119,13 @@ func (e *Engine) prepareDirectory(ctx context.Context, src *store.Node, dst *uri
 		e.deferredDirs = append(e.deferredDirs, d)
 	}
 	return nil
+}
+
+func (e *Engine) directoryFailure(dst *uri.URL, err error) {
+	var plain *plainError
+	if errors.As(err, &plain) {
+		e.fail("%v", err)
+	} else {
+		e.fail("cannot create directory %s: %s", quote(dst.Display()), brief(err))
+	}
 }

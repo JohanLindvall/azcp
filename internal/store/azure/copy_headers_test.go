@@ -41,6 +41,41 @@ func TestStreamCopyDoesNotCommitAChecksumMismatch(t *testing.T) {
 	}
 }
 
+func TestStreamCopyRejectsAnUnexpectedLengthBeforeCommit(t *testing.T) {
+	for _, size := range []int64{0, 17, 2 << 20} {
+		for _, delta := range []int64{-1, 0, 1} {
+			if size+delta < 0 {
+				continue
+			}
+			t.Run(fmt.Sprintf("size=%d/delta=%d", size, delta), func(t *testing.T) {
+				var commits atomic.Int32
+				data := bytes.Repeat([]byte("x"), int(size+delta))
+				s, dst := transferServer(t, func(w http.ResponseWriter, r *http.Request) {
+					stamp(w)
+					if r.Method == http.MethodGet {
+						_, _ = w.Write(data)
+						return
+					}
+					if r.URL.Query().Get("comp") != "block" {
+						commits.Add(1)
+					}
+					_, _ = io.Copy(io.Discard, r.Body)
+					w.WriteHeader(http.StatusCreated)
+				})
+				err := s.streamCopy(context.Background(), &store.Node{URL: dst.WithPathPart("c/source"), Size: size}, dst,
+					TransferOptions{BlockSize: 1 << 20})
+				if delta == 0 {
+					if err != nil || commits.Load() != 1 {
+						t.Fatalf("exact copy: %v, commits %d", err, commits.Load())
+					}
+				} else if err == nil || commits.Load() != 0 {
+					t.Fatalf("unexpected length accepted: %v, commits %d", err, commits.Load())
+				}
+			})
+		}
+	}
+}
+
 func TestCopyDoesNotFallBackAfterAPreconditionFailure(t *testing.T) {
 	for _, headers := range []bool{false, true} {
 		t.Run(fmt.Sprint(headers), func(t *testing.T) {

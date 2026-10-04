@@ -41,11 +41,11 @@ func TestUpdateOlderUsesThePreservedTimestamp(t *testing.T) {
 
 	decide := func(src, dst *store.Node) bool {
 		t.Helper()
-		proceed, _, err := e.decideOverwrite(src, dst)
+		decision, err := e.decideOverwrite(src, dst)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return proceed
+		return decision.proceed
 	}
 
 	if decide(preserved(original), file) {

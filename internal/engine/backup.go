@@ -1,12 +1,47 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/JohanLindvall/azcp/internal/store/local"
+	"github.com/JohanLindvall/azcp/internal/uri"
 )
+
+// Renaming onto a backup name is a write too. It must not replace a file that
+// an earlier operand has yet to open, or race a copy aimed at that name.
+func (e *Engine) awaitBackup(ctx context.Context, path string) error {
+	if path == "" {
+		return nil
+	}
+	u := &uri.URL{Scheme: uri.SchemeFile, Path: path}
+	previous := e.scheduled[destinationKey(u)]
+	if previous.sidecar {
+		return plainf("cannot back up to %s: the name is reserved for another download's resume record", quote(path))
+	}
+	if previous.done != nil {
+		if err := awaitTask(ctx, previous.done); err != nil {
+			return err
+		}
+	}
+	if info, err := os.Stat(path); err == nil {
+		if id, _, ok := local.IDOf(path, info); ok {
+			if _, err := e.awaitDestination(ctx, id); err != nil {
+				return err
+			}
+			for _, reader := range e.localReads[id] {
+				if err := awaitTask(ctx, reader); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
 
 func hasNumberedBackups(path string) bool {
 	n, err := highestNumberedBackup(path)

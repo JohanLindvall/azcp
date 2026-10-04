@@ -24,6 +24,8 @@ FLAGS = [
     ["-p"],
     ["--preserve=links"],
     ["-a"],
+    ["-au"],
+    ["-an"],
     ["-P"],
     ["-L"],
     ["-l"],
@@ -62,6 +64,18 @@ CASES = [
     "write_after_read",
     "update_link_old",
     "update_link_new",
+    "backup_operand",
+    "backup_reverse",
+    "backup_tree",
+    "destdirlink",
+    "destsubdirlink",
+    "linked_symlinks",
+    "update_linked_first",
+    "update_linked_later",
+    "update_linked_both",
+    "parents_dot",
+    "parents_link",
+    "parents_innerlink",
 ]
 
 OLD, ORIGINAL, NEW = 1600000000, 1700000000, 1900000000
@@ -119,6 +133,45 @@ def setup(root, case):
         source, dest = ("b", "a") if case == "read_after_write" else ("a", "b")
         os.link(root / "src" / source, root / "dst" / dest)
         args = ["src/a", "src/b", "dst"]
+    elif case in ("backup_operand", "backup_reverse", "backup_tree"):
+        (root / "src/a").write_bytes(b"a" * 1048576)
+        (root / "src/a~").write_text("another source")
+        (root / "dst").mkdir()
+        (root / "dst/a").write_text("original destination")
+        args = ["src/a", "src/a~", "dst"]
+        if case == "backup_reverse":
+            args = ["src/a~", "src/a", "dst"]
+        if case == "backup_tree":
+            args = ["-rT", "src", "dst"]
+    elif case in ("destdirlink", "destsubdirlink"):
+        (root / "outside").mkdir()
+        (root / "outside/c").write_text("keep")
+        if case == "destdirlink":
+            (root / "dst").symlink_to("outside")
+        else:
+            (root / "dst").mkdir()
+            (root / "dst/sub").symlink_to("../outside")
+        args = ["-rT", "src", "dst"]
+    elif case == "linked_symlinks":
+        os.link(root / "src/link", root / "src/linkalias", follow_symlinks=False)
+        args = ["-r", "src", "dst"]
+    elif case.startswith("update_linked_"):
+        (root / "dst").mkdir()
+        for name in ("a", "alias"):
+            if case.endswith("both") or name == ("a" if case.endswith("first") else "alias"):
+                (root / "dst" / name).write_text("newer " + name)
+        args = ["src/a", "src/alias", "dst"]
+    elif case == "parents_dot":
+        (root / "dst").mkdir()
+        args = ["--parents", "./src/a", "dst"]
+    elif case in ("parents_link", "parents_innerlink"):
+        (root / "real").mkdir()
+        if case == "parents_link":
+            (root / "dst").symlink_to("real")
+        else:
+            (root / "dst").mkdir()
+            (root / "dst/src").symlink_to("../real")
+        args = ["--parents", "./src/a", "dst"]
 
     for path in root.rglob("*"):
         os.utime(path, (ORIGINAL, ORIGINAL), follow_symlinks=False)
@@ -126,6 +179,9 @@ def setup(root, case):
         when = OLD if case.endswith("old") else NEW
         os.utime(root / "other", (when, when))
         os.utime(root / "dst", (NEW, NEW), follow_symlinks=False)
+    if case.startswith("update_linked_"):
+        for path in (root / "dst").iterdir():
+            os.utime(path, (NEW, NEW))
     return args
 
 

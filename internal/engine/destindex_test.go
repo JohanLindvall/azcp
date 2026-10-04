@@ -97,7 +97,8 @@ func assertSameDecision(t *testing.T, argv []string, present, partial, remoteSrc
 		t.Fatalf("%v does not check the destination; nothing to compare", argv)
 	}
 	ctx := context.Background()
-	proceed, backup, err := e.weighDestination(ctx, src, dst)
+	decision, err := e.weighDestination(ctx, src, dst)
+	proceed, backup := decision.proceed, decision.backup
 	// Without this the comparison could pass by never taking the fast path.
 	if used := e.destIdx.reads > 0; used != e.existenceDecides() {
 		t.Fatalf("index consulted = %v, want %v for %v", used, e.existenceDecides(), argv)
@@ -106,7 +107,8 @@ func assertSameDecision(t *testing.T, argv []string, present, partial, remoteSrc
 	// The same question with the index unable to answer, which is the route
 	// every one of these options took before it existed.
 	e.destIdx = nil
-	wantProceed, wantBackup, wantErr := e.weighDestination(ctx, src, dst)
+	wantDecision, wantErr := e.weighDestination(ctx, src, dst)
+	wantProceed, wantBackup := wantDecision.proceed, wantDecision.backup
 
 	if proceed != wantProceed {
 		t.Errorf("proceed = %v with the index, %v with a stat", proceed, wantProceed)
@@ -216,9 +218,9 @@ func TestIndexAndStatRejectDanglingDestinationLinks(t *testing.T) {
 			t.Fatal(err)
 		}
 		dst := mustURL(t, filepath.Join(d, "dst"))
-		_, _, indexed := e.weighDestination(context.Background(), src, dst)
+		_, indexed := e.weighDestination(context.Background(), src, dst)
 		e.destIdx = nil
-		_, _, statted := e.weighDestination(context.Background(), src, dst)
+		_, statted := e.weighDestination(context.Background(), src, dst)
 		if indexed == nil || fmt.Sprint(indexed) != fmt.Sprint(statted) {
 			t.Fatalf("%s: indexed %v, statted %v", flag, indexed, statted)
 		}

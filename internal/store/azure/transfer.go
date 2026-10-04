@@ -921,9 +921,9 @@ func (s *Store) streamCopy(ctx context.Context, src *store.Node, dst *uri.URL, o
 	}
 	defer r.Close()
 
-	counted := io.Reader(r)
+	counted := io.Reader(&sizedReader{Reader: r, remaining: src.Size})
 	if o.Progress != nil {
-		counted = &countingReader{r: r, report: o.Progress}
+		counted = &countingReader{r: counted, report: o.Progress}
 	}
 	if wantsDigest(src.MD5, o.CheckMD5) {
 		counted = &checkedReader{Reader: counted, sum: md5.New(), check: func(got []byte) error {
@@ -943,6 +943,26 @@ func (s *Store) streamCopy(ctx context.Context, src *store.Node, dst *uri.URL, o
 		AccessTier:       o.tier(),
 	})
 	return err
+}
+
+// EOF is permission for UploadStream to commit. A clean HTTP EOF can still
+// describe fewer bytes than the scan promised, so check the length even when
+// the blob has no checksum or checksum verification was disabled.
+type sizedReader struct {
+	io.Reader
+	remaining int64
+}
+
+func (r *sizedReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.remaining -= int64(n)
+	if r.remaining < 0 {
+		return n, fmt.Errorf("blob produced more bytes than its recorded length")
+	}
+	if errors.Is(err, io.EOF) && r.remaining != 0 {
+		return n, fmt.Errorf("blob ended with %d bytes still expected: %w", r.remaining, io.ErrUnexpectedEOF)
+	}
+	return n, err
 }
 
 // countingReader reports cumulative bytes pulled from the source, which for a

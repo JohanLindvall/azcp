@@ -234,6 +234,27 @@ func TestCopyCollisionIsOrdered(t *testing.T) {
 	}
 }
 
+func TestBackupNamesParticipateInCopyOrdering(t *testing.T) {
+	for _, recursive := range []bool{false, true} {
+		t.Run(fmt.Sprint(recursive), func(t *testing.T) {
+			d := t.TempDir()
+			write(t, filepath.Join(d, "src/a"), strings.Repeat("new", 4<<20))
+			write(t, filepath.Join(d, "src/a~"), "second source")
+			write(t, filepath.Join(d, "dst/a"), "original destination")
+			args := []string{"-b", "-j1", "--reflink=never", "--sparse=never", "src/a", "src/a~", "dst"}
+			if recursive {
+				args = []string{"-rbT", "-j1", "--reflink=never", "--sparse=never", "src", "dst"}
+			}
+			if n := run(t, d, args...); n != 0 {
+				t.Fatal(n)
+			}
+			if read(t, filepath.Join(d, "dst/a~")) != "second source" || read(t, filepath.Join(d, "dst/a~~")) != "original destination" {
+				t.Fatal("later operand did not back up the earlier operand's backup")
+			}
+		})
+	}
+}
+
 func TestNoClobberRecognizesResumeSuffixAsAFileName(t *testing.T) {
 	d := t.TempDir()
 	write(t, filepath.Join(d, "src/file.azcp-part"), "new")

@@ -175,7 +175,8 @@ func TestUnfinishedDownloadIsNotSkipped(t *testing.T) {
 
 			// With nothing beside it, it is a finished copy as far as anyone
 			// can tell, and these options exist to leave it alone.
-			proceed, _, err := e.decideOverwrite(src, dst)
+			decision, err := e.decideOverwrite(src, dst)
+			proceed := decision.proceed
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -185,7 +186,8 @@ func TestUnfinishedDownloadIsNotSkipped(t *testing.T) {
 
 			// With a record, it is this copy, stopped part-way.
 			write(t, path+".azcp-part", "azcp-resume 1 etag 100 8388608\n0\n")
-			proceed, backup, err := e.decideOverwrite(src, dst)
+			decision, err = e.decideOverwrite(src, dst)
+			proceed, backup := decision.proceed, decision.backup
 			if err != nil {
 				t.Fatal(err)
 			}

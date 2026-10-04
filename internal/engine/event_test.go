@@ -55,7 +55,8 @@ func TestFileEventCarriesWhatDecidesACopy(t *testing.T) {
 		{modified.Add(-time.Nanosecond), true},
 		{modified.Add(time.Second), false},
 	} {
-		proceed, _, err := e.decideOverwrite(blob, &store.Node{URL: dst, Size: 1, ModTime: c.file})
+		decision, err := e.decideOverwrite(blob, &store.Node{URL: dst, Size: 1, ModTime: c.file})
+		proceed := decision.proceed
 		if err != nil {
 			t.Fatal(err)
 		}

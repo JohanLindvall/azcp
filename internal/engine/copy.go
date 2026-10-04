@@ -306,14 +306,12 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 			}
 		}
 		return linkError(t, "hard", e.replace(t, func() error { return os.Link(linkPath, dstPath) }))
-	case t.src.IsSymlink():
-		return e.replace(t, func() error { return local.CopySymlink(srcPath, dstPath) })
 	}
 
 	// Files that were hard-linked in the source stay linked in the copy. The
 	// first task for an identity claims it and copies; the rest wait for that
 	// copy and link to it.
-	if e.opt.Preserve.Links {
+	if e.opt.Preserve.Links || t.hardLink != nil {
 		linked, c, err := e.awaitHardLink(ctx, t)
 		if linked || err != nil {
 			return err
@@ -324,6 +322,8 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 	}
 
 	switch {
+	case t.src.IsSymlink():
+		return e.replace(t, func() error { return local.CopySymlink(srcPath, dstPath) })
 	case e.opt.AttributesOnly:
 		f, err := e.openDest(t, os.O_WRONLY|os.O_CREATE, e.opt.CreationMode(t.src.Mode))
 		if err != nil {
@@ -408,24 +408,21 @@ type linkClaim struct {
 // a claim when this task is the one that must copy the data, and neither for
 // a file with a single name.
 func (e *Engine) awaitHardLink(ctx context.Context, t *task) (linked bool, claim *linkClaim, err error) {
-	info, statErr := sourceInfo(t.src)
-	if statErr != nil {
-		return false, nil, nil // let the copy itself report the problem
+	if t.hardLink == nil {
+		// A failed claimant releases its promise. Its retry can claim again;
+		// the scanner already assigned promises to ordinary first attempts.
+		e.planHardLink(t)
+		if t.hardLink == nil {
+			return false, nil, nil
+		}
 	}
-	id, nlink, ok := local.IDOf(t.src.URL.Path, info)
-	if !ok || nlink < 2 {
-		return false, nil, nil
+	if t.linkClaim != nil {
+		claim := t.linkClaim
+		// A whole-file retry must not settle the same promise twice.
+		t.linkClaim, t.hardLink = nil, nil
+		return false, claim, nil
 	}
-
-	e.hardLinksMu.Lock()
-	fut := e.hardLinks[id]
-	if fut == nil {
-		fut = &linkFuture{done: make(chan struct{})}
-		e.hardLinks[id] = fut
-		e.hardLinksMu.Unlock()
-		return false, &linkClaim{id: id, fut: fut}, nil
-	}
-	e.hardLinksMu.Unlock()
+	fut := t.hardLink
 
 	// Tasks are handed to workers in the order they were queued, so the
 	// claimant is already running (or finished) by the time this one starts:
@@ -439,7 +436,9 @@ func (e *Engine) awaitHardLink(ctx context.Context, t *task) (linked bool, claim
 		// The first copy failed; copying the data is the best that is left.
 		return false, nil, nil
 	}
-	if err := e.replace(t, func() error { return os.Link(fut.path, t.dst.Path) }); err != nil {
+	// The first destination already has its final attributes. Reapplying the
+	// source's here would change a newer file deliberately retained by -u.
+	if err := e.replaceEntry(t, func() error { return os.Link(fut.path, t.dst.Path) }); err != nil {
 		e.log.Warn("cannot preserve hard link, copying instead",
 			"source", t.src.URL.Display(), "first_copy", fut.path, "error", err)
 		return false, nil, nil
@@ -466,9 +465,16 @@ func (e *Engine) settleLink(c *linkClaim, path string, ok bool) {
 // replace performs an operation that cannot overwrite in place, removing an
 // existing destination first the way cp does for links.
 func (e *Engine) replace(t *task, fn func() error) error {
+	if err := e.replaceEntry(t, fn); err != nil {
+		return err
+	}
+	e.applyAttrs(t)
+	return nil
+}
+
+func (e *Engine) replaceEntry(t *task, fn func() error) error {
 	err := fn()
 	if err == nil {
-		e.applyAttrs(t)
 		return nil
 	}
 	if !errors.Is(err, os.ErrExist) || e.opt.NoClobber ||
@@ -478,11 +484,7 @@ func (e *Engine) replace(t *task, fn func() error) error {
 	if rmErr := os.Remove(t.dst.Path); rmErr != nil {
 		return err
 	}
-	if err := fn(); err != nil {
-		return err
-	}
-	e.applyAttrs(t)
-	return nil
+	return fn()
 }
 
 // openDest opens a local destination, applying -f by clearing an unwritable

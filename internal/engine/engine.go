@@ -61,8 +61,8 @@ type Engine struct {
 	failed atomic.Int64
 
 	// hardLinks maps a source file identity to the copy that will provide the
-	// destination all its other names link to. The first task to arrive for an
-	// identity claims it and copies the data; later tasks wait for that copy
+	// destination all its other names link to. The scanner claims the first
+	// destination for an identity; later tasks wait for that copy
 	// and link to it, which is what keeps files hard-linked in the source
 	// hard-linked in the copy even though tasks run in parallel.
 	hardLinksMu sync.Mutex
@@ -217,10 +217,12 @@ type task struct {
 	// stream marks a copy from or to a pipe, which can be attempted only
 	// once: a second attempt would lose what the first one read, or send
 	// twice what it wrote.
-	stream   bool
-	done     chan struct{}
-	destID   *local.FileID
-	sourceID *local.FileID
+	stream    bool
+	done      chan struct{}
+	destID    *local.FileID
+	sourceID  *local.FileID
+	hardLink  *linkFuture
+	linkClaim *linkClaim
 	// followDangling is GNU cp's POSIXLY_CORRECT exception: -n may create a
 	// missing symlink target, despite the link itself already existing.
 	followDangling bool

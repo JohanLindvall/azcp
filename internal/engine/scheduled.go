@@ -16,6 +16,7 @@ type plannedCopy struct {
 	source  string
 	done    <-chan struct{}
 	sidecar bool
+	backup  bool
 }
 
 func destinationKey(u *uri.URL) string {
@@ -47,6 +48,11 @@ func (e *Engine) reserveDestination(ctx context.Context, src *store.Node, dst *u
 	}
 	if previous.sidecar {
 		return false, plainf("cannot copy to %s: the name is reserved for another download's resume record", quote(dst.Display()))
+	}
+	if previous.backup {
+		// A backup is an ordinary existing destination to the next operand,
+		// but its rename must finish before overwrite rules inspect it.
+		return true, awaitTask(ctx, previous.done)
 	}
 	if e.opt.NoClobber || e.opt.Update == cli.UpdateNone {
 		return false, nil

@@ -72,6 +72,31 @@ fi
 [ -d "$WORK/down/tree/hollow/inner" ] && ok "a nested empty directory round-trips" \
                                       || bad "a nested empty directory was lost"
 
+# A directory in the source must not turn an existing destination link into
+# permission to overwrite data outside the tree. Failed directories also
+# suppress --delete, while unrelated siblings still copy.
+mkdir -p "$WORK/link-source/sub/deep" "$WORK/link-dest" "$WORK/link-outside/deep"
+echo replacement > "$WORK/link-source/sub/deep/file"
+echo sibling > "$WORK/link-source/sibling"
+echo keep > "$WORK/link-outside/deep/file"
+echo extra > "$WORK/link-dest/extra"
+ln -s ../link-outside "$WORK/link-dest/sub"
+"$AZCP" -rT "$WORK/link-source" "$AZ/link-source" >/dev/null
+for mode in dry live; do
+  extra_flags=()
+  [ "$mode" = dry ] && extra_flags+=(--dry-run)
+  if "$AZCP" -rT --delete "${extra_flags[@]}" "$AZ/link-source" "$WORK/link-dest" \
+      >"$WORK/link-copy.stdout" 2>"$WORK/link-copy.stderr"; then
+    bad "a remote directory was copied through a destination symlink ($mode)"
+  elif [ "$(cat "$WORK/link-outside/deep/file")" = keep ] && [ -f "$WORK/link-dest/extra" ]; then
+    ok "a refused destination directory protects outside data and suppresses deletion ($mode)"
+  else
+    bad "a refused destination directory changed existing data ($mode)"
+  fi
+done
+check "a refused destination subtree still allows its siblings to copy" \
+  "$(cat "$WORK/link-dest/sibling")" sibling
+
 # A fast download must retain its finished bar even if no timed refresh ran.
 # JSON remains on stdout while the completed display stays on stderr.
 "$AZCP" --progress=always --progress-interval=1h --output=json \
