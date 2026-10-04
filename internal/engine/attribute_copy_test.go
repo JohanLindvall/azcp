@@ -176,7 +176,9 @@ func TestParentsFollowsIntermediateDirectorySymlinks(t *testing.T) {
 			if read(t, filepath.Join(d, copied)) != "contents" {
 				t.Fatal("file did not land through the intermediate directory")
 			}
-			if got, err := os.Readlink(filepath.Join(d, link)); err != nil || got != target {
+			// Windows reports the target with its own separators; the link is
+			// the same one.
+			if got, err := os.Readlink(filepath.Join(d, link)); err != nil || filepath.ToSlash(got) != target {
 				t.Fatalf("intermediate link changed: %q, %v", got, err)
 			}
 		})
