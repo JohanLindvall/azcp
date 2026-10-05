@@ -101,7 +101,15 @@ type Credentials struct {
 	// subscription belongs to, in tests, which must not run the real CLI. It
 	// is nil everywhere else.
 	cliFn func(subscription string) (azcore.TokenCredential, error)
+	// ambientFn stands in for the ambient identity chain built for a tenant,
+	// in tests, which must not find whatever identity the machine running them
+	// has. It is nil everywhere else.
+	ambientFn func(tenant string) (azcore.TokenCredential, error)
 }
+
+// kindCLIAccount marks the Azure CLI's account in the tenant --tenant named,
+// found when the CLI's current account could not get a token there.
+const kindCLIAccount = "Azure CLI account in the tenant"
 
 // kindResumed marks a credential rebuilt from a previous run's sign-in, which
 // must not be offered as the answer to that same credential being rejected.
@@ -331,11 +339,23 @@ func (c *Credentials) resolve(ctx context.Context) (azcore.TokenCredential, stri
 
 	// The ambient identity: environment variables, workload identity, managed
 	// identity, the Azure CLI, and the Azure Developer CLI, in that order.
-	def, err := azidentity.NewDefaultAzureCredential(&azidentity.DefaultAzureCredentialOptions{
-		TenantID: c.TenantID,
-	})
+	def, err := c.ambient()
 	if err == nil {
+		// A tenant named with --tenant meets the CLI the way one a challenge
+		// names does: the CLI asks as its current account, which a tenant it is
+		// not a member of refuses, so the CLI's other accounts there are asked
+		// next. Without this, naming the tenant did worse than leaving it out.
+		var cli *cliAccounts
+		if c.TenantID != "" {
+			if cli = c.cliAccountsIn(c.TenantID); cli != nil {
+				def = forTenant(def, c.TenantID, nil, cli)
+			}
+		}
 		if err = probe(ctx, def); err == nil {
+			if cli != nil && cli.hasAnswered() {
+				log.Debug("authenticated as the Azure CLI's account in the tenant", "tenant", c.TenantID)
+				return def, kindCLIAccount, nil
+			}
 			log.Debug("authenticated with the ambient Azure identity")
 			return def, "default azure credential", nil
 		}
@@ -349,7 +369,7 @@ func (c *Credentials) resolve(ctx context.Context) (azcore.TokenCredential, stri
 	}
 
 	// A sign-in from an earlier run, if the tokens are still good.
-	if cred, ok := c.resume(ctx); ok {
+	if cred, ok := c.tryResume(ctx); ok {
 		return cred, kindResumed, nil
 	}
 
@@ -373,6 +393,17 @@ func (c *Credentials) resolve(ctx context.Context) (azcore.TokenCredential, stri
 		"which only works for containers that allow public read access",
 		"hint", "run `az login`, or pass a SAS token in the URL")
 	return nil, "anonymous", nil
+}
+
+// ambient returns the ambient identity chain, directed at TenantID when one is
+// named.
+func (c *Credentials) ambient() (azcore.TokenCredential, error) {
+	if c.ambientFn != nil {
+		return c.ambientFn(c.TenantID)
+	}
+	return azidentity.NewDefaultAzureCredential(&azidentity.DefaultAzureCredentialOptions{
+		TenantID: c.TenantID,
+	})
 }
 
 func (c *Credentials) deviceCode() (*azidentity.DeviceCodeCredential, error) {

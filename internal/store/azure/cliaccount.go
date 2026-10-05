@@ -27,8 +27,9 @@ import (
 // own tenant.
 //
 // So when a storage account names a tenant that the identity in hand cannot
-// get a token for, the CLI's other accounts in that tenant are asked next,
-// each by one of its subscriptions, before anybody is asked to sign in. They
+// get a token for, or --tenant names one, the CLI's other accounts in that
+// tenant are asked next, each by one of its subscriptions, before anybody is
+// asked to sign in. They
 // come from the CLI's profile, azureProfile.json, which lists every
 // subscription the CLI can see, with the tenant it is in and the account it
 // was seen as. Reading that file costs no process, where `az account list`
@@ -140,7 +141,7 @@ func (a *cliAccounts) GetToken(ctx context.Context, opts policy.TokenRequestOpti
 			var tk azcore.AccessToken
 			if tk, err = cred.GetToken(ctx, opts); err == nil {
 				a.answered = cred
-				a.log.Info("using the Azure CLI's account in the tenant the storage account named",
+				a.log.Info("using the Azure CLI's account in the tenant",
 					"subscription", subscription)
 				return tk, nil
 			}

@@ -317,3 +317,138 @@ esac
 		t.Errorf("az was run as %q, want --subscription and no --tenant", got)
 	}
 }
+
+// pinnedTo is the ambient identity chain as NewDefaultAzureCredential builds it
+// for --tenant: a request that names no tenant goes to the one it was built for.
+type pinnedTo struct {
+	azcore.TokenCredential
+	tenant string
+}
+
+func (p pinnedTo) GetToken(ctx context.Context, o policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	if o.TenantID == "" {
+		o.TenantID = p.tenant
+	}
+	return p.TokenCredential.GetToken(ctx, o)
+}
+
+// withNamedTenant is the credential discovery of a run given --tenant, with the
+// ambient identity, the CLI, any saved sign-in and the sign-in prompt stood in
+// for.
+func withNamedTenant(tenant string, ambient azcore.TokenCredential, cli *fakeCLI, signIns *atomic.Int32) *Credentials {
+	return &Credentials{
+		Mode:        AuthAuto,
+		Interactive: true,
+		TenantID:    tenant,
+		Log:         slog.New(slog.DiscardHandler),
+		ambientFn: func(tenant string) (azcore.TokenCredential, error) {
+			return pinnedTo{ambient, tenant}, nil
+		},
+		cliFn:    cli.newCred,
+		resumeFn: func(context.Context) (azcore.TokenCredential, bool) { return nil, false },
+		signInFn: func(context.Context, AuthMode) (azcore.TokenCredential, string, error) {
+			signIns.Add(1)
+			return stubCredential{}, "stub", nil
+		},
+	}
+}
+
+// --tenant naming a tenant the CLI's current account is not a member of finds
+// the CLI's account there, as a tenant the storage account names does. It used
+// to leave the CLI asking as its current account, which the tenant refuses
+// (AADSTS50020), so naming the tenant did worse than leaving it out: a scripted
+// run went on anonymously and failed with "not signed in".
+func TestTheCLIsAccountInATenantNamedWithTheFlagAnswersForIt(t *testing.T) {
+	cliProfile(t,
+		subscription("home", homeTenant, "me@home.example", true),
+		subscription("other", otherTenant, "me@other.example", false))
+	cli := &fakeCLI{}
+	current := &memberOnlyAt{tenant: homeTenant}
+	var signIns atomic.Int32
+	c := withNamedTenant(otherTenant, current, cli, &signIns)
+
+	cred, kind, err := c.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if kind != kindCLIAccount {
+		t.Errorf("kind = %q, want %q", kind, kindCLIAccount)
+	}
+	if cred == nil {
+		t.Fatal("no credential, although the CLI holds an account in the tenant")
+	}
+	tk, err := cred.GetToken(context.Background(), tokenRequest())
+	if err != nil {
+		t.Fatalf("GetToken: %v", err)
+	}
+	if tk.Token != "cli:other" {
+		t.Errorf("token = %q, want the one the CLI's account in the tenant was given", tk.Token)
+	}
+	if got := signIns.Load(); got != 0 {
+		t.Errorf("interactive sign-ins = %d, want 0", got)
+	}
+	asked, tenants := cli.requests()
+	if !reflect.DeepEqual(asked, []string{"other", "other"}) {
+		t.Errorf("the CLI was asked as %q, want the account in the tenant, by its subscription, "+
+			"for the probe and for the request", asked)
+	}
+	for _, tenant := range tenants {
+		if tenant != "" {
+			t.Errorf("the CLI was asked for tenant %q, want none: the subscription names it", tenant)
+		}
+	}
+	// Refused once, by the probe, the current account is not asked there again.
+	if got := current.asked.Load(); got != 1 {
+		t.Errorf("the current account was asked %d time(s), want 1", got)
+	}
+}
+
+// An ambient identity that can get a token in the named tenant is used as it
+// is: the CLI's other accounts there are for when it cannot.
+func TestAnIdentityThatIsAMemberOfTheNamedTenantIsUsedAsItIs(t *testing.T) {
+	cliProfile(t,
+		subscription("home", homeTenant, "me@home.example", true),
+		subscription("other", otherTenant, "me@other.example", false))
+	cli := &fakeCLI{}
+	var signIns atomic.Int32
+	c := withNamedTenant(otherTenant, &memberOnlyAt{tenant: otherTenant}, cli, &signIns)
+
+	cred, kind, err := c.Resolve(context.Background())
+	if err != nil || cred == nil {
+		t.Fatalf("Resolve = %v, %q, %v; want the ambient identity", cred, kind, err)
+	}
+	if kind != "default azure credential" {
+		t.Errorf("kind = %q, want the ambient identity's", kind)
+	}
+	if tk, err := cred.GetToken(context.Background(), tokenRequest()); err != nil || tk.Token != "home" {
+		t.Errorf("GetToken = %q, %v; want the ambient identity's token", tk.Token, err)
+	}
+	if asked, _ := cli.requests(); len(asked) != 0 {
+		t.Errorf("the CLI was asked as %q, want not at all", asked)
+	}
+}
+
+// When the CLI's accounts in the named tenant are refused as well, discovery
+// goes on as it always did, to a sign-in directed at that tenant.
+func TestWhenTheCLIsAccountsInTheNamedTenantAreRefusedASignInFollows(t *testing.T) {
+	cliProfile(t,
+		subscription("home", homeTenant, "me@home.example", true),
+		subscription("other", otherTenant, "me@other.example", false))
+	cli := &fakeCLI{refuse: true}
+	var signIns atomic.Int32
+	c := withNamedTenant(otherTenant, &memberOnlyAt{tenant: homeTenant}, cli, &signIns)
+
+	cred, kind, err := c.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if cred == nil || kind != "stub" {
+		t.Errorf("Resolve = %v, %q; want the sign-in's credential", cred, kind)
+	}
+	if got := signIns.Load(); got != 1 {
+		t.Errorf("interactive sign-ins = %d, want 1", got)
+	}
+	if asked, _ := cli.requests(); !reflect.DeepEqual(asked, []string{"other"}) {
+		t.Errorf("the CLI was asked as %q, want the account in the tenant, once", asked)
+	}
+}
