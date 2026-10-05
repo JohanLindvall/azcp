@@ -308,7 +308,13 @@ AADSTS50020, however many other accounts the CLI holds there. `--subscription`
 answers as the account the subscription belongs to, and the CLI refuses the two
 flags together. So when the identity in hand is refused a token in the tenant a
 challenge named, `tenantCredential` asks the CLI's other accounts in that tenant
-(`cliaccount.go`). Each is named by one of its subscriptions from
+(`cliaccount.go`). A tenant named with `--tenant` gets the same: `resolve` wraps
+the ambient identity in `forTenant` with the CLI's accounts there before probing
+it, because the challenge is never followed once `--tenant` has named a tenant,
+and without the wrapper naming one did worse than leaving it out — the probe was
+refused, and a scripted run went on anonymously to "not signed in".
+`TestTheCLIsAccountInATenantNamedWithTheFlagAnswersForIt` pins it, with the
+ambient chain stood in for by `Credentials.ambientFn`. Each is named by one of its subscriptions from
 `azureProfile.json`, and the request's tenant is cleared. The one that answers
 is asked first from then on, because asking the refused identity again costs a
 process. This is skipped under `--auth=device` and `--auth=browser`, which ask

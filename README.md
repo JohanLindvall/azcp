@@ -379,7 +379,9 @@ customer's or another employer's. The CLI answers a request for a tenant as its
 `azcp` goes on to ask the CLI's other accounts in that tenant, naming each by
 one of its subscriptions, because the subscription, not the tenant, is how the
 CLI is told whose token to hand over. They are found in the CLI's profile, and
-asking them troubles nobody either.
+asking them troubles nobody either. A tenant named with `--tenant` is treated
+the same way, so naming the tenant finds the account that is a member there
+just as leaving it to the storage account does.
 
 Where even that is refused, `azcp` says so and signs you in, naming the tenant
 rather than leaving you to guess it: a browser window where there is a desktop
