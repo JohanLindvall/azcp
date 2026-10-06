@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package store abstracts the two namespaces the tool copies between: the
 // local filesystem and Azure Blob Storage. Only the naming operations (stat,
 // list, walk) are behind the interface. The bulk data paths are dispatched

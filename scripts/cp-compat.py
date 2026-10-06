@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """Compare local copy results with the compatibility reference, GNU cp 9.4.
 
 Run after make build, or set AZCP to a binary. All operations use temporary

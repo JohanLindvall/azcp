@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package logx configures structured logging for the tool and, crucially,
 // arbitrates access to the terminal. Log records and progress bars share one
 // output device, so every write goes through a guard that the progress renderer

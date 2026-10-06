@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Guidance for Claude Code working in this repository.
 
@@ -29,7 +29,7 @@ enough and needs no account:
 
 ```
 docker run -d --rm --name azurite -p 10000:10000 \
-  mcr.microsoft.com/azure-storage/azurite azurite-blob --blobHost 0.0.0.0
+  mcr.microsoft.com/azure-storage/azurite azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
 
 export AZURE_STORAGE_ACCOUNT=devstoreaccount1
 export AZURE_STORAGE_KEY='Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=='
@@ -608,3 +608,8 @@ build tag in `tokencache_persist.go` with an in-memory stand-in beside it.
   to `off`; `TestCheckMD5DefaultsToFail` keeps it honest.
 - Anything accepted but not implemented must say so at warn level. Silently
   doing less than asked is worse than refusing.
+- Every source file starts with `// SPDX-License-Identifier: MIT` (`#` in a
+  script), followed by a blank line so it stays out of the package
+  documentation and ahead of any `//go:build` constraint. The full text is in
+  `LICENSE`; the one line is what lets a dependency review approve the module
+  file by file without a meeting.

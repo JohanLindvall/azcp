@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package engine plans and performs the copy. Planning walks the sources
 // (expanding wildcards and recursing into directories) on one goroutine, which
 // keeps cp's ordering rules and any interactive prompt sane, while a pool of

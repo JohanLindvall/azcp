@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package cpflags parses arguments the way GNU getopt_long does, because a
 // drop-in replacement for cp has to accept everything a script might already be
 // passing: clustered short options, attached and detached values, unambiguous

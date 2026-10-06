@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Command azcp copies files, locally or to and from Azure Blob Storage, with a
 // command line compatible with cp.
 package main

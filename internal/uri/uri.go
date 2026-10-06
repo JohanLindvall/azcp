@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package uri parses the location arguments accepted on the command line. A
 // location is either a plain local path or an Azure Blob Storage URL:
 //

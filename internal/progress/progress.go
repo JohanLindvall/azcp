@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package progress draws the live transfer display.
 //
 // It owns the terminal while it is running: log records and ordinary output go

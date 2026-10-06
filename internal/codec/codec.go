@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package codec names the compressed forms a copy can write or expand — gzip,
 // deflate and zstd — and knows, for each, its Content-Encoding, its file
 // extension and how to open a stream in it. --compress and --decompress share

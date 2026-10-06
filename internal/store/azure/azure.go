@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package azure implements the store interface over Azure Blob Storage.
 //
 // Blob storage has no directories, only names that happen to contain slashes.
