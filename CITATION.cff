@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: If you use azcp in work you publish, please cite it as below.
+type: software
+title: azcp
+abstract: >-
+  A drop-in replacement for GNU cp that also copies to and from Azure Blob
+  Storage, with the same options, operands, exit statuses and messages.
+authors:
+  - family-names: Lindvall
+    given-names: Johan
+repository-code: https://github.com/JohanLindvall/azcp
+license: MIT
+keywords:
+  - azure
+  - blob-storage
+  - cp
+  - file-transfer
+  - command-line
