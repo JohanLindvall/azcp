@@ -1,13 +1,21 @@
 # azcp
 
-A drop-in `cp` that also copies to and from Azure Blob Storage.
+[![CI](https://github.com/JohanLindvall/azcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/JohanLindvall/azcp/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/JohanLindvall/azcp?sort=semver&display_name=tag)](https://github.com/JohanLindvall/azcp/releases/latest)
+[![Go reference](https://pkg.go.dev/badge/github.com/JohanLindvall/azcp/cmd/azcp.svg)](https://pkg.go.dev/github.com/JohanLindvall/azcp/cmd/azcp)
+[![License: MIT](https://img.shields.io/github/license/JohanLindvall/azcp)](LICENSE)
 
-`azcp` takes the same command line as GNU `cp` — the same short and long
-options, the same operand shapes, the same exit statuses, the same messages on
-stderr — and lets either side of the copy be an `azure://` URL. It adds the
-things a network copier needs and a local one does not: parallel transfers, a
-live progress display, retries that ride out a blip, and a log of anything that
-went wrong.
+A drop-in GNU `cp` that also copies to and from Azure Blob Storage: the same
+short and long options, the same operand shapes, the same exit statuses and
+the same messages on stderr, with either side of the copy an `azure://` URL.
+Measured against AzCopy, it downloads about twice as fast from a real storage
+account, uploads a tree of small files in half the requests, and lists a deep
+tree in two calls where AzCopy makes a hundred — [the table](#why-not-azcopy)
+says how each was measured.
+
+It adds the things a network copier needs and a local one does not: parallel
+transfers, a live progress display, retries that ride out a blip, and a log of
+anything that went wrong.
 
 ```
 azcp -r ./build azure://myaccount/releases/v2.1/
@@ -15,6 +23,13 @@ azcp 'azure://myaccount/logs/**/*.gz' ./archive/
 azcp -r 'azure://a/data/2024/**' 'azure://b/backup/2024/'
 ```
 
+With Go on the machine, run it without installing it — the first run compiles
+it, which takes about half a minute — or [try it against a local
+emulator](#trying-it-without-an-account) with no Azure account at all:
+
+```
+go run github.com/JohanLindvall/azcp/cmd/azcp@latest --help
+```
 
 ## Getting started
 
@@ -40,6 +55,29 @@ Nothing needs configuring before the first copy: a SAS in the URL, the
 `AZURE_STORAGE_*` variables or an `az login` are found without being named — see
 [Signing in](#signing-in). Windows, the container image, `go install` and
 building from a clone are under [Installing](#installing).
+
+### Trying it without an account
+
+The Azurite emulator stands in for a storage account. The key below is the
+development key Microsoft publishes for it — the same on every machine, and it
+unlocks nothing but the emulator. The last flag on the first line matters: the
+emulator refuses any API version newer than the one it was built against, and
+the SDK asks for a recent one.
+
+```
+docker run -d --rm --name azurite -p 10000:10000 \
+  mcr.microsoft.com/azure-storage/azurite azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+export AZURE_STORAGE_ACCOUNT=devstoreaccount1
+export AZURE_STORAGE_KEY='Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=='
+
+azcp --create-container -r ./any-directory http://127.0.0.1:10000/devstoreaccount1/demo/
+azcp -r http://127.0.0.1:10000/devstoreaccount1/demo/any-directory ./it-came-back
+docker stop azurite
+```
+
+A blob-to-blob copy takes the asynchronous route there, because the emulator
+leaves out the from-URL operations; everything else behaves as it does against
+a real account, and `make e2e` runs the whole blob test suite against it.
 
 ## Why not AzCopy
 
@@ -228,7 +266,7 @@ docker run --rm -v "$PWD:/data" \
   ghcr.io/johanlindvall/azcp:latest -r /data/build azure://acct/releases/
 ```
 
-Tagged `latest`, the exact version (`0.1.0`), the moving minor (`0.1`), and
+Tagged `latest`, the exact version (`X.Y.Z`), the moving minor (`X.Y`), and
 `edge` from the main branch. Published for `linux/amd64` and `linux/arm64`,
 with a build-provenance attestation and an SBOM. Credentials reach it the usual
 way — a SAS in the URL, the `AZURE_STORAGE_*` variables, or a managed identity
