@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package retryx classifies transient failures and retries operations with
 // bounded, jittered exponential backoff.
 //

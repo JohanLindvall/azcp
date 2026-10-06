@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 #
 # End-to-end check of the blob paths against the Azurite emulator.
 #

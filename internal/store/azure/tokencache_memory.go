@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //go:build !(linux || windows || (darwin && cgo))
 
 package azure

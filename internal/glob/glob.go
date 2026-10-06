@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package glob implements bash-style pathname expansion with the globstar and
 // extglob options enabled, over an abstract path space that uses "/" as the
 // separator. It is used for both local paths and blob keys, so it deliberately

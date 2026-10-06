@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package parallel runs indexed work with bounded concurrency and cancels the
 // remaining work on failure. Callers retain control of progress and retries.
 package parallel

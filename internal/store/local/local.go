@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package local implements the store interface over the local filesystem.
 package local
 

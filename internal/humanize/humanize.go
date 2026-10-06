@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package humanize formats byte counts, rates, durations and identifiers for
 // display in a terminal. Everything here is display-only: no value produced by
 // this package should ever be parsed back.

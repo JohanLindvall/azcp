@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //go:build !linux && !darwin && !windows
 
 package local

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package cli defines the command's interface: the option table, the
 // configuration it produces, and the help text.
 package cli
