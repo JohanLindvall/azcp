@@ -1,0 +1,36 @@
+<!-- SPDX-License-Identifier: MIT -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">azcp — your copy command, with Azure Blob Storage</title>
+  <desc id="description">A terminal example copies a photos directory to azure://myaccount/backup/. Available for Linux, macOS and Windows.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1280" y2="320" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101D32"/>
+      <stop offset="1" stop-color="#0A1220"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="70" y1="0" x2="650" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#70E1CC"/>
+      <stop offset="1" stop-color="#69B9FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="320" rx="24" fill="url(#background)"/>
+  <rect x="1" y="1" width="1278" height="318" rx="23" stroke="#263B54"/>
+  <path d="M70 1H650" stroke="url(#accent)" stroke-width="3"/>
+  <g font-family="Ubuntu Sans, DejaVu Sans, sans-serif">
+    <text x="62" y="121" fill="#F0F6FC" font-size="84" font-weight="700" letter-spacing="-4">azcp</text>
+    <path d="M296 80L312 96L296 112M326 112H350" stroke="#70E1CC" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="66" y="178" fill="#F0F6FC" font-size="30" font-weight="500">Your copy command.</text>
+    <text x="66" y="220" fill="#87C9FF" font-size="30" font-weight="500">With Azure Blob Storage.</text>
+    <text x="68" y="276" fill="#ADBED2" font-size="17" letter-spacing="1.5">LINUX · macOS · WINDOWS</text>
+  </g>
+  <rect x="682" y="46" width="538" height="228" rx="16" fill="#0B1423" stroke="#324961"/>
+  <path d="M683 90H1219" stroke="#263B54"/>
+  <circle cx="708" cy="68" r="5" fill="#70E1CC"/>
+  <circle cx="727" cy="68" r="5" fill="#69B9FF"/>
+  <circle cx="746" cy="68" r="5" fill="#58738F"/>
+  <text x="1187" y="74" text-anchor="end" fill="#A4B8CC" font-family="Ubuntu Sans, DejaVu Sans, sans-serif" font-size="13" letter-spacing="1.5">LOCAL → CLOUD</text>
+  <g font-family="DejaVu Sans Mono, monospace" font-size="22">
+    <text x="710" y="137" fill="#A4B8CC"># Same flags. New destination.</text>
+    <text x="710" y="185" fill="#F0F6FC"><tspan fill="#70E1CC">$ </tspan>azcp -r ./photos \</text>
+    <text x="736" y="224" fill="#87C9FF">azure://myaccount/backup/</text>
+  </g>
+</svg>

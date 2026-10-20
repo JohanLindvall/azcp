@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: MIT
+
+name: Report a bug
+description: Help reproduce an unexpected copy result, error or performance problem.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. A small reproduction helps us investigate.
+        Remove SAS tokens, account keys, bearer tokens and private data from commands and logs.
+        For a security vulnerability, use [private reporting](https://github.com/JohanLindvall/azcp/security/advisories/new).
+  - type: input
+    id: version
+    attributes:
+      label: azcp version
+      description: Paste the output of azcp --version.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and architecture
+      placeholder: e.g. Ubuntu 24.04 on x86-64, macOS on Apple silicon, Windows 11 on ARM64
+    validations:
+      required: true
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Where are you copying?
+      options:
+        - Local to Azure
+        - Azure to local
+        - Azure to Azure
+        - Local to local
+        - Installation or another issue
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the command with credentials removed and any small sample files or directory layout needed. Say whether you used Azure or Azurite.
+      placeholder: |
+        1. Create...
+        2. Run azcp...
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected and actual result
+      description: What did you expect, and what happened instead? Include the exit status if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Optional. Include only the relevant lines and remove credentials and private paths before posting.
+      render: text
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Optional. For performance, include file counts and sizes, options, timings and comparison-tool versions. For a cp compatibility issue, include the GNU cp version and result.

@@ -99,7 +99,8 @@ jobs:
           name="azcp_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}"
           echo "PKG=$name" >> "$GITHUB_ENV"
           mkdir -p "dist/$name"
-          cp README.md LICENSE "dist/$name/"
+          cp README.md LICENSE CONTRIBUTING.md SECURITY.md CITATION.cff "dist/$name/"
+          cp -R docs "dist/$name/"
           cp build/* "dist/$name/"
 
       - name: Archive (zip)
@@ -189,8 +190,8 @@ jobs:
 
           ### Binaries
 
-          Each platform has two downloads: an archive with the README and the
-          licence, and the binary on its own, compressed, for scripts.
+          Each platform has two downloads: an archive with the README, user
+          guides and licence, and the binary on its own, compressed, for scripts.
 
           | platform | archive | binary only |
           | --- | --- | --- |
@@ -233,6 +234,7 @@ jobs:
             gh release create "${VERSION}" \
               --title "azcp ${VERSION}" \
               --notes-file NOTES.md \
+              --generate-notes \
               --verify-tag \
               "${files[@]}"
           fi

@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT
+
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation and examples
+    url: https://github.com/JohanLindvall/azcp/blob/main/docs/README.md
+    about: Installation, first copies, authentication and the full option reference.
+  - name: Report a security vulnerability privately
+    url: https://github.com/JohanLindvall/azcp/security/advisories/new
+    about: Use a private advisory for credential exposure, unintended file access or other security issues.

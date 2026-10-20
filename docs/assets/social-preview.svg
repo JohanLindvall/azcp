@@ -1,0 +1,30 @@
+<!-- SPDX-License-Identifier: MIT -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">azcp — your copy command, with Azure Blob Storage</title>
+  <desc id="description">Copy local files and Azure blobs. Familiar cp flags, remote wildcards and parallel transfers. An open-source command-line tool for Linux, macOS and Windows.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101D32"/>
+      <stop offset="1" stop-color="#0A1220"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="72" y1="0" x2="840" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#70E1CC"/>
+      <stop offset="1" stop-color="#69B9FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#background)"/>
+  <path d="M72 1H840" stroke="url(#accent)" stroke-width="5"/>
+  <g font-family="Ubuntu Sans, DejaVu Sans, sans-serif">
+    <text x="70" y="171" fill="#F0F6FC" font-size="120" font-weight="700" letter-spacing="-6">azcp</text>
+    <path d="M404 108L427 131L404 154M446 154H480" stroke="#70E1CC" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="76" y="249" fill="#F0F6FC" font-size="44" font-weight="500">Your copy command.</text>
+    <text x="76" y="306" fill="#87C9FF" font-size="44" font-weight="500">With Azure Blob Storage.</text>
+    <text x="78" y="363" fill="#ADBED2" font-size="23">Familiar flags. Remote wildcards. Parallel transfers.</text>
+  </g>
+  <rect x="76" y="402" width="1128" height="112" rx="18" fill="#0B1423" stroke="#324961"/>
+  <text x="108" y="469" fill="#F0F6FC" font-family="DejaVu Sans Mono, monospace" font-size="27"><tspan fill="#70E1CC">$ </tspan>azcp -r ./photos <tspan fill="#87C9FF">azure://myaccount/backup/</tspan></text>
+  <g font-family="Ubuntu Sans, DejaVu Sans, sans-serif" font-size="19">
+    <text x="78" y="577" fill="#ADBED2" letter-spacing="1.3">LINUX · macOS · WINDOWS</text>
+    <text x="1202" y="577" text-anchor="end" fill="#ADBED2">github.com/JohanLindvall/azcp</text>
+  </g>
+</svg>

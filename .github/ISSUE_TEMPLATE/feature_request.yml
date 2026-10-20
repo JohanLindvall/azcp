@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+
+name: Suggest an improvement
+description: Share a use case, documentation gap or feature idea.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tell us what you are trying to do. Documentation suggestions and small usability improvements are welcome.
+        azcp focuses on familiar cp behavior for local files and Azure Blob Storage.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What task would you like to make easier?
+      description: Describe your workflow and where you get stuck. Remove credentials and private data from examples.
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested improvement
+      description: A proposed command, example or documentation change is helpful, but you do not need a complete design.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today?
+      description: Optional. Describe any workaround or related tool, and what is missing for your use case.
