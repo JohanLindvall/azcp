@@ -162,7 +162,11 @@ func TestSortMenuIsPerPaneAndSurvivesNavigation(t *testing.T) {
 	press(a, tcell.KeyEscape, 0)
 	press(a, tcell.KeyEnter, 0)
 	finishJobs(t, a)
-	if a.panes[0].loc.url.Path != filepath.Join(left, "dir") || a.panes[0].sort != want {
+	wantPath := loc(t, filepath.Join(left, "dir")).url.Path
+	if a.panes[0].loc.url.Path != wantPath {
+		t.Fatalf("navigation reached %q, want %q", a.panes[0].loc.url.Path, wantPath)
+	}
+	if a.panes[0].sort != want {
 		t.Fatal("navigation lost sort settings")
 	}
 	press(a, tcell.KeyCtrlR, 0)
