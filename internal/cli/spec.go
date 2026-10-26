@@ -115,6 +115,10 @@ var specs = []cpflags.Spec{
 			"(default: scaled to the machine for network copies, 4 for local)"},
 	{Long: "tui", Arg: cpflags.NoArg,
 		Help: "open the two-pane file manager; optional operands are LEFT and RIGHT directories"},
+	{Long: "no-auto-update", Arg: cpflags.NoArg,
+		Help: "check for new versions without installing them (AZCP_NO_AUTO_UPDATE=1)"},
+	{Long: "no-version-check", Arg: cpflags.NoArg,
+		Help: "disable version checks and automatic updates (AZCP_NO_VERSION_CHECK=1)"},
 	{Long: "part-size", Arg: cpflags.RequiredArg, Meta: "SIZE",
 		Help: "block size for multi-part blob transfers (default 8MiB)"},
 	{Long: "part-concurrency", Arg: cpflags.RequiredArg, Meta: "N",
@@ -244,6 +248,9 @@ and extended patterns such as !(*.tmp) and @(a|b) are understood.
 const usageTail = `
 Sizes accept K, M, G and T suffixes (powers of 1024). Durations accept Go
 syntax, e.g. 500ms, 30s, 2m.
+
+Release builds check for updates daily after a successful run and install them
+for the next invocation. Containers and --dry-run skip both features.
 
 Exit status is 0 on success and 1 for copy failures or an invalid command line.
 `

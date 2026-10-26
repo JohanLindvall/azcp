@@ -154,6 +154,7 @@ func run(argv []string) int {
 	if failed > 0 || fatal {
 		return exitFail
 	}
+	checkForUpdates(ctx, opt, logger)
 	return exitOK
 }
 

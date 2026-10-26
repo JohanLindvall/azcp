@@ -141,10 +141,12 @@ func orList(names []string) string {
 
 // Options is the fully resolved configuration for one invocation.
 type Options struct {
-	ShowHelp    bool
-	ShowVersion bool
-	TUI         bool
-	TUIPaths    [2]string
+	ShowHelp     bool
+	ShowVersion  bool
+	TUI          bool
+	TUIPaths     [2]string
+	VersionCheck bool
+	AutoUpdate   bool
 
 	// cp behaviour
 	Recursive            bool
@@ -245,6 +247,8 @@ type Options struct {
 // Defaults returns the configuration used when no options are given.
 func Defaults() *Options {
 	return &Options{
+		VersionCheck:     !envDisabled("AZCP_NO_VERSION_CHECK"),
+		AutoUpdate:       !envDisabled("AZCP_NO_AUTO_UPDATE"),
 		TUIPaths:         [2]string{".", "."},
 		Suffix:           backupSuffixDefault(),
 		Jobs:             8,
@@ -263,6 +267,13 @@ func Defaults() *Options {
 		// is verified, and a mismatch fails the transfer.
 		CheckMD5: azure.MD5Fail,
 	}
+}
+
+// A nonempty opt-out disables the feature unless it explicitly says false.
+// This also makes a misspelled truth value fail closed for offline scripts.
+func envDisabled(name string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	return v != "" && v != "0" && v != "false" && v != "no"
 }
 
 // parseBenchSpec reads "10x64MiB": how many files, and how big each one is.
@@ -440,7 +451,7 @@ func Parse(argv []string) (*Options, error) {
 				"retries", "retry-delay", "retry-max-delay", "bwlimit", "timeout",
 				"auth", "tenant", "endpoint-suffix", "create-container",
 				"log-level", "log-format", "log-file", "put-md5", "check-md5",
-				"resume", "dry-run":
+				"resume", "dry-run", "no-auto-update", "no-version-check":
 			default:
 				return nil, usagef("%s cannot be combined with --tui", f.Name())
 			}
@@ -473,6 +484,10 @@ func (o *Options) apply(f cpflags.Flag) error {
 		name = string(f.Spec.Short)
 	}
 	switch name {
+	case "no-auto-update":
+		o.AutoUpdate = false
+	case "no-version-check":
+		o.VersionCheck = false
 	case "tui":
 		o.TUI = true
 	// --- cp ----------------------------------------------------------------

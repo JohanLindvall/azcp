@@ -32,8 +32,9 @@ curl -sSfL https://raw.githubusercontent.com/JohanLindvall/azcp/main/scripts/ins
   | sh -s -- --dir "$HOME/bin" --version v0.6.6
 ```
 
-Run the installer again to update. To uninstall, remove the `azcp` executable
-from the installation directory.
+To keep a pinned release, disable automatic updates as described below.
+You can also run the installer again to update manually. To uninstall, remove
+the `azcp` executable from the installation directory.
 
 ## Windows and manual downloads
 
@@ -94,6 +95,59 @@ unset. Add that directory to your `PATH`. To try the help without installing:
 ```sh
 go run github.com/JohanLindvall/azcp/cmd/azcp@latest --help
 ```
+
+## Updates
+
+Stable releases check GitHub for a newer stable release after a successful copy
+or after leaving the file manager. Both version checking and automatic
+installation are enabled by default outside containers. The check is cached
+for 24 hours per executable and user, including failed attempts; changing the
+installed version or automatic-update setting allows a fresh check.
+
+| Setting | Effect |
+| --- | --- |
+| `--no-auto-update` or `AZCP_NO_AUTO_UPDATE=1` | Check and report a newer version, but keep the installed executable. |
+| `--no-version-check` or `AZCP_NO_VERSION_CHECK=1` | Disable both features, with no update requests or cache writes. |
+
+For example, keep a pinned version while receiving update notices:
+
+```sh
+export AZCP_NO_AUTO_UPDATE=1
+```
+
+Or disable all update traffic in PowerShell:
+
+```powershell
+$env:AZCP_NO_VERSION_CHECK = '1'
+```
+
+Unset the variable to restore the default; `0`, `false` and `no` also leave the
+feature enabled. Command-line opt-outs always disable it for that invocation.
+`--update` and `-u` still control which destination files are copied, as in `cp`.
+
+An update downloads the compressed binary for the current OS and architecture
+over HTTPS, verifies its SHA-256 against the release's `SHA256SUMS`, checks its
+Go executable identity and platform, and stages it alongside the installed
+executable. Installation requires write permission in that directory and never
+asks for elevated privileges. Symlinked launchers keep their link; the resolved
+executable is updated. Linux and macOS replace the name atomically. Windows
+moves the running executable aside, restores it if replacement fails, and
+removes the old image on a subsequent run after it is no longer in use.
+
+The current operation finishes before checking; the next invocation uses the
+new version. A check has a five-second timeout and downloading/installing has
+a one-minute deadline. An offline check or failed installation never changes
+the copy's exit status. Update notices appear only when stderr is a terminal;
+diagnostic details are available with `--log-level=debug`. JSON output is
+unchanged. State is stored under `azcp/updates` in the OS user cache directory.
+
+Containers, development or prerelease builds, `--dry-run`, `--help`,
+`--version`, benchmarks and failed copies skip this work. The official container
+image disables it at build time; Docker, Podman, Kubernetes, systemd and LXC
+runtime hints also disable it for binaries installed in other images. Custom
+container runtimes that expose none of these hints should set
+`AZCP_NO_VERSION_CHECK=1` explicitly. Update container installations by pulling
+a newer image.
 
 ## Docker
 

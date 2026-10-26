@@ -20,7 +20,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux GOARCH="$TARGETARCH" \
     go build -trimpath \
-      -ldflags "-s -w -X 'github.com/JohanLindvall/azcp/internal/cli.Version=${VERSION}'" \
+      -ldflags "-s -w -X 'github.com/JohanLindvall/azcp/internal/cli.Version=${VERSION}' -X 'github.com/JohanLindvall/azcp/internal/selfupdate.ContainerBuild=true'" \
       -o /out/azcp ./cmd/azcp
 
 # Nothing but the binary and the roots it needs to verify a TLS connection to

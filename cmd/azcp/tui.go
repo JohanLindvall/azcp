@@ -26,5 +26,6 @@ func runTUI(opt *cli.Options) int {
 		logx.Errf("%s: %v\n", cli.Program, err)
 		return exitFail
 	}
+	checkForUpdates(ctx, opt, logger)
 	return exitOK
 }

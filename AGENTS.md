@@ -120,6 +120,7 @@ internal/progress    the live terminal display
 internal/tui         opt-in two-pane file manager for local and Azure trees
 internal/logx        logging, terminal arbitration, secret redaction
 internal/retryx      transient-failure classification and backoff
+internal/selfupdate daily release checks and verified executable replacement
 internal/humanize    sizes, rates, durations, eliding
 internal/uri         location parsing
 ```
@@ -141,6 +142,19 @@ correctness, and request counts came from the emulator's access log. Re-measure
 rather than reason about it if you change a transfer path.
 
 ## Invariants worth knowing before editing
+
+**Self-updates are maintenance, not copy results.** `selfupdate.Run` is called
+after a successful copy or TUI session. Containers, development versions and
+disabled checks do no update I/O; dry runs and informational invocations do not
+call it. The official image is also stamped with `selfupdate.ContainerBuild`.
+The release's existing `SHA256SUMS` names and verifies the compressed binary;
+never install an unverified download or reuse cp's `--update` for this feature.
+The check cache and OS lock limit concurrent invocations, and replacing a file
+that changed during the download is refused. Unix renames the staged binary
+over the executable; Windows moves the running image aside and rolls back if
+the second rename fails. Maintenance errors cannot fail a successful copy,
+and notices use `logx`, only on a terminal. Native replacement tests run on
+each platform in the release workflow.
 
 **A reflink attempt keeps the open destination attached to its name.** The
 fallback writes to that same descriptor, and existing hard links must keep

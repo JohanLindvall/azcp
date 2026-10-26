@@ -65,6 +65,11 @@ jobs:
           go-version: stable
           check-latest: true
 
+      # Replacing a running image is platform-specific, especially on Windows.
+      # Exercise it natively on macOS too before publishing its updater.
+      - name: Test executable updates
+        run: go test ./internal/selfupdate
+
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
