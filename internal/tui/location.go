@@ -23,6 +23,10 @@ type entry struct {
 	name string
 	loc  location
 	node *store.Node
+	// A calculated total is display state, never the directory's stat size
+	// which the copy/move inventory uses to detect changes.
+	dirSize     *directorySize
+	sizePending bool
 }
 
 func (e entry) directory() bool {

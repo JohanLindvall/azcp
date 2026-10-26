@@ -45,11 +45,13 @@ func Run(ctx context.Context, opt *cli.Options, logger *slog.Logger) error {
 }
 
 type pane struct {
-	loc      location
-	entries  []entry // entry zero is always the parent
-	cursor   int
-	offset   int
-	selected map[int]bool
+	loc        location
+	entries    []entry // entry zero is always the parent
+	cursor     int
+	offset     int
+	selected   map[int]bool
+	sort       paneSort
+	showCounts bool
 }
 
 func (p *pane) selection() []entry {
@@ -76,6 +78,7 @@ type job struct {
 	done     chan jobResult
 	finish   func(jobResult)
 	progress *progress.Reporter
+	sizing   bool
 }
 
 type dialog struct {
@@ -217,7 +220,7 @@ func (a *app) start(label string, work func(context.Context, *progress.Reporter)
 
 func (a *app) report(err error) {
 	if errors.Is(err, context.Canceled) {
-		a.status = "Cancelled; completed copies or deletions are not undone"
+		a.status = "Cancelled; completed changes are not undone"
 	} else {
 		a.status = "Error: " + logx.Redact(err.Error())
 	}
@@ -229,8 +232,10 @@ func (a *app) setEntries(i int, loc location, entries []entry) {
 	parent := parentLocation(loc)
 	p.loc = loc
 	p.entries = append([]entry{{name: "..", loc: parent}}, entries...)
-	p.cursor, p.offset = min(1, len(entries)), 0
+	p.cursor, p.offset = 0, 0
 	p.selected = map[int]bool{}
+	p.sortEntries()
+	p.cursor = min(1, len(entries))
 }
 
 func (a *app) reload() {
@@ -361,6 +366,12 @@ func (a *app) key(ev *tcell.EventKey) {
 		a.requestOperation("Delete")
 	case k == tcell.KeyCtrlR || r == 'r':
 		a.reload()
+	case r == 's':
+		a.modal = &dialog{kind: "sort", title: "Sort active pane"}
+	case r == 'f':
+		a.toggleCounts()
+	case r == 'z' || r == 'Z':
+		a.calculateSizes(r == 'Z')
 	}
 }
 
@@ -394,6 +405,10 @@ func (a *app) dialogKey(ev *tcell.EventKey) {
 		if k == tcell.KeyCtrlC && a.busy != nil {
 			a.busy.cancel()
 		}
+		return
+	}
+	if d.kind == "sort" {
+		a.sortKey(ev)
 		return
 	}
 	if d.kind == "view" {
@@ -523,6 +538,10 @@ F8 / d   Delete selected entries and their contents permanently
 F9 / l   Messages, including Azure sign-in instructions
 F10 / q  Quit (cancel active work and wait for it to stop)
 Ctrl-R/r Refresh both panes
+s        Sort this pane: name, modified time, size, extension or type
+         Also sort by recursive file count (6 in the sort menu)
+f        Toggle this pane's size / recursive file-count column
+z / Z    Calculate directory totals: marked/cursor / all in this pane
 
 Copy and move use the other pane; e edits the destination in confirmation.
 Copy, move and delete require y in the confirmation dialog.
@@ -530,4 +549,7 @@ Existing destination files are replaced. Enter/Esc cancels confirmation.
 Esc/Ctrl-C cancels active work. Completed changes are not rolled back.
 Azure account/container roots cannot be removed; select their contents.
 Ctrl-U clears a path prompt. Relative destinations use the other pane.
+The sort menu reverses order and toggles directories first. Marks stay put.
+Directory sizes and file counts are calculated together; links are skipped.
+Unknown totals sort last within their group. Refresh clears calculated totals.
 Only --tui starts this interface; ordinary invocations remain cp.`

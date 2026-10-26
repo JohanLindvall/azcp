@@ -74,7 +74,10 @@ func (a *app) draw() {
 	}
 	a.text(1, 0, 4, "azcp", a.theme.accent.Bold(true))
 	a.text(7, 0, 11, "Commander", a.theme.base.Bold(true))
-	hint := "Tab: panes · F1: help"
+	hint := "s: sort · f: sizes/counts · z: calculate · Tab: panes · F1: help"
+	if w < 75 {
+		hint = "s: sort · f: counts · z: calc"
+	}
 	if a.backend.opt.DryRun {
 		hint = "DRY RUN · " + hint
 	}
@@ -124,8 +127,9 @@ func (a *app) drawPane(index, x, width, bottom int) {
 		border, pathStyle = a.theme.accent, a.theme.base.Bold(true)
 		label = " ● " + kind + " "
 	}
+	label += "· " + p.sort.label() + " "
 	a.frame(x, 1, width, bottom, border)
-	a.text(x+2, 1, humanize.Width(label), label, border.Bold(active))
+	a.text(x+2, 1, min(width-4, humanize.Width(label)), humanize.Elide(label, width-4), border.Bold(active))
 	a.text(x+2, 2, width-4, humanize.Elide(safeText(p.loc.display()), width-4), pathStyle)
 	sizeWidth, dateWidth := 9, 0
 	screenWidth, _ := a.screen.Size()
@@ -135,7 +139,11 @@ func (a *app) drawPane(index, x, width, bottom int) {
 	nameWidth := width - 7 - sizeWidth - dateWidth
 	sizeX := x + width - 2 - dateWidth - sizeWidth
 	a.text(x+4, 3, nameWidth, "Name", a.theme.muted)
-	a.right(sizeX, 3, sizeWidth, "Size", a.theme.muted)
+	column := "Size"
+	if p.showCounts {
+		column = "Files"
+	}
+	a.right(sizeX, 3, sizeWidth, column, a.theme.muted)
 	if dateWidth > 0 {
 		a.right(sizeX+sizeWidth+1, 3, dateWidth-1, "Modified", a.theme.muted)
 	}
@@ -166,6 +174,11 @@ func (a *app) drawPane(index, x, width, bottom int) {
 		if e.directory() {
 			name += "/"
 			size = "dir"
+			if e.sizePending {
+				size = "…"
+			} else if e.dirSize != nil {
+				size = humanize.Bytes(e.dirSize.bytes)
+			}
 			if !p.selected[i] && !(i == p.cursor && active) {
 				style = style.Bold(true)
 			}
@@ -173,6 +186,11 @@ func (a *app) drawPane(index, x, width, bottom int) {
 			size = humanize.Bytes(e.node.Size)
 			if e.node.IsSymlink() {
 				name += "@"
+			}
+		}
+		if p.showCounts {
+			if count, known := e.fileCount(); known {
+				size = humanize.Count(count)
 			}
 		}
 		y := row + 4

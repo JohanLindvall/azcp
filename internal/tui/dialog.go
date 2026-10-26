@@ -16,6 +16,9 @@ func (a *app) drawDialog(w, h int) {
 	var content []string
 	footer, field := "Esc: close", -1
 	switch d.kind {
+	case "sort":
+		content = a.panes[a.active].sortMenu()
+		footer = "Enter/Esc: close"
 	case "view":
 		for _, line := range d.lines {
 			content = append(content, wrap(strings.ReplaceAll(line, "\t", "    "), inner)...)

@@ -68,6 +68,16 @@ func TestAzuriteCommanderOperations(t *testing.T) {
 	if err != nil || len(children) != 3 {
 		t.Fatalf("virtual prefix listing: %v, %v", children, err)
 	}
+	for _, all := range []bool{false, true} {
+		sizes, err := b.directorySizes(t.Context(), remote, []entry{tree}, all, reporter(t))
+		if err != nil || len(sizes) != 1 || sizes[0] != (directorySize{28, 2}) {
+			t.Fatalf("remote tree size, all=%v: %v, %v", all, sizes, err)
+		}
+		sizes, err = b.directorySizes(t.Context(), tree.loc, children[:2], all, reporter(t))
+		if err != nil || len(sizes) != 2 || sizes[0] != (directorySize{}) || sizes[1] != (directorySize{15, 1}) {
+			t.Fatalf("remote child sizes, all=%v: %v, %v", all, sizes, err)
+		}
+	}
 	accountEntries, err := b.list(t.Context(), loc(t, endpoint))
 	if err != nil {
 		t.Fatal(err)
@@ -136,6 +146,12 @@ func TestAzuriteCommanderOperations(t *testing.T) {
 	}
 	if files != 1 || dirs != 1 {
 		t.Fatalf("filesystem view hid a colliding blob or prefix: %d files, %d directories", files, dirs)
+	}
+	for _, all := range []bool{false, true} {
+		sizes, err := b.directorySizes(t.Context(), remote, []entry{tree}, all, reporter(t))
+		if err != nil || len(sizes) != 1 || sizes[0] != (directorySize{}) {
+			t.Fatalf("empty prefix counted the independent blob, all=%v: %v, %v", all, sizes, err)
+		}
 	}
 	if err := b.delete(t.Context(), []entry{tree}); err != nil {
 		t.Fatal(err)

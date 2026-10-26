@@ -566,6 +566,15 @@ hierarchy is the storage account, its containers, and nested blob prefixes;
 it is exposed directly as directories, without a separate collection or
 mount configuration.
 
+**TUI directory totals are optional display state.** `z` and `Z` request them;
+browsing, sorting and toggling the size/file-count column must not launch
+recursive scans. Sum regular-file lengths and counts in the same walk
+without following symlinks, discard partial totals on error or cancellation,
+and keep them separate from `Node.Size`, which move inventories compare.
+Calculating the whole pane uses one `WalkAll`, preserving Azure's flat listing
+and significant empty or dot key components. Sorts must move marks and the
+cursor with the original entries, including a blob and prefix of the same name.
+
 **Resume is asymmetric on purpose.** An upload asks the service for its
 uncommitted block list, so it needs no local state and survives a reboot or a
 change of machine. A download cannot: ranges arrive out of order, so a partial

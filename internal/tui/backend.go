@@ -101,15 +101,7 @@ func (b *backend) list(ctx context.Context, l location) ([]entry, error) {
 		}
 		entries = append(entries, entry{name: name, loc: child, node: n})
 	}
-	slices.SortStableFunc(entries, func(a, b entry) int {
-		if a.directory() != b.directory() {
-			if a.directory() {
-				return -1
-			}
-			return 1
-		}
-		return strings.Compare(a.name, b.name)
-	})
+	slices.SortStableFunc(entries, (paneSort{}).compare)
 	return entries, nil
 }
 

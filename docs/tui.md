@@ -84,6 +84,10 @@ remains available during a slow request. SAS tokens stay redacted on screen.
 | F8 / `d` / Delete | Permanently delete selected entries |
 | F9 / `l` | Show messages and sign-in instructions |
 | Ctrl-R / `r` | Refresh both panes |
+| `s` | Sort the active pane |
+| `f` | Toggle the active pane's size / recursive file-count column |
+| `z` | Calculate sizes and file counts for marked directories, or the directory under the cursor |
+| Shift-Z / `Z` | Calculate sizes and file counts for all directories in the active pane |
 | F10 / `q` | Quit; cancel active work and wait for it to stop |
 | Esc / Ctrl-C during an operation | Cancel the operation |
 
@@ -117,6 +121,48 @@ does not follow local symlinks. Directory deletion removes only that Azure
 prefix and its marker, preserving a distinct blob with the same unsuffixed
 name. Filesystem roots, Azure accounts and Azure storage containers themselves
 cannot be moved or deleted; open them and select their contents instead.
+
+## Sorting and directory totals
+
+Press **s** to open the sort menu, then **1** for name, **2** for modified time,
+**3** for size, **4** for extension, **5** for entry type (directory, file,
+special file or symlink), or **6** for recursive file count. Changes apply
+immediately; Enter or Esc closes the menu. Inside the menu, **r** reverses the
+order and **d** toggles directories
+first. Each pane keeps its own settings during navigation and refreshes for the
+current session. The pane heading shows the field and direction: ↑ is ascending
+(oldest or smallest first), ↓ is descending. The parent stays at the top, and
+the cursor and selection marks stay with their entries.
+
+Press **f**, either in the pane or in the sort menu, to switch that pane's numeric
+column between **Size** and **Files**. Selecting size or file-count sorting also
+shows the corresponding column. Toggling the column leaves the sort unchanged.
+Both totals come from the same scan, so switching columns never starts another
+scan. The column choice is independent for each pane and lasts for the session.
+
+Directory totals are calculated only when requested with **z** or **Z**. Browsing
+and sorting do not start recursive scans. The calculation works for local
+directories, Azure prefixes and containers; **z** ignores marked files and uses
+the cursor only when nothing is marked. **Z** scans all directories in the active
+pane, regardless of marks, sharing a flat listing on Azure rather than listing
+each nested prefix separately. Scans show the files and bytes found so far and
+can be cancelled with Esc or Ctrl-C.
+
+Totals sum the logical lengths and count of regular files or blobs throughout
+the directory and all its subdirectories. Subdirectories themselves do not add
+to the file count. Totals do not read file contents, follow symlinks, count
+directory metadata or measure allocated disk space. Sparse files count at their full
+length and hard links count once per filename. A failed or cancelled scan leaves
+the affected totals unknown, rather than displaying partial totals as complete.
+
+An unmeasured directory shows `dir`, a pending calculation shows `…`, and an
+empty directory shows `0 B` or `0` after calculation. In the Files column,
+individual regular files show `1`; symlinks and special files show `0`.
+Size and file-count sorting use completed totals; unknown totals (or unknown
+modified times) sort last within their group, in either direction. Results are
+snapshots and are cleared by refresh,
+navigation, or a copy, move, delete or mkdir operation. Press **z** or **Z** again
+to recalculate after external changes.
 
 ## Transfer options
 

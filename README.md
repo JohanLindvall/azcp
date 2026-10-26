@@ -25,7 +25,9 @@ managed identities and interactive sign-in work too.
 
 For a Norton Commander-style file manager, run `azcp --tui [LEFT [RIGHT]]`.
 Browse local and Azure folders in two panes, copy, move, preview and delete
-files. Azure containers and nested blob prefixes appear as a
+files, choose the sort order and calculate recursive directory sizes and file
+counts on demand.
+Azure containers and nested blob prefixes appear as a
 [normal directory tree](docs/tui.md). The default command line remains
 compatible with `cp`.
 

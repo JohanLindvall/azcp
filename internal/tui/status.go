@@ -25,6 +25,12 @@ func (a *app) drawStatus(w, h int) {
 		return
 	}
 	s := a.busy.progress.Snapshot()
+	if a.busy.sizing {
+		a.text(1, h-5, w-2, humanize.Elide(a.busy.label, w-2), a.theme.accent)
+		detail := fmt.Sprintf("%s files · %s so far · Esc: cancel", humanize.Count(s.PlannedFiles), humanize.Bytes(s.PlannedBytes))
+		a.text(1, h-4, w-2, humanize.Elide(detail, w-2), a.theme.muted)
+		return
+	}
 	if s.Current != "" {
 		detail := fmt.Sprintf("%d active · %s", s.Active, s.Current)
 		a.text(1, h-6, w-2, humanize.Elide(safeText(detail), w-2), a.theme.muted)
