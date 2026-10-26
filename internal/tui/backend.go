@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -25,24 +24,20 @@ import (
 
 type blobStore interface {
 	store.Store
+	ReadDirEntries(context.Context, *uri.URL) ([]*store.Node, error)
 	RemoveMarker(context.Context, *uri.URL) error
 	RemoveBlob(context.Context, *store.Node) error
 }
 
 type backend struct {
-	opt         cli.Options
-	log         *slog.Logger
-	local       store.Store
-	remote      blobStore
-	az          *azure.Store
-	collections collections
+	opt    cli.Options
+	log    *slog.Logger
+	local  store.Store
+	remote blobStore
+	az     *azure.Store
 }
 
-func newBackend(opt *cli.Options, log *slog.Logger) (*backend, error) {
-	c, err := loadCollections(opt.TUIConfig, opt.EndpointSuffix)
-	if err != nil {
-		return nil, err
-	}
+func newBackend(opt *cli.Options, log *slog.Logger) *backend {
 	az := azure.New(azure.Config{
 		Auth: opt.Auth, Log: log, Interactive: true, TenantID: opt.TenantID,
 		MaxRetries: int32(opt.Retries - 1), TryTimeout: opt.Timeout,
@@ -51,7 +46,7 @@ func newBackend(opt *cli.Options, log *slog.Logger) (*backend, error) {
 		PeakRequests: opt.PeakRequests(), BytesPerSecond: opt.BandwidthLimit,
 	})
 	return &backend{opt: *opt, log: log, local: local.New(log, false),
-		remote: az, az: az, collections: c}, nil
+		remote: az, az: az}
 }
 
 func (b *backend) store(u *uri.URL) store.Store {
@@ -62,23 +57,29 @@ func (b *backend) store(u *uri.URL) store.Store {
 }
 
 func (b *backend) resolve(raw string, relative location) (location, error) {
-	if strings.HasPrefix(raw, "virtual://") || uri.IsRemoteArg(raw) || filepath.IsAbs(raw) || relative.url == nil {
-		return b.collections.resolve(raw, b.opt.EndpointSuffix)
+	if raw == "." {
+		return relative, nil
+	}
+	if uri.IsRemoteArg(raw) || filepath.IsAbs(raw) || relative.url == nil {
+		return parseLocation(raw, b.opt.EndpointSuffix)
 	}
 	if raw == ".." {
-		return b.collections.parent(relative, b.opt.EndpointSuffix), nil
+		return parentLocation(relative), nil
 	}
 	if relative.url.IsRemote() {
 		return location{url: relative.url.Join(raw)}, nil
 	}
-	return b.collections.resolve(filepath.Join(relative.url.Path, raw), b.opt.EndpointSuffix)
+	return parseLocation(filepath.Join(relative.url.Path, raw), b.opt.EndpointSuffix)
 }
 
 func (b *backend) list(ctx context.Context, l location) ([]entry, error) {
-	if l.url == nil {
-		return b.collections.list(l), nil
+	var nodes []*store.Node
+	var err error
+	if l.url.IsRemote() {
+		nodes, err = b.remote.ReadDirEntries(ctx, l.url)
+	} else {
+		nodes, err = b.local.ReadDir(ctx, l.url)
 	}
-	nodes, err := b.store(l.url).ReadDir(ctx, l.url)
 	if err != nil {
 		return nil, err
 	}
@@ -93,15 +94,10 @@ func (b *backend) list(ctx context.Context, l location) ([]entry, error) {
 			name = strings.TrimPrefix(n.URL.Key, prefix)
 		}
 		child := location{url: n.URL, parent: &l}
-		if l.address != "" {
-			child.address = l.address + "/" + url.PathEscape(name)
-		}
 		if name == "" {
-			// An empty blob-key component is a real directory. Its plain
-			// Azure address is unambiguous; a trailing virtual-address slash
-			// would instead be parsed as directory syntax. The parent link
-			// still brings navigation back into the virtual hierarchy.
-			name, child.address = "/", ""
+			// Repeated slashes are significant blob-key components. Display
+			// the empty component without cleaning away its exact URL.
+			name = "/"
 		}
 		entries = append(entries, entry{name: name, loc: child, node: n})
 	}
@@ -126,9 +122,6 @@ func nodeURL(n *store.Node) *uri.URL {
 }
 
 func (b *backend) transfer(ctx context.Context, selected []entry, target location, move bool, p *progress.Reporter) error {
-	if target.url == nil {
-		return errors.New("open a folder inside the virtual container as the destination")
-	}
 	u := *target.url
 	u.TrailingSlash = true
 	dest, err := b.store(&u).Stat(ctx, &u, true)
@@ -151,7 +144,7 @@ func (b *backend) transfer(ctx context.Context, selected []entry, target locatio
 	o.Dest = operand(&u, true)
 	for _, e := range selected {
 		if e.node == nil {
-			return errors.New("open a virtual container before copying its entries")
+			return errors.New("select a file or directory first")
 		}
 		if move {
 			if err := removable(e); err != nil {
@@ -232,8 +225,8 @@ func inside(parent, child *uri.URL) bool {
 }
 
 func removable(e entry) error {
-	if e.reference || e.node == nil || e.loc.url == nil {
-		return errors.New("virtual references cannot be moved or deleted; open the folder first")
+	if e.node == nil || e.loc.url == nil {
+		return errors.New("select a file or directory first")
 	}
 	u := e.loc.url
 	if u.IsRemote() {
@@ -446,13 +439,18 @@ func unchangedLocal(n *store.Node, info os.FileInfo) bool {
 }
 
 func (b *backend) mkdir(ctx context.Context, parent location, name string) error {
-	if parent.url == nil {
-		return errors.New("virtual containers are configured in tui.json; open a mount to create a folder")
-	}
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
 		return errors.New("enter a single directory name")
 	}
 	u := parent.url.Join(name)
+	if existing, err := b.store(u).Stat(ctx, u, false); err == nil {
+		if !existing.IsDir() {
+			return fmt.Errorf("cannot create directory %s: a file already exists", u.Display())
+		}
+		return nil
+	} else if !store.IsNotExist(err) {
+		return err
+	}
 	if b.opt.DryRun {
 		return nil
 	}

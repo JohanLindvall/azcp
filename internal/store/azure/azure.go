@@ -442,6 +442,18 @@ func (s *Store) ReadDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) 
 }
 
 func (s *Store) readDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) {
+	nodes, err := s.readDirEntries(ctx, u)
+	return dedupeByName(nodes), err
+}
+
+// ReadDirEntries keeps both a blob and a prefix when they share a name. The
+// file manager can distinguish name from name/; cp's normal ReadDir contract
+// still prefers the directory so pattern expansion does not duplicate paths.
+func (s *Store) ReadDirEntries(ctx context.Context, u *uri.URL) ([]*store.Node, error) {
+	return withSignInValue(ctx, s, func() ([]*store.Node, error) { return s.readDirEntries(ctx, u) })
+}
+
+func (s *Store) readDirEntries(ctx context.Context, u *uri.URL) ([]*store.Node, error) {
 	if u.Container == "" {
 		return s.listContainers(ctx, u)
 	}
@@ -501,7 +513,7 @@ func (s *Store) readDir(ctx context.Context, u *uri.URL) ([]*store.Node, error) 
 			return 1
 		}
 	})
-	return dedupeByName(out), nil
+	return out, nil
 }
 
 func (s *Store) listContainers(ctx context.Context, u *uri.URL) ([]*store.Node, error) {

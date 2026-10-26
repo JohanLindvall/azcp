@@ -117,7 +117,7 @@ internal/store       namespace interface and the pattern-driven walker
 internal/store/local filesystem, reflink, sparse copies, attributes
 internal/store/azure blob storage, credentials, transfers
 internal/progress    the live terminal display
-internal/tui         opt-in two-pane file manager and virtual containers
+internal/tui         opt-in two-pane file manager for local and Azure trees
 internal/logx        logging, terminal arbitration, secret redaction
 internal/retryx      transient-failure classification and backoff
 internal/humanize    sizes, rates, durations, eliding
@@ -534,9 +534,10 @@ flags are rejected. Moves remove sources only after a successful, unskipped,
 uncancelled copy and matching source inventories. Deletion first lists every
 selection completely, never follows local symlinks, and uses anchored local
 roots. Azure files are removed by exact name and ETag (`RemoveBlob`); prefixes
-use `RemoveMarker`, never the file-first fallback in `Remove`. Virtual
-containers form a recursive hierarchy of containers and named mounts, not
-another store; their references are not destructive targets.
+use `RemoveMarker`, never the file-first fallback in `Remove`. The Azure
+hierarchy is the storage account, its containers, and nested blob prefixes;
+it is exposed directly as directories, without a separate collection or
+mount configuration.
 
 **Resume is asymmetric on purpose.** An upload asks the service for its
 uncommitted block list, so it needs no local state and survives a reboot or a

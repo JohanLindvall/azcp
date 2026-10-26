@@ -28,10 +28,7 @@ func Run(ctx context.Context, opt *cli.Options, logger *slog.Logger) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stderr.Fd())) {
 		return errors.New("--tui requires a terminal on stdin and stderr")
 	}
-	b, err := newBackend(opt, logger)
-	if err != nil {
-		return err
-	}
+	b := newBackend(opt, logger)
 	s, err := tcell.NewScreen()
 	if err != nil {
 		return fmt.Errorf("open terminal: %w", err)
@@ -134,7 +131,7 @@ type app struct {
 func newApp(ctx context.Context, s tcell.Screen, b *backend) (*app, error) {
 	a := &app{ctx: ctx, screen: s, backend: b, status: "Tab switches panes; Space selects; F1 shows help"}
 	for i, raw := range b.opt.TUIPaths {
-		loc, err := b.collections.resolve(raw, b.opt.EndpointSuffix)
+		loc, err := parseLocation(raw, b.opt.EndpointSuffix)
 		if err != nil {
 			return nil, err
 		}
@@ -226,9 +223,9 @@ func (a *app) report(err error) {
 
 func (a *app) setEntries(i int, loc location, entries []entry) {
 	p := &a.panes[i]
-	parent := a.backend.collections.parent(loc, a.backend.opt.EndpointSuffix)
+	parent := parentLocation(loc)
 	p.loc = loc
-	p.entries = append([]entry{{name: "..", loc: parent, reference: true}}, entries...)
+	p.entries = append([]entry{{name: "..", loc: parent}}, entries...)
 	p.cursor, p.offset = min(1, len(entries)), 0
 	p.selected = map[int]bool{}
 }
@@ -331,7 +328,7 @@ func (a *app) key(ev *tcell.EventKey) {
 			p.selected[i] = !p.selected[i]
 		}
 	case k == tcell.KeyBackspace || k == tcell.KeyBackspace2 || k == tcell.KeyLeft:
-		a.navigate(a.backend.collections.parent(p.loc, a.backend.opt.EndpointSuffix))
+		a.navigate(parentLocation(p.loc))
 	case k == tcell.KeyEnter || k == tcell.KeyRight:
 		if p.cursor >= 0 && p.cursor < len(p.entries) {
 			e := p.entries[p.cursor]
@@ -344,13 +341,13 @@ func (a *app) key(ev *tcell.EventKey) {
 	case k == tcell.KeyF1 || r == '?':
 		a.modal = &dialog{kind: "view", title: "azcp Commander", lines: strings.Split(help, "\n")}
 	case k == tcell.KeyF2 || r == 'v':
-		a.navigate(location{address: "virtual://"})
+		a.navigate(rootLocation(p.loc))
 	case k == tcell.KeyF3:
 		if p.cursor > 0 && p.cursor < len(p.entries) {
 			a.preview(p.entries[p.cursor])
 		}
 	case k == tcell.KeyF4 || r == 'g':
-		a.modal = &dialog{kind: "input", title: "Go to directory / Azure URL / virtual://name", action: "go", target: p.loc}
+		a.modal = &dialog{kind: "input", title: "Go to local directory or Azure URL", action: "go", target: p.loc}
 	case k == tcell.KeyF5 || r == 'c':
 		a.requestOperation("Copy")
 	case k == tcell.KeyF6 || r == 'm':
@@ -505,9 +502,9 @@ Tab switches panes. Arrows, Home/End and Page Up/Down navigate.
 Enter opens a folder or previews a file. Backspace goes to the parent.
 Space / Insert marks entries; * inverts marks. No marks means the cursor.
 
-F2 / v   Virtual containers from tui.json
+F2 / v   Root of the current filesystem or Azure container
 F3       Read-only text preview (first 64 KiB)
-F4 / g   Go to a local path, Azure URL or virtual://name
+F4 / g   Go to a local path or Azure URL
 F5 / c   Copy to the other pane or an entered directory
 F6 / m   Move: copy, then remove sources only after full success
 F7 / n   Create directory (Azure container needs --create-container)
@@ -519,6 +516,6 @@ Ctrl-R/r Refresh both panes
 Copy, move and delete require y in the confirmation dialog.
 Existing destination files are replaced. Enter/Esc cancels confirmation.
 Esc/Ctrl-C cancels active work. Completed changes are not rolled back.
-Azure account/container roots and virtual references cannot be removed.
+Azure account/container roots cannot be removed; select their contents.
 Ctrl-U clears a path prompt. Relative destinations use the other pane.
 Only --tui starts this interface; ordinary invocations remain cp.`

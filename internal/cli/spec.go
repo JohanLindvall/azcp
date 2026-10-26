@@ -115,8 +115,6 @@ var specs = []cpflags.Spec{
 			"(default: scaled to the machine for network copies, 4 for local)"},
 	{Long: "tui", Arg: cpflags.NoArg,
 		Help: "open the two-pane file manager; optional operands are LEFT and RIGHT directories"},
-	{Long: "tui-config", Arg: cpflags.RequiredArg, Meta: "FILE",
-		Help: "read virtual containers from FILE (requires --tui)"},
 	{Long: "part-size", Arg: cpflags.RequiredArg, Meta: "SIZE",
 		Help: "block size for multi-part blob transfers (default 8MiB)"},
 	{Long: "part-concurrency", Arg: cpflags.RequiredArg, Meta: "N",

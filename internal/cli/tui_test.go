@@ -5,7 +5,7 @@ package cli
 import "testing"
 
 func TestTUIIsExplicitAndHasIndependentOperands(t *testing.T) {
-	for _, args := range [][]string{nil, {"tui"}, {"--tui-config=x", "a", "b"}} {
+	for _, args := range [][]string{nil, {"tui"}} {
 		if _, err := Parse(args); err == nil {
 			t.Errorf("accepted %v", args)
 		}
@@ -38,8 +38,8 @@ func TestTUIRejectsCopyPoliciesThatCouldLoseMoveSources(t *testing.T) {
 			t.Errorf("accepted %s", flag)
 		}
 	}
-	o := mustParse(t, "--tui", "--auth=anonymous", "--jobs=2", "--resume", "--dry-run", "--tui-config=mounts.json")
-	if o.Jobs != 2 || !o.Resume || !o.DryRun || o.TUIConfig != "mounts.json" {
+	o := mustParse(t, "--tui", "--auth=anonymous", "--jobs=2", "--resume", "--dry-run")
+	if o.Jobs != 2 || !o.Resume || !o.DryRun {
 		t.Fatalf("transfer options lost: %+v", o)
 	}
 }

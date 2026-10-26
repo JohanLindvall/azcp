@@ -144,7 +144,6 @@ type Options struct {
 	ShowHelp    bool
 	ShowVersion bool
 	TUI         bool
-	TUIConfig   string
 	TUIPaths    [2]string
 
 	// cp behaviour
@@ -437,7 +436,7 @@ func Parse(argv []string) (*Options, error) {
 		// could silently turn a move into a partial copy before source removal.
 		for _, f := range res.Flags {
 			switch f.Spec.Long {
-			case "tui", "tui-config", "jobs", "part-size", "part-concurrency",
+			case "tui", "jobs", "part-size", "part-concurrency",
 				"retries", "retry-delay", "retry-max-delay", "bwlimit", "timeout",
 				"auth", "tenant", "endpoint-suffix", "create-container",
 				"log-level", "log-format", "log-file", "put-md5", "check-md5",
@@ -446,8 +445,6 @@ func Parse(argv []string) (*Options, error) {
 				return nil, usagef("%s cannot be combined with --tui", f.Name())
 			}
 		}
-	} else if o.TUIConfig != "" {
-		return nil, usagef("--tui-config requires --tui")
 	}
 	if o.FilesFrom != "" {
 		if !o.HasTargetDir && len(operands) == 0 {
@@ -478,8 +475,6 @@ func (o *Options) apply(f cpflags.Flag) error {
 	switch name {
 	case "tui":
 		o.TUI = true
-	case "tui-config":
-		o.TUIConfig = f.Value
 	// --- cp ----------------------------------------------------------------
 	case "archive", "a":
 		o.NoPreserveMode = false

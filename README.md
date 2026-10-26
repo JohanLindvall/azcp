@@ -25,8 +25,9 @@ managed identities and interactive sign-in work too.
 
 For a Norton Commander-style file manager, run `azcp --tui [LEFT [RIGHT]]`.
 Browse local and Azure folders in two panes, copy, move, preview and delete
-files, or organize locations in [nested virtual containers](docs/tui.md). The normal
-command line remains compatible with `cp`.
+files. Azure containers and nested blob prefixes appear as a
+[normal directory tree](docs/tui.md). The default command line remains
+compatible with `cp`.
 
 <a id="getting-started"></a>
 

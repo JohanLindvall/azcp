@@ -96,7 +96,7 @@ func (a *app) draw() {
 			a.text(0, h-3+i, w, lines[i], markStyle)
 		}
 	}
-	labels := []string{"1 Help", "2 Virtual", "3 View", "4 Go", "5 Copy", "6 Move", "7 Mkdir", "8 Delete", "9 Logs", "10 Quit"}
+	labels := []string{"1 Help", "2 Root", "3 View", "4 Go", "5 Copy", "6 Move", "7 Mkdir", "8 Delete", "9 Logs", "10 Quit"}
 	for i, label := range labels {
 		x, end := i*w/10, (i+1)*w/10
 		a.text(x, h-1, end-x, label, barStyle)
@@ -113,7 +113,7 @@ func (a *app) drawPane(index, x, width, bottom int) {
 	if a.active == index {
 		header = activeStyle
 	}
-	a.text(x, 1, width, " "+p.loc.display(), header)
+	a.text(x, 1, width, " "+humanize.Elide(safeText(p.loc.display()), width-2), header)
 	a.text(x, 2, width, " Name", lineStyle)
 	rows := bottom - 3
 	if p.cursor < p.offset {
@@ -141,13 +141,6 @@ func (a *app) drawPane(index, x, width, bottom int) {
 		if e.directory() {
 			name += "/"
 			size = "<DIR>"
-			if e.reference && e.name != ".." {
-				if e.node == nil {
-					size = "<VIRTUAL>"
-				} else {
-					size = "<MOUNT>"
-				}
-			}
 		} else if e.node != nil {
 			size = humanize.Bytes(e.node.Size)
 			if e.node.IsSymlink() {

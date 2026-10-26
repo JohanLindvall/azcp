@@ -21,14 +21,8 @@ import (
 func testBackend(t *testing.T) *backend {
 	t.Helper()
 	o := cli.Defaults()
-	o.TUIConfig = filepath.Join(t.TempDir(), "tui.json")
-	write(t, o.TUIConfig, `{ "containers": {} }`)
 	o.Auth = azure.AuthAnonymous
-	b, err := newBackend(o, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
+	return newBackend(o, slog.New(slog.DiscardHandler))
 }
 
 func write(t *testing.T, path, data string) {
