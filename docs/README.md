@@ -7,6 +7,7 @@ commands.
 | --- | --- |
 | Install on Linux, macOS or Windows | [Installation](installation.md) |
 | Make my first copy | [Quick start](quickstart.md) |
+| Browse, copy, move or delete in two panes | [File manager and Azure directory trees](tui.md) |
 | Fix a first-run problem | [Troubleshooting](quickstart.md#if-something-goes-wrong) |
 | Try Azure transfers without an account | [Local emulator walkthrough](quickstart.md#try-blob-storage-without-an-azure-account) |
 | Find a command for a common task | [Everyday examples](../README.md#everyday-examples) |

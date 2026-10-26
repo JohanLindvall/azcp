@@ -420,6 +420,24 @@ func TestReadDirListsOneLevelDirectoriesFirst(t *testing.T) {
 	}
 }
 
+func TestReadDirEntriesKeepsBothBlobAndPrefixForBrowsing(t *testing.T) {
+	f := newFakeBlobs()
+	f.put("c", "a", []byte("blob alongside prefix"), nil)
+	f.put("c", "a/child", []byte("nested blob"), nil)
+	s, at := fakeStore(t, f, false)
+	entries, err := s.ReadDirEntries(t.Context(), at("c"))
+	if err != nil || !slices.Equal(names(entries), []string{"a/", "a"}) {
+		t.Fatalf("browser entries: %v, %v", names(entries), err)
+	}
+	if f.count("list") != 1 {
+		t.Fatalf("browsing one level cost %d listings", f.count("list"))
+	}
+	entries, err = s.ReadDir(t.Context(), at("c"))
+	if err != nil || !slices.Equal(names(entries), []string{"a/"}) {
+		t.Fatalf("ordinary cp listing changed: %v, %v", names(entries), err)
+	}
+}
+
 // Containers are the one part of the namespace that has to exist. They are
 // made only when asked, and checked once per run rather than once per file.
 func TestMkdirAllCreatesTheContainerOnlyWhenAsked(t *testing.T) {

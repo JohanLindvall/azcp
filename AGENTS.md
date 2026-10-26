@@ -82,7 +82,7 @@ spending.
 
 ### Dependencies
 
-Eight direct ones, and each earns its place. `klauspost/compress` replaces the
+Nine direct ones, and each earns its place. `klauspost/compress` replaces the
 standard library's gzip, flate and zlib coders in both directions — measured at 3.1 GB/s against
 2.2 GB/s on the benchmark in `decompress_test.go`, over a whole file in one pass
 — and brings zstd, which the standard library has no answer for. It pulls in
@@ -92,6 +92,10 @@ nothing else.
 filenames are shortened. Counting runes instead lets wide characters wrap the
 live region and splits combining accents and joined emoji. It has no runtime
 dependencies.
+
+`gdamore/tcell/v2` handles keyboard events, resizing and terminal restoration
+for the opt-in commander interface, including native Windows consoles. It is
+pure Go and adds no runtime dependency to the scratch container image.
 
 Dependabot watches the Go modules weekly. The Azure SDK and `golang.org/x`
 families are grouped, because those modules move together and separate pull
@@ -113,6 +117,7 @@ internal/store       namespace interface and the pattern-driven walker
 internal/store/local filesystem, reflink, sparse copies, attributes
 internal/store/azure blob storage, credentials, transfers
 internal/progress    the live terminal display
+internal/tui         opt-in two-pane file manager for local and Azure trees
 internal/logx        logging, terminal arbitration, secret redaction
 internal/retryx      transient-failure classification and backoff
 internal/humanize    sizes, rates, durations, eliding
@@ -164,9 +169,10 @@ and benchmarks. It must not launch a goroutine for every completed resume range.
 **The terminal has one owner.** While the progress display is running it owns
 stderr. Every write goes through `logx.WithTerminal`, which the display hooks
 via `logx.SetGuard` so it can erase its live region first. Writing straight to
-`os.Stdout`/`os.Stderr` from anywhere else tears the bars. The one deliberate
-exception is the device-code sign-in prompt in `store/azure/auth.go`, which
-must appear whatever the log level.
+`os.Stdout`/`os.Stderr` from anywhere else tears the bars. The full-screen TUI
+installs `logx.SetTerminalSink` to receive terminal output as messages instead;
+file logs remain independent. The device-code sign-in prompt goes through
+`logx.Errf` so it reaches either display whatever the log level.
 
 **The display has two locks, and the distinction matters.** `Reporter.mu`
 guards the mutable state and is held only long enough to read or update it;
@@ -515,10 +521,23 @@ asks before anything else: skipping that file is the one case where -n leaves
 broken data behind and reports success. For the same reason `--resume` wins the
 open-flag choice in `download`, since -n would otherwise refuse to open it.
 
-**`--delete` is the one thing here that destroys data.** `engine/prune.go`
+**`--delete` prunes only after a successful copy.** `engine/prune.go`
 refuses if anything failed to copy, protects whatever `--exclude` ruled out, and
 honours `--dry-run`. Do not relax any of those three without a very good
 reason: a half-read source looks exactly like a source with fewer files in it.
+
+**The TUI is explicit, and moves must not delete skipped sources.** Only
+`--tui` selects it; a missing operand must keep cp's error behavior. Its copy
+engine uses literal selected paths, including properly escaped blob names and
+the original SAS. Copy policy comes from the dialogs, so incompatible CLI
+flags are rejected. Moves remove sources only after a successful, unskipped,
+uncancelled copy and matching source inventories. Deletion first lists every
+selection completely, never follows local symlinks, and uses anchored local
+roots. Azure files are removed by exact name and ETag (`RemoveBlob`); prefixes
+use `RemoveMarker`, never the file-first fallback in `Remove`. The Azure
+hierarchy is the storage account, its containers, and nested blob prefixes;
+it is exposed directly as directories, without a separate collection or
+mount configuration.
 
 **Resume is asymmetric on purpose.** An upload asks the service for its
 uncommitted block list, so it needs no local state and survives a reboot or a

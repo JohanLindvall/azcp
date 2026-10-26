@@ -40,6 +40,14 @@ sums() { ( cd "$1" && find . -type f | sort | xargs -r md5sum | sed "s#  \./#  #
 echo "azcp end-to-end against ${ACCOUNT}"
 echo
 
+# The commander's operations reuse the copy engine but also browse and remove
+# prefixes directly. Exercise those paths against the same disposable service.
+if AZCP_TUI_TEST_ENDPOINT="$ACCOUNT" go test ./internal/tui -run '^TestAzuriteCommanderOperations$' -count=1; then
+  ok "commander browse, preview, copy, move and prefix deletion"
+else
+  bad "commander operations"
+fi
+
 # --- a tree worth copying ---------------------------------------------------
 SRC="$WORK/src"
 mkdir -p "$SRC"/{a/b/c,logs/2024,logs/2023,empty,hollow/inner}

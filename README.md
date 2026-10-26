@@ -23,6 +23,12 @@ managed identities and interactive sign-in work too.
 
 [Install](#installing) · [Quick start](docs/quickstart.md) · [Examples](#everyday-examples) · [Documentation](docs/README.md) · [Contribute](CONTRIBUTING.md)
 
+For a Norton Commander-style file manager, run `azcp --tui [LEFT [RIGHT]]`.
+Browse local and Azure folders in two panes, copy, move, preview and delete
+files. Azure containers and nested blob prefixes appear as a
+[normal directory tree](docs/tui.md). The default command line remains
+compatible with `cp`.
+
 <a id="getting-started"></a>
 
 ## Installing

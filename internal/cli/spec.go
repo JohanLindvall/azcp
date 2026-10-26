@@ -113,6 +113,8 @@ var specs = []cpflags.Spec{
 	{Long: "jobs", Short: 'j', Arg: cpflags.RequiredArg, Meta: "N",
 		Help: "transfer up to N files at once " +
 			"(default: scaled to the machine for network copies, 4 for local)"},
+	{Long: "tui", Arg: cpflags.NoArg,
+		Help: "open the two-pane file manager; optional operands are LEFT and RIGHT directories"},
 	{Long: "part-size", Arg: cpflags.RequiredArg, Meta: "SIZE",
 		Help: "block size for multi-part blob transfers (default 8MiB)"},
 	{Long: "part-concurrency", Arg: cpflags.RequiredArg, Meta: "N",
@@ -223,6 +225,7 @@ var specs = []cpflags.Spec{
 const usageHead = `Usage: azcp [OPTION]... [-T] SOURCE DEST
   or:  azcp [OPTION]... SOURCE... DIRECTORY
   or:  azcp [OPTION]... -t DIRECTORY SOURCE...
+  or:  azcp --tui [OPTION]... [LEFT [RIGHT]]
 
 Copy files, locally or to and from Azure Blob Storage. Either side may be an
 azure:// URL:

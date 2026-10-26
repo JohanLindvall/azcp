@@ -29,6 +29,22 @@ func TestRunCopiesAFile(t *testing.T) {
 	}
 }
 
+func TestTUINameRemainsAnOrdinaryCopyOperand(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"tui", "--tui"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("ordinary cp"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if code := runIn(t, dir, "--no-progress", "--", name, "dest"); code != exitOK {
+			t.Fatalf("copy of %s: exit %d", name, code)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, "dest"))
+		if err != nil || string(data) != "ordinary cp" {
+			t.Fatalf("destination: %q, %v", data, err)
+		}
+	}
+}
+
 // GNU cp uses status 1 for both copy and command-line errors.
 func TestRunExitStatuses(t *testing.T) {
 	dir := t.TempDir()
