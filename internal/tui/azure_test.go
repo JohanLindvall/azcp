@@ -68,6 +68,14 @@ func TestAzuriteCommanderOperations(t *testing.T) {
 	if err != nil || len(children) != 3 {
 		t.Fatalf("virtual prefix listing: %v, %v", children, err)
 	}
+	usage, err := b.scanUsage(t.Context(), remote, false, reporter(t))
+	if err != nil || usage.root.total.logical != 28 || usage.root.total.files != 2 || usage.root.total.incomplete {
+		t.Fatalf("Azure usage scan: %+v, %v", usage, err)
+	}
+	usageTree := findUsage(t, usage.root, "tree", store.KindDir)
+	if !findUsage(t, usageTree, "empty", store.KindDir).marker {
+		t.Fatal("usage cache lost the empty directory marker")
+	}
 	for _, all := range []bool{false, true} {
 		sizes, err := b.directorySizes(t.Context(), remote, []entry{tree}, all, reporter(t))
 		if err != nil || len(sizes) != 1 || sizes[0] != (directorySize{28, 2}) {
@@ -173,5 +181,38 @@ func TestAzuriteCommanderOperations(t *testing.T) {
 	read(t, filepath.Join(right, "moved", "sub", "deep", "leaf.txt"), "nested contents")
 	if _, err := b.az.Stat(t.Context(), nodeURL(moved.node), false); !store.IsNotExist(err) {
 		t.Fatalf("moved prefix remains: %v", err)
+	}
+	// Removing the last file prunes a virtual prefix, but a real empty marker
+	// survives. The incrementally updated cache must match a fresh flat scan.
+	if err := b.mkdir(t.Context(), remote, "usage-marked"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"usage-marked", "usage-virtual"} {
+		if err := b.az.Upload(t.Context(), sibling, remote.url.Join(name, "file"), azure.TransferOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	usage, err = b.scanUsage(t.Context(), remote, false, reporter(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removed []entry
+	for _, name := range []string{"usage-marked", "usage-virtual"} {
+		d := findUsage(t, usage.root, name, store.KindDir)
+		removed = append(removed, usage.entry(findUsage(t, d, "file", store.KindFile)))
+	}
+	if err := b.delete(t.Context(), removed); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := b.usageAfterDelete(t.Context(), usage, removed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := b.scanUsage(t.Context(), remote, false, reporter(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.root.total != fresh.root.total || len(updated.root.children) != len(fresh.root.children) {
+		t.Fatalf("cached cleanup differs from storage: updated=%+v fresh=%+v err=%v", updated.root.total, fresh.root.total, err)
 	}
 }

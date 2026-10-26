@@ -18,7 +18,7 @@ import (
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
-func testBackend(t *testing.T) *backend {
+func testBackend(t testing.TB) *backend {
 	t.Helper()
 	o := cli.Defaults()
 	o.Auth = azure.AuthAnonymous
@@ -43,7 +43,7 @@ func read(t *testing.T, path, want string) {
 	}
 }
 
-func loc(t *testing.T, path string) location {
+func loc(t testing.TB, path string) location {
 	t.Helper()
 	u, err := parseURL(path, "")
 	if err != nil {
@@ -62,7 +62,7 @@ func selected(t *testing.T, b *backend, path string) entry {
 	return entry{name: n.Name(), loc: l, node: n}
 }
 
-func reporter(t *testing.T) *progress.Reporter {
+func reporter(t testing.TB) *progress.Reporter {
 	t.Helper()
 	p := progress.New(progress.Config{Mode: progress.ModeNever})
 	t.Cleanup(p.Stop)

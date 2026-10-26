@@ -45,13 +45,18 @@ func Run(ctx context.Context, opt *cli.Options, logger *slog.Logger) error {
 }
 
 type pane struct {
-	loc        location
-	entries    []entry // entry zero is always the parent
-	cursor     int
-	offset     int
-	selected   map[int]bool
-	sort       paneSort
-	showCounts bool
+	loc         location
+	entries     []entry // entry zero is always the parent
+	cursor      int
+	offset      int
+	selected    map[int]bool
+	sort        paneSort
+	showCounts  bool
+	usage       *usageTree
+	usageDir    *usageNode
+	filter      string
+	savedSort   paneSort
+	savedCounts bool
 }
 
 func (p *pane) selection() []entry {
@@ -163,7 +168,11 @@ func (a *app) run() error {
 	a.screen.EnablePaste()
 	ticker := time.NewTicker(progress.DefaultInterval)
 	defer ticker.Stop()
-	a.reload()
+	if a.backend.opt.TUIUsage {
+		a.scanUsagePane(0, a.panes[0].loc, "", false)
+	} else {
+		a.reload()
+	}
 	for {
 		a.draw()
 		var done <-chan jobResult
@@ -242,12 +251,19 @@ func (a *app) reload() {
 	locations := [2]location{a.panes[0].loc, a.panes[1].loc}
 	type listing struct {
 		entries []entry
+		usage   *usageTree
 		err     error
 	}
-	a.start("Refreshing panes", func(ctx context.Context, _ *progress.Reporter) (any, error) {
+	usage := [2]*usageTree{a.panes[0].usage, a.panes[1].usage}
+	current := [2]string{a.panes[0].usagePath(), a.panes[1].usagePath()}
+	a.start("Refreshing panes", func(ctx context.Context, progress *progress.Reporter) (any, error) {
 		var result [2]listing
 		for i, loc := range locations {
-			result[i].entries, result[i].err = a.backend.list(ctx, loc)
+			if usage[i] != nil {
+				result[i].usage, result[i].err = a.backend.scanUsage(ctx, usage[i].base, usage[i].oneFS, progress)
+			} else {
+				result[i].entries, result[i].err = a.backend.list(ctx, loc)
+			}
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
@@ -261,7 +277,10 @@ func (a *app) reload() {
 			if l.err != nil {
 				a.report(l.err)
 				// A failed refresh cannot leave stale entries actionable.
+				a.panes[i].leaveUsage()
 				a.setEntries(i, locations[i], nil)
+			} else if l.usage != nil {
+				a.setUsage(i, l.usage, current[i])
 			} else {
 				a.setEntries(i, locations[i], l.entries)
 			}
@@ -271,6 +290,10 @@ func (a *app) reload() {
 
 func (a *app) navigate(loc location) {
 	i := a.active
+	if p := &a.panes[i]; p.usage != nil {
+		a.scanUsagePane(i, loc, "", p.usage.oneFS)
+		return
+	}
 	a.start("Reading "+loc.display(), func(ctx context.Context, _ *progress.Reporter) (any, error) {
 		return a.backend.list(ctx, loc)
 	}, func(r jobResult) {
@@ -314,6 +337,9 @@ func (a *app) key(ev *tcell.EventKey) {
 		a.quit = true
 	case k == tcell.KeyTab || k == tcell.KeyBacktab:
 		a.active = 1 - a.active
+		if a.panes[a.active].entries == nil {
+			a.navigate(a.panes[a.active].loc)
+		}
 	case k == tcell.KeyUp || r == 'k':
 		p.cursor = max(0, p.cursor-1)
 	case k == tcell.KeyDown || r == 'j':
@@ -336,11 +362,19 @@ func (a *app) key(ev *tcell.EventKey) {
 			p.selected[i] = !p.selected[i]
 		}
 	case k == tcell.KeyBackspace || k == tcell.KeyBackspace2 || k == tcell.KeyLeft:
-		a.navigate(parentLocation(p.loc))
+		if p.usage != nil {
+			a.usageParent()
+		} else {
+			a.navigate(parentLocation(p.loc))
+		}
 	case k == tcell.KeyEnter || k == tcell.KeyRight:
 		if p.cursor >= 0 && p.cursor < len(p.entries) {
 			e := p.entries[p.cursor]
-			if e.directory() {
+			if p.usage != nil && p.cursor == 0 {
+				a.usageParent()
+			} else if p.usage != nil && e.directory() {
+				a.openUsage(e.usage)
+			} else if e.directory() {
 				a.navigate(e.loc)
 			} else {
 				a.preview(e)
@@ -365,24 +399,61 @@ func (a *app) key(ev *tcell.EventKey) {
 	case k == tcell.KeyF8 || k == tcell.KeyDelete || r == 'd':
 		a.requestOperation("Delete")
 	case k == tcell.KeyCtrlR || r == 'r':
-		a.reload()
+		if p.usage != nil {
+			a.scanUsagePane(a.active, p.usage.base, p.usagePath(), p.usage.oneFS)
+		} else {
+			a.reload()
+		}
 	case r == 's':
 		a.modal = &dialog{kind: "sort", title: "Sort active pane"}
 	case r == 'f':
 		a.toggleCounts()
 	case r == 'z' || r == 'Z':
-		a.calculateSizes(r == 'Z')
+		if p.usage != nil {
+			a.scanUsagePane(a.active, p.usage.base, p.usagePath(), p.usage.oneFS)
+		} else {
+			a.calculateSizes(r == 'Z')
+		}
+	case r == 'u':
+		a.toggleUsage()
+	case r == 'a' && p.usage != nil:
+		if p.loc.url.IsRemote() {
+			a.status = "Azure reports stored blob lengths; physical disk allocation is unavailable"
+		} else {
+			p.sort.allocated = !p.sort.allocated
+			p.sortEntries()
+		}
+	case r == 'x' && p.usage != nil:
+		if p.loc.url.IsRemote() {
+			a.status = "Filesystem boundaries apply to local scans"
+		} else {
+			a.scanUsagePane(a.active, p.usage.base, p.usagePath(), !p.usage.oneFS)
+		}
+	case r == '/' && p.usage != nil:
+		a.modal = &dialog{kind: "input", title: "Filter names (empty shows all)", action: "usage-filter", text: p.filter}
+	case r == 'i' && p.usage != nil:
+		a.usageInfo()
 	}
 }
 
 func (a *app) requestOperation(action string) {
-	selected := a.panes[a.active].selection()
+	p := &a.panes[a.active]
+	selected := p.selection()
+	if p.usage != nil {
+		for i, e := range selected {
+			selected[i] = p.usage.entry(e.usage)
+		}
+	}
 	if len(selected) == 0 {
 		a.status = "Select an entry first"
 		return
 	}
 	for _, e := range selected {
 		if action == "Delete" || action == "Move" {
+			if e.usage != nil && (e.usage.total.incomplete || e.usage.total.excluded > 0) {
+				a.report(errors.New("selection contains unreadable or excluded entries; refresh a complete scan before moving or deleting it"))
+				return
+			}
 			if err := removable(e); err != nil {
 				a.report(err)
 				return
@@ -459,6 +530,14 @@ func (a *app) dialogKey(ev *tcell.EventKey) {
 			d.text += string(r)
 		}
 	case tcell.KeyEnter:
+		if d.action == "usage-filter" {
+			p := &a.panes[a.active]
+			p.filter = d.text
+			p.usageEntries(nil)
+			a.modal = nil
+			a.status = "Name filter applied; selection marks cleared"
+			return
+		}
 		if d.action == "mkdir" {
 			a.modal = nil
 			a.execute(d)
@@ -490,6 +569,12 @@ func (a *app) dialogKey(ev *tcell.EventKey) {
 }
 
 func (a *app) execute(d *dialog) {
+	type result struct {
+		text  string
+		usage *usageTree
+	}
+	i := a.active
+	usage, current := a.panes[i].usage, a.panes[i].usagePath()
 	a.start(d.action, func(ctx context.Context, p *progress.Reporter) (any, error) {
 		var err error
 		switch d.action {
@@ -501,19 +586,42 @@ func (a *app) execute(d *dialog) {
 			err = a.backend.mkdir(ctx, d.target, d.text)
 		}
 		done, _, _, _, bytes, _ := p.Totals()
-		return fmt.Sprintf("%s completed (%d files, %s copied)", d.action, done, humanize.Bytes(bytes)), err
+		out := result{text: fmt.Sprintf("%s completed (%d files, %s copied)", d.action, done, humanize.Bytes(bytes))}
+		if err == nil && d.action == "Delete" && usage != nil && !a.backend.opt.DryRun {
+			out.usage, err = a.backend.usageAfterDelete(ctx, usage, d.source)
+			out.text = "Deletion completed; cached usage totals updated"
+		}
+		return out, err
 	}, func(r jobResult) {
 		if r.err == nil {
-			a.status = r.value.(string)
+			out := r.value.(result)
+			if out.usage != nil {
+				a.setUsage(i, out.usage, current)
+				a.status = out.text
+				a.refreshOtherPane(1 - i)
+				return
+			}
+			a.status = out.text
 			if a.backend.opt.DryRun {
 				a.status = "Dry run: " + d.action + " planned; no changes made"
+				if usage != nil {
+					return
+				}
 			}
+		} else if usage != nil {
+			// A failed/cancelled mutation can have made partial changes. Drop
+			// cached totals and load live listings without launching a new scan.
+			a.panes[0].leaveUsage()
+			a.panes[1].leaveUsage()
 		}
 		a.reload()
 	})
 }
 
 func (a *app) preview(e entry) {
+	if e.usage != nil {
+		e = a.panes[a.active].usage.entry(e.usage)
+	}
 	a.start("Reading preview", func(ctx context.Context, _ *progress.Reporter) (any, error) {
 		return a.backend.preview(ctx, e)
 	}, func(r jobResult) {
@@ -542,6 +650,15 @@ s        Sort this pane: name, modified time, size, extension or type
          Also sort by recursive file count (6 in the sort menu)
 f        Toggle this pane's size / recursive file-count column
 z / Z    Calculate directory totals: marked/cursor / all in this pane
+u        Scan a cached disk-usage view / return to two panes
+
+Disk-usage view (also available with --tui=usage):
+Enter / Backspace navigate the scanned tree without listing it again.
+a toggles disk allocation / logical size; Azure shows stored blob lengths.
+/ filters names; i shows details; x toggles crossing filesystem boundaries.
+r refreshes the scan. F8 / d deletes with confirmation.
+H marks hard links, ! incomplete totals, > excluded directories.
+Incomplete or excluded trees cannot be moved or deleted from this view.
 
 Copy and move use the other pane; e edits the destination in confirmation.
 Copy, move and delete require y in the confirmation dialog.

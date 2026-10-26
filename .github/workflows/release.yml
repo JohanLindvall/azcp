@@ -109,6 +109,11 @@ jobs:
       - name: Test executable updates
         run: go test ./internal/selfupdate
 
+      # Disk allocation and file identity use native stat/handle APIs. Exercise
+      # them on macOS as well as the Linux/Windows platforms covered by CI.
+      - name: Test filesystem usage and terminal browser
+        run: go test ./internal/store/local ./internal/tui
+
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}

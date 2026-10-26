@@ -31,6 +31,10 @@ Azure containers and nested blob prefixes appear as a
 [normal directory tree](docs/tui.md). The default command line remains
 compatible with `cp`.
 
+For live disk-usage analysis, run `azcp --tui=usage PATH` (local or Azure), or
+press **u** in the file manager. Scan once, drill down through cached totals,
+compare disk allocation and logical size, and delete with confirmation.
+
 <a id="getting-started"></a>
 
 ## Installing

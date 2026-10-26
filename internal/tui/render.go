@@ -12,6 +12,7 @@ import (
 
 	"github.com/JohanLindvall/azcp/internal/humanize"
 	"github.com/JohanLindvall/azcp/internal/logx"
+	"github.com/JohanLindvall/azcp/internal/store"
 )
 
 // Names and previews are untrusted terminal text. Controls are rendered as
@@ -74,20 +75,36 @@ func (a *app) draw() {
 	}
 	a.text(1, 0, 4, "azcp", a.theme.accent.Bold(true))
 	a.text(7, 0, 11, "Commander", a.theme.base.Bold(true))
-	hint := "s: sort · f: sizes/counts · z: calculate · Tab: panes · F1: help"
+	hint := "u: usage · s: sort · f: counts · z: calc · Tab: panes"
 	if w < 75 {
-		hint = "s: sort · f: counts · z: calc"
+		hint = "u: usage · s: sort · z: calc"
+	}
+	if a.panes[a.active].usage != nil {
+		a.text(7, 0, 11, "Disk usage", a.theme.base.Bold(true))
+		hint = "s: sort · f: counts · a: disk/logical · u: panes · F1: help"
+		if w < 80 {
+			hint = "s: sort · a: size · u: panes"
+		}
 	}
 	if a.backend.opt.DryRun {
 		hint = "DRY RUN · " + hint
 	}
 	a.right(20, 0, w-21, hint, a.theme.muted)
-	left := (w - 1) / 2
-	a.drawPane(0, 0, left, h-7)
-	a.drawPane(1, left+1, w-left-1, h-7)
+	if a.panes[a.active].usage != nil {
+		a.drawUsagePane(a.active, w, h-7)
+	} else {
+		left := (w - 1) / 2
+		a.drawPane(0, 0, left, h-7)
+		a.drawPane(1, left+1, w-left-1, h-7)
+	}
 	p := &a.panes[a.active]
 	if p.cursor >= 0 && p.cursor < len(p.entries) {
-		a.text(1, h-6, w-2, humanize.Elide(safeText(p.entries[p.cursor].loc.display()), w-2), a.theme.muted)
+		e := p.entries[p.cursor]
+		loc := e.loc
+		if p.usage != nil && e.usage != nil {
+			loc = p.usage.location(e.usage)
+		}
+		a.text(1, h-6, w-2, humanize.Elide(safeText(loc.display()), w-2), a.theme.muted)
 	}
 	a.drawStatus(w, h)
 	if logs := a.logs.snapshot(); len(logs) > 0 {
@@ -179,12 +196,19 @@ func (a *app) drawPane(index, x, width, bottom int) {
 			} else if e.dirSize != nil {
 				size = humanize.Bytes(e.dirSize.bytes)
 			}
+			if e.usage != nil {
+				size = p.usageText(e.usage, p.showCounts)
+			}
 			if !p.selected[i] && !(i == p.cursor && active) {
 				style = style.Bold(true)
 			}
-		} else if e.node != nil {
-			size = humanize.Bytes(e.node.Size)
-			if e.node.IsSymlink() {
+		} else if e.node != nil || e.usage != nil {
+			if e.usage != nil {
+				size = p.usageText(e.usage, p.showCounts)
+			} else {
+				size = humanize.Bytes(e.node.Size)
+			}
+			if e.kind() == store.KindSymlink {
 				name += "@"
 			}
 		}
@@ -198,8 +222,8 @@ func (a *app) drawPane(index, x, width, bottom int) {
 		a.text(x+1, y, 2, prefix, style)
 		a.text(x+4, y, nameWidth, humanize.Elide(safeText(name), nameWidth), style)
 		a.right(sizeX, y, sizeWidth, size, style)
-		if dateWidth > 0 && e.node != nil && !e.node.ModTime.IsZero() {
-			a.right(sizeX+sizeWidth+1, y, dateWidth-1, e.node.ModTime.Local().Format("Jan 02 15:04"), style)
+		if dateWidth > 0 && !e.modified().IsZero() {
+			a.right(sizeX+sizeWidth+1, y, dateWidth-1, e.modified().Local().Format("Jan 02 15:04"), style)
 		}
 	}
 	marked := 0

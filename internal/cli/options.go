@@ -102,6 +102,7 @@ var (
 	updateModes = []choice[Update]{
 		{"all", UpdateAll}, {"none", UpdateNone}, {"older", UpdateOlder}}
 	outputModes   = []choice[Output]{{"text", OutputText}, {"json", OutputJSON}}
+	tuiModes      = []choice[bool]{{"commander", false}, {"usage", true}}
 	globModes     = []choice[GlobMode]{{"auto", GlobAuto}, {"always", GlobAlways}, {"never", GlobNever}}
 	progressModes = []choice[progress.Mode]{
 		{"auto", progress.ModeAuto}, {"always", progress.ModeAlways}, {"never", progress.ModeNever}}
@@ -144,6 +145,7 @@ type Options struct {
 	ShowHelp     bool
 	ShowVersion  bool
 	TUI          bool
+	TUIUsage     bool
 	TUIPaths     [2]string
 	VersionCheck bool
 	SelfUpdate   bool
@@ -504,6 +506,10 @@ func (o *Options) apply(f cpflags.Flag) error {
 		o.VersionCheck = false
 	case "tui":
 		o.TUI = true
+		if f.HasValue {
+			return setChoice(&o.TUIUsage, f, lower(f.Value), tuiModes)
+		}
+		o.TUIUsage = Defaults().TUIUsage
 	// --- cp ----------------------------------------------------------------
 	case "archive", "a":
 		o.NoPreserveMode = false

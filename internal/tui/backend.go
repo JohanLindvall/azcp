@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -30,11 +31,12 @@ type blobStore interface {
 }
 
 type backend struct {
-	opt    cli.Options
-	log    *slog.Logger
-	local  store.Store
-	remote blobStore
-	az     *azure.Store
+	opt     cli.Options
+	log     *slog.Logger
+	local   store.Store
+	remote  blobStore
+	az      *azure.Store
+	usageOf func(string, fs.FileInfo) (local.Usage, error)
 }
 
 func newBackend(opt *cli.Options, log *slog.Logger) *backend {
@@ -46,7 +48,7 @@ func newBackend(opt *cli.Options, log *slog.Logger) *backend {
 		PeakRequests: opt.PeakRequests(), BytesPerSecond: opt.BandwidthLimit,
 	})
 	return &backend{opt: *opt, log: log, local: local.New(log, false),
-		remote: az, az: az}
+		remote: az, az: az, usageOf: local.UsageOf}
 }
 
 func (b *backend) store(u *uri.URL) store.Store {

@@ -7,6 +7,7 @@ package tui
 import (
 	"net/url"
 	"path/filepath"
+	"time"
 
 	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/uri"
@@ -27,10 +28,34 @@ type entry struct {
 	// which the copy/move inventory uses to detect changes.
 	dirSize     *directorySize
 	sizePending bool
+	usage       *usageNode
 }
 
 func (e entry) directory() bool {
+	if e.usage != nil {
+		return e.usage.kind == store.KindDir
+	}
 	return e.node == nil || e.node.IsDir() || (e.node.IsSymlink() && e.node.Mode.IsDir())
+}
+
+func (e entry) kind() store.Kind {
+	if e.usage != nil {
+		return e.usage.kind
+	}
+	if e.node != nil {
+		return e.node.Kind
+	}
+	return store.KindDir
+}
+
+func (e entry) modified() time.Time {
+	if e.usage != nil {
+		return e.usage.modified
+	}
+	if e.node != nil {
+		return e.node.ModTime
+	}
+	return time.Time{}
 }
 
 func parseURL(raw, suffix string) (*uri.URL, error) {

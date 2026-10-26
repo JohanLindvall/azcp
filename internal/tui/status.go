@@ -16,12 +16,19 @@ func (a *app) drawStatus(w, h int) {
 		style, mark := a.theme.good, "✓"
 		if strings.HasPrefix(a.status, "Error:") {
 			style, mark = a.theme.bad, "!"
-		} else if strings.HasPrefix(a.status, "Cancelled") {
+		} else if strings.HasPrefix(a.status, "Cancelled") || strings.HasPrefix(a.status, "Scan incomplete") || strings.HasPrefix(a.status, "Disk allocation unavailable") {
 			style, mark = a.theme.warn, "!"
 		}
 		a.text(1, h-5, 1, mark, style)
 		a.text(3, h-5, w-4, humanize.Elide(safeText(a.status), w-4), style)
-		a.text(3, h-4, w-4, "Enter: open · ←: parent · Space: mark · *: invert", a.theme.muted)
+		hint := "Enter: open · ←: parent · Space: mark · *: invert"
+		if a.panes[a.active].usage != nil {
+			hint = "Enter: open · ←: parent · /: filter · i: info · x: one filesystem"
+			if w < 80 {
+				hint = "Enter:open · ←:up · /:filter · i:info"
+			}
+		}
+		a.text(3, h-4, w-4, humanize.Elide(hint, w-4), a.theme.muted)
 		return
 	}
 	s := a.busy.progress.Snapshot()

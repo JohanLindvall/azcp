@@ -26,6 +26,7 @@ type paneSort struct {
 	field          sortField
 	reverse        bool
 	mixDirectories bool
+	allocated      bool
 }
 
 func (s paneSort) label() string {
@@ -38,6 +39,17 @@ func (s paneSort) label() string {
 }
 
 func (e entry) size() (int64, bool) {
+	return e.usageSize(false)
+}
+
+func (e entry) usageSize(allocated bool) (int64, bool) {
+	if e.usage != nil {
+		t := e.usage.total
+		if allocated {
+			return t.disk, !t.incomplete && !t.diskUnknown && !e.usage.excluded
+		}
+		return t.logical, !t.incomplete && !e.usage.excluded
+	}
 	if e.directory() {
 		if e.dirSize != nil {
 			return e.dirSize.bytes, true
@@ -51,6 +63,9 @@ func (e entry) size() (int64, bool) {
 }
 
 func (e entry) fileCount() (int64, bool) {
+	if e.usage != nil {
+		return e.usage.total.files, !e.usage.total.incomplete && !e.usage.excluded
+	}
 	if e.directory() {
 		if e.dirSize != nil {
 			return e.dirSize.files, true
@@ -84,16 +99,17 @@ func (s paneSort) compare(a, b entry) int {
 	n := 0
 	switch s.field {
 	case sortModified:
-		ak, bk := a.node != nil && !a.node.ModTime.IsZero(), b.node != nil && !b.node.ModTime.IsZero()
+		at, bt := a.modified(), b.modified()
+		ak, bk := !at.IsZero(), !bt.IsZero()
 		if ak != bk {
 			return knownFirst(ak)
 		}
 		if ak {
-			n = a.node.ModTime.Compare(b.node.ModTime)
+			n = at.Compare(bt)
 		}
 	case sortSize, sortFiles:
-		as, ak := a.size()
-		bs, bk := b.size()
+		as, ak := a.usageSize(s.allocated)
+		bs, bk := b.usageSize(s.allocated)
 		if s.field == sortFiles {
 			as, ak = a.fileCount()
 			bs, bk = b.fileCount()
@@ -108,9 +124,7 @@ func (s paneSort) compare(a, b entry) int {
 	case sortExtension:
 		n = strings.Compare(extension(a), extension(b))
 	case sortType:
-		if a.node != nil && b.node != nil {
-			n = strings.Compare(a.node.Kind.String(), b.node.Kind.String())
-		}
+		n = strings.Compare(a.kind().String(), b.kind().String())
 	}
 	if n == 0 {
 		n = strings.Compare(a.name, b.name)

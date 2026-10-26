@@ -8,12 +8,19 @@ Start the Norton Commander-style interface explicitly:
 azcp --tui
 azcp --tui ./photos azure://myaccount/backup
 azcp --tui --create-container . azure://myaccount
+azcp --tui=usage /path/to/analyze
+azcp --tui=usage azure://myaccount/backup
 ```
 
 The optional operands set the left and right starting directories; each defaults
 to the current directory. Ordinary `azcp SOURCE DEST` commands keep their `cp`
 behavior, and an invocation without operands still reports a missing operand.
 Both stdin and stderr must be terminals.
+
+`--tui=usage` starts a live disk-usage scan and opens a full-width view of the
+results. In the ordinary two-pane view, **u** scans the active directory and
+opens the same view; **u** returns to the file manager. No recursive scan runs
+unless you request one. `--tui=commander` is equivalent to plain `--tui`.
 
 The panes use your terminal's background with the same blue and green accents
 as the `cp` progress display. A highlighted row and `›` identify the cursor;
@@ -85,6 +92,7 @@ remains available during a slow request. SAS tokens stay redacted on screen.
 | F9 / `l` | Show messages and sign-in instructions |
 | Ctrl-R / `r` | Refresh both panes |
 | `s` | Sort the active pane |
+| `u` | Scan a disk-usage view / return to the two-pane file manager |
 | `f` | Toggle the active pane's size / recursive file-count column |
 | `z` | Calculate sizes and file counts for marked directories, or the directory under the cursor |
 | Shift-Z / `Z` | Calculate sizes and file counts for all directories in the active pane |
@@ -122,6 +130,59 @@ prefix and its marker, preserving a distinct blob with the same unsuffixed
 name. Filesystem roots, Azure accounts and Azure storage containers themselves
 cannot be moved or deleted; open them and select their contents instead.
 
+## Live disk-usage analysis
+
+The usage view scans once, then lets you drill down through the cached tree
+without more filesystem reads or Azure listings. It starts with the largest
+items first, mixing directories and files. Rows show a percentage of the
+current directory and, when space permits, a bar relative to the largest item.
+Wider terminals show both sizes and recursive file counts. The footer includes
+the current directory's totals. All sorting options remain available with **s**.
+
+| Key in the usage view | Action |
+| --- | --- |
+| Enter / Right, Backspace / Left | Enter a cached directory / return to its parent |
+| `a` | Toggle allocated disk space and logical size for local entries |
+| `f` | Switch the primary numeric column between size and recursive file count |
+| `/` | Filter visible names by a case-insensitive substring; empty input clears it |
+| `i` | Show exact byte counts, type, timestamps, hard links and scan problems |
+| `x` | Rescan with filesystem boundaries enforced / crossed (local only) |
+| `r` / Ctrl-R | Rescan the original scan root and return to the current directory |
+| F8 / `d` | Delete marked entries, or the cursor entry, with confirmation |
+| `u` | Return to two panes at the current location |
+
+Local scans start with allocated disk space and cross filesystem boundaries;
+**x** switches to one filesystem. They never follow symlinks. Logical totals
+include each entry's length, including directory and symlink metadata lengths;
+allocated totals use the operating system's disk accounting, including sparse
+and compressed files where supported. **H** marks hard links. Each directory
+counts a shared inode once, even when its names appear in different descendants.
+File counts still count regular-file names, so two hard links count as two files.
+Directory overhead and shared hard links mean the visible rows' totals and
+percentages need not add up to the parent's total. Allocation is not a promise
+of space reclaimed: external hard links or shared filesystem extents can keep
+data allocated after a deletion.
+
+Azure uses stored blob lengths, with one flat walk per container and cached
+navigation afterward. It exposes neither physical disk allocation nor local
+filesystem boundaries. A blob and a prefix sharing a name stay separate, and
+significant empty and dot components in blob keys are preserved.
+
+Scans are cancellable with Esc or Ctrl-C. Readable siblings remain available
+when a subtree cannot be read: **!** and **?** mark incomplete or unavailable
+totals, and **i** or F9 explains the problem. **>** marks an excluded filesystem
+or directory alias. An item containing unreadable or excluded entries cannot
+be moved or deleted from the usage view. Filtering only hides rows; it does not
+change totals or scan scope, and applying a filter clears selection marks.
+
+Confirmed deletion updates the cached tree without rescanning it. Shared
+hard-link data remains counted, and Azure virtual folders disappear when their
+last blob is removed while explicit directory markers remain. Other cached
+panes are invalidated by mutations. Copy, move and mkdir refresh the affected
+views; a failed or cancelled mutation returns to live directory listings.
+External changes are picked up by **r**. Scans are held in memory for the live
+session; there is no saved-scan format.
+
 ## Sorting and directory totals
 
 Press **s** to open the sort menu, then **1** for name, **2** for modified time,
@@ -140,7 +201,8 @@ shows the corresponding column. Toggling the column leaves the sort unchanged.
 Both totals come from the same scan, so switching columns never starts another
 scan. The column choice is independent for each pane and lasts for the session.
 
-Directory totals are calculated only when requested with **z** or **Z**. Browsing
+In the ordinary two-pane view, directory totals are calculated only when
+requested with **z** or **Z**. Browsing
 and sorting do not start recursive scans. The calculation works for local
 directories, Azure prefixes and containers; **z** ignores marked files and uses
 the cursor only when nothing is marked. **Z** scans all directories in the active

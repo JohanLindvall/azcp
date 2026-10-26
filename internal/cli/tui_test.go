@@ -4,6 +4,20 @@ package cli
 
 import "testing"
 
+func TestUsageTUIIsExplicitAndLeavesFollowingPathsAsOperands(t *testing.T) {
+	o := mustParse(t, "--tui=usage", "left", "azure://account/c")
+	if !o.TUI || !o.TUIUsage || o.TUIPaths != ([2]string{"left", "azure://account/c"}) {
+		t.Fatalf("usage mode: %+v", o)
+	}
+	o = mustParse(t, "--tui", "usage")
+	if o.TUIUsage || o.TUIPaths[0] != "usage" {
+		t.Fatal("optional TUI mode consumed a directory operand")
+	}
+	if _, err := Parse([]string{"--tui=invalid"}); err == nil {
+		t.Fatal("accepted an invalid TUI mode")
+	}
+}
+
 func TestTUIIsExplicitAndHasIndependentOperands(t *testing.T) {
 	for _, args := range [][]string{nil, {"tui"}} {
 		if _, err := Parse(args); err == nil {

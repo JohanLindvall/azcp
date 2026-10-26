@@ -71,6 +71,8 @@ The release re-runs the tests, then builds each platform on its own runner.
 That last part is not incidental: macOS reaches its keychain through cgo, so a macOS
 binary cross-compiled from Linux silently loses the ability to remember a
 sign-in. Linux and Windows are built with `CGO_ENABLED=0` for static binaries.
+The release builds also run the local-store and TUI tests natively, so disk
+allocation and file identity are checked on macOS as well as Linux and Windows.
 
 Version comes from the tag via `-X internal/cli.Version`. A binary built
 without that stamp falls back to the module version in its build info, so a
@@ -566,7 +568,8 @@ hierarchy is the storage account, its containers, and nested blob prefixes;
 it is exposed directly as directories, without a separate collection or
 mount configuration.
 
-**TUI directory totals are optional display state.** `z` and `Z` request them;
+**TUI directory totals are optional display state.** In the two-pane view,
+`z` and `Z` request them;
 browsing, sorting and toggling the size/file-count column must not launch
 recursive scans. Sum regular-file lengths and counts in the same walk
 without following symlinks, discard partial totals on error or cancellation,
@@ -574,6 +577,20 @@ and keep them separate from `Node.Size`, which move inventories compare.
 Calculating the whole pane uses one `WalkAll`, preserving Azure's flat listing
 and significant empty or dot key components. Sorts must move marks and the
 cursor with the original entries, including a blob and prefix of the same name.
+
+**The usage view is a live snapshot.** `--tui=usage` or `u` requests its scan.
+Local scanning streams directory entries in bounded batches; Azure keeps one
+flat walk per container. Cached rows hold compact usage nodes, not a full URL,
+credential, metadata map and platform stat object per file. Navigation reads the
+cache. Disk allocation and logical length are distinct; hard-link data counts
+once per ancestor directory, while file counts count names. Symlinks are not
+followed. An unreadable subtree marks its ancestors incomplete and cannot be
+deleted or moved; readable siblings remain usable. A successful deletion builds
+a replacement cache in the worker, recounting shared inodes without rescanning.
+The displayed snapshot stays immutable until the result arrives. Empty virtual
+Azure prefixes disappear after cleanup, while explicit marker blobs remain.
+Other mutations invalidate or rescan the cache; never present stale partial
+totals as a complete inventory for deletion.
 
 **Resume is asymmetric on purpose.** An upload asks the service for its
 uncommitted block list, so it needs no local state and survives a reboot or a
