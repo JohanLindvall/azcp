@@ -57,9 +57,18 @@ platform-specific behavior and run the tests on that platform.
 Formatting, vet, the race detector, the cross-compile check (which still
 covers darwin) and the emulator-backed end-to-end suite run once on Linux.
 
-`release.yml` fires on a `v*` tag. It re-runs the tests rather than trusting
-that main was green, then builds each platform on its own runner. That last
-part is not incidental: macOS reaches its keychain through cgo, so a macOS
+Every successful push to main calls `release.yml` after all CI jobs pass;
+main runs are never cancelled by a later push. Manual `v*` tags and workflow
+dispatch still release too. `scripts/release_version.py` adds the first-parent
+distance from the highest stable ancestor tag to its patch number. This makes
+versions follow commit order even when CI finishes out of order, and reruns
+reuse the same tag. Publish jobs queue rather than discard pending releases,
+and an older release cannot become `latest` after a newer one. The workflows
+call one another explicitly: a tag pushed with `GITHUB_TOKEN` does not trigger
+another workflow. The version allocator's tests run in CI.
+
+The release re-runs the tests, then builds each platform on its own runner.
+That last part is not incidental: macOS reaches its keychain through cgo, so a macOS
 binary cross-compiled from Linux silently loses the ability to remember a
 sign-in. Linux and Windows are built with `CGO_ENABLED=0` for static binaries.
 
@@ -69,9 +78,10 @@ without that stamp falls back to the module version in its build info, so a
 
 ### Container image
 
-`packages.yml` publishes `ghcr.io/johanlindvall/azcp` for amd64 and arm64 on
-every tag, and `:edge` from main. The Dockerfile cross-compiles from
-`$BUILDPLATFORM` rather than emulating the target, so the arm64 image costs no
+`release.yml` calls `packages.yml` to publish `ghcr.io/johanlindvall/azcp` for
+amd64 and arm64 for each release; main also publishes `:edge` directly.
+Only the latest release advances the moving image tags. The Dockerfile
+cross-compiles from `$BUILDPLATFORM` rather than emulating the target, so the arm64 image costs no
 more to build than the amd64 one.
 
 The final stage is `FROM scratch` with exactly two things in it: the static
@@ -143,17 +153,20 @@ rather than reason about it if you change a transfer path.
 
 ## Invariants worth knowing before editing
 
-**Self-updates are maintenance, not copy results.** `selfupdate.Run` is called
-after a successful copy or TUI session. Containers, development versions and
-disabled checks do no update I/O; dry runs and informational invocations do not
+**Copies check for updates; only `--self-update` installs one.** `selfupdate.Run`
+is called without `Install` after a successful copy or TUI session. Containers,
+development versions and disabled checks do no update I/O; dry runs and informational invocations do not
 call it. The official image is also stamped with `selfupdate.ContainerBuild`.
 The release's existing `SHA256SUMS` names and verifies the compressed binary;
 never install an unverified download or reuse cp's `--update` for this feature.
+The explicit command bypasses the check cache and automatic-check opt-outs;
+it reports unsupported builds, lock contention and installation errors with
+a failing exit status, rather than pretending they mean "up to date".
 The check cache and OS lock limit concurrent invocations, and replacing a file
 that changed during the download is refused. Unix renames the staged binary
 over the executable; Windows moves the running image aside and rolls back if
-the second rename fails. Maintenance errors cannot fail a successful copy,
-and notices use `logx`, only on a terminal. Native replacement tests run on
+the second rename fails. Check errors cannot fail a successful copy,
+and automatic notices use `logx`, only on a terminal. Native replacement tests run on
 each platform in the release workflow.
 
 **A reflink attempt keeps the open destination attached to its name.** The

@@ -10,7 +10,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Superseded PR runs can stop; every push to main must reach its release.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -30,6 +31,8 @@ jobs:
             echo "::error::not gofmt'd:"; echo "$unformatted"; exit 1
           fi
       - run: go vet ./...
+      - name: Release version tests
+        run: python3 scripts/test_release_version.py
       - name: go mod tidy is a no-op
         run: |
           go mod tidy
@@ -88,3 +91,13 @@ jobs:
           go-version: stable
           check-latest: true
       - run: make e2e
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, test, cross, e2e]
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release.yml

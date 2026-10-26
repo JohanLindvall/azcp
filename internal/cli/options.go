@@ -146,7 +146,7 @@ type Options struct {
 	TUI          bool
 	TUIPaths     [2]string
 	VersionCheck bool
-	AutoUpdate   bool
+	SelfUpdate   bool
 
 	// cp behaviour
 	Recursive            bool
@@ -248,7 +248,6 @@ type Options struct {
 func Defaults() *Options {
 	return &Options{
 		VersionCheck:     !envDisabled("AZCP_NO_VERSION_CHECK"),
-		AutoUpdate:       !envDisabled("AZCP_NO_AUTO_UPDATE"),
 		TUIPaths:         [2]string{".", "."},
 		Suffix:           backupSuffixDefault(),
 		Jobs:             8,
@@ -442,6 +441,19 @@ func Parse(argv []string) (*Options, error) {
 		return o, nil
 	}
 	operands := res.Operands
+	if o.SelfUpdate {
+		if len(operands) != 0 {
+			return nil, usagef("--self-update does not accept file operands")
+		}
+		for _, f := range res.Flags {
+			switch f.Spec.Long {
+			case "self-update", "no-auto-update", "no-version-check":
+			default:
+				return nil, usagef("%s cannot be combined with --self-update", f.Name())
+			}
+		}
+		return o, nil
+	}
 	if o.TUI {
 		// Copy policy comes from the commander's dialogs. Reject flags that
 		// could silently turn a move into a partial copy before source removal.
@@ -484,8 +496,10 @@ func (o *Options) apply(f cpflags.Flag) error {
 		name = string(f.Spec.Short)
 	}
 	switch name {
+	case "self-update":
+		o.SelfUpdate = true
 	case "no-auto-update":
-		o.AutoUpdate = false
+		// Kept for existing scripts; a copy never installs an update now.
 	case "no-version-check":
 		o.VersionCheck = false
 	case "tui":

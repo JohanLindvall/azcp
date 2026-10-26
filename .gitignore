@@ -3,3 +3,4 @@
 coverage.out
 *.test
 *.out
+__pycache__/

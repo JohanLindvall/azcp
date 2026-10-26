@@ -80,7 +80,7 @@ type fixture struct {
 func newFixture(t *testing.T, goos string) *fixture {
 	t.Helper()
 	dir := t.TempDir()
-	f := &fixture{cfg: Config{Version: "v1.0.0", VersionCheck: true, AutoUpdate: true}, status: http.StatusOK}
+	f := &fixture{cfg: Config{Version: "v1.0.0", VersionCheck: true, Install: true}, status: http.StatusOK}
 	f.u = updater{goos: goos, goarch: "amd64", executable: filepath.Join(dir, "azcp"), cacheDir: filepath.Join(dir, "cache"),
 		now:      func() time.Time { return time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC) },
 		validate: func(string, string, string) error { return nil }}
@@ -150,6 +150,10 @@ func TestInstallAndDailyCheck(t *testing.T) {
 			}
 			assertContents(t, f.u.executable, "replacement")
 			// A long-running older invocation must not reinstall the update.
+			if _, err := f.u.run(t.Context(), f.cfg); err == nil {
+				t.Fatal("explicit update ignored a concurrently replaced executable")
+			}
+			f.cfg.Install = false
 			if r, err := f.u.run(t.Context(), f.cfg); err != nil || r != (Result{}) {
 				t.Fatalf("older running invocation: %+v, %v", r, err)
 			}
@@ -183,9 +187,9 @@ func TestInstallAndDailyCheck(t *testing.T) {
 	}
 }
 
-func TestCheckWithoutInstallingAndOptBackIn(t *testing.T) {
+func TestExplicitUpdateBypassesDailyCheck(t *testing.T) {
 	f := newFixture(t, "linux")
-	f.cfg.AutoUpdate = false
+	f.cfg.Install = false
 	r, err := f.u.run(t.Context(), f.cfg)
 	if err != nil || r.Installed || r.Version != "v1.10.0" {
 		t.Fatalf("result %+v, %v", r, err)
@@ -194,7 +198,10 @@ func TestCheckWithoutInstallingAndOptBackIn(t *testing.T) {
 	if f.requests.Load() != 1 {
 		t.Fatal("check-only downloaded an executable")
 	}
-	f.cfg.AutoUpdate = true
+	if _, err := f.u.run(t.Context(), f.cfg); err != nil || f.requests.Load() != 1 {
+		t.Fatalf("automatic check ignored daily cache: %v", err)
+	}
+	f.cfg.Install = true
 	if r, err := f.u.run(t.Context(), f.cfg); err != nil || !r.Installed {
 		t.Fatalf("opt back in: %+v, %v", r, err)
 	}
@@ -202,9 +209,9 @@ func TestCheckWithoutInstallingAndOptBackIn(t *testing.T) {
 
 func TestDisabledAndDevelopmentRunsDoNoIO(t *testing.T) {
 	for _, cfg := range []Config{
-		{Version: "v1.0.0", AutoUpdate: true},
-		{Version: "dev", VersionCheck: true, AutoUpdate: true},
-		{Version: "v1.0.0-dirty", VersionCheck: true, AutoUpdate: true},
+		{Version: "v1.0.0"},
+		{Version: "dev", VersionCheck: true},
+		{Version: "v1.0.0-dirty", VersionCheck: true},
 	} {
 		// Deliberately no client, clock or paths: any IO would fail or panic.
 		if r, err := (&updater{goos: "linux", goarch: "amd64"}).run(t.Context(), cfg); err != nil || r != (Result{}) {
@@ -214,8 +221,11 @@ func TestDisabledAndDevelopmentRunsDoNoIO(t *testing.T) {
 	old := ContainerBuild
 	ContainerBuild = "true"
 	t.Cleanup(func() { ContainerBuild = old })
-	if r, err := Run(t.Context(), Config{Version: "v1.0.0", VersionCheck: true, AutoUpdate: true}); err != nil || r != (Result{}) {
+	if r, err := Run(t.Context(), Config{Version: "v1.0.0", VersionCheck: true}); err != nil || r != (Result{}) {
 		t.Fatalf("container: %+v, %v", r, err)
+	}
+	if _, err := Run(t.Context(), Config{Version: "v1.0.0", Install: true}); err == nil {
+		t.Fatal("explicit container update silently succeeded")
 	}
 }
 
@@ -250,11 +260,20 @@ func TestFailedUpdatesLeaveExecutableIntact(t *testing.T) {
 			}
 			assertContents(t, f.u.executable, "original")
 			before := f.requests.Load()
+			f.cfg.Install = false
 			if _, err := f.u.run(t.Context(), f.cfg); err != nil {
 				t.Fatal(err)
 			}
 			if f.requests.Load() != before {
 				t.Fatal("failed check was not throttled")
+			}
+			// Fix the server and retry explicitly without waiting a day.
+			f.status = http.StatusOK
+			f.u.validate = func(string, string, string) error { return nil }
+			f.setRelease(t, "v1.10.0", "replacement")
+			f.cfg.Install = true
+			if r, err := f.u.run(t.Context(), f.cfg); err != nil || !r.Installed {
+				t.Fatalf("explicit retry was throttled: %+v, %v", r, err)
 			}
 		})
 	}
@@ -280,8 +299,19 @@ func TestConcurrentCheckDoesNotWaitOrDownloadTwice(t *testing.T) {
 	r, err := f.u.run(t.Context(), f.cfg)
 	close(release)
 	firstErr := <-done
-	if err != nil || firstErr != nil || r != (Result{}) || f.requests.Load() != 2 {
+	if err == nil || firstErr != nil || r != (Result{}) || f.requests.Load() != 2 {
 		t.Fatalf("parallel check: %+v, %v, %v, requests %d", r, err, firstErr, f.requests.Load())
+	}
+}
+
+func TestExplicitUpdateReportsUnsupportedBuilds(t *testing.T) {
+	for _, u := range []updater{{goos: "linux", goarch: "386"}, {goos: "plan9", goarch: "amd64"}} {
+		if _, err := u.run(t.Context(), Config{Version: "v1.0.0", Install: true}); err == nil {
+			t.Fatal("unsupported platform silently succeeded")
+		}
+	}
+	if _, err := (&updater{}).run(t.Context(), Config{Version: "dev", Install: true}); err == nil {
+		t.Fatal("development build silently succeeded")
 	}
 }
 

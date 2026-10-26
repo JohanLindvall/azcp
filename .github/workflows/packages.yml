@@ -1,8 +1,15 @@
 name: packages
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
   push:
-    tags: ['v*']
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -17,8 +24,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: packages-${{ github.ref }}
+  group: packages-publish
   cancel-in-progress: false
+  queue: max
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/azcp
@@ -39,7 +47,7 @@ jobs:
           # not always the same thing: a tag cut before this workflow existed
           # has no Dockerfile in it, and can only be imaged by building a tree
           # that has one.
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
 
       - uses: docker/setup-buildx-action@v4
@@ -53,7 +61,8 @@ jobs:
       - name: Work out the version
         id: version
         env:
-          REQUESTED_VERSION: ${{ github.event.inputs.version }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ -n "$REQUESTED_VERSION" ]; then
@@ -69,19 +78,28 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "building $version"
+          latest=false
+          if [ -n "$REQUESTED_VERSION" ]; then
+            published=$(gh release list --limit 100 --json tagName,isLatest --jq '.[] | select(.isLatest) | .tagName')
+            if [ "$version" = "$published" ]; then latest=true; fi
+          fi
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
 
       - uses: docker/metadata-action@v6
         id: meta
         with:
           images: ${{ env.IMAGE }}
-          # A tag gets its exact version, the moving major.minor, and latest.
-          # A push to main gets edge, so there is something to try without
-          # waiting for a release.
+          # Semver tags otherwise add latest implicitly, even for an older
+          # release. The explicit raw tag below is the only source of latest.
+          flavor: latest=false
+          # Released images get an exact version. Only the latest release
+          # advances moving tags; a late older build must not roll them back.
+          # The separate main push still publishes edge while CI runs.
           tags: |
-            type=semver,pattern={{version}},value=${{ steps.version.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }}
-            type=raw,value=latest,enable=${{ github.event.inputs.version != '' || github.ref_type == 'tag' }}
-            type=edge,branch=main
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.version }},enable=${{ inputs.version != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.latest == 'true' }}
+            type=raw,value=latest,enable=${{ steps.version.outputs.latest == 'true' }}
+            type=edge,branch=main,enable=${{ inputs.version == '' }}
           labels: |
             org.opencontainers.image.title=azcp
             org.opencontainers.image.description=A drop-in cp that also copies to and from Azure Blob Storage

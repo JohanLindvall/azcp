@@ -28,7 +28,7 @@ const (
 type Config struct {
 	Version      string
 	VersionCheck bool
-	AutoUpdate   bool
+	Install      bool // an explicit request, never an automatic copy side effect
 }
 
 // Result is separate from the copy's result: maintenance can never change the
@@ -51,16 +51,27 @@ type updater struct {
 }
 
 type state struct {
-	Checked    time.Time
-	Current    string
-	AutoUpdate bool
-	Backup     string
+	Checked time.Time
+	Current string
+	Backup  string
 }
 
-// Run does nothing at all when checks are disabled, in containers, or for a
-// development build. All network work is bounded and follows ctx cancellation.
+// Run silently skips automatic checks in containers and development builds;
+// an explicit installation reports why it cannot proceed instead.
 func Run(ctx context.Context, cfg Config) (Result, error) {
-	if _, ok := releaseVersion(cfg.Version); !ok || !cfg.VersionCheck || InContainer() {
+	if !cfg.VersionCheck && !cfg.Install {
+		return Result{}, nil
+	}
+	if InContainer() {
+		if cfg.Install {
+			return Result{}, errors.New("self-updates are disabled in containers; pull a newer image")
+		}
+		return Result{}, nil
+	}
+	if _, ok := releaseVersion(cfg.Version); !ok {
+		if cfg.Install {
+			return Result{}, fmt.Errorf("self-updates require a stable release (running %s)", cfg.Version)
+		}
 		return Result{}, nil
 	}
 	exe, err := os.Executable()
@@ -92,10 +103,19 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 }
 
 func (u *updater) run(ctx context.Context, cfg Config) (result Result, err error) {
-	if _, ok := releaseVersion(cfg.Version); !ok || !cfg.VersionCheck {
+	if !cfg.VersionCheck && !cfg.Install {
+		return result, nil
+	}
+	if _, ok := releaseVersion(cfg.Version); !ok {
+		if cfg.Install {
+			return result, fmt.Errorf("self-updates require a stable release (running %s)", cfg.Version)
+		}
 		return result, nil
 	}
 	if assetSuffix(u.goos, u.goarch) == "" {
+		if cfg.Install {
+			return result, fmt.Errorf("no release binary for %s/%s", u.goos, u.goarch)
+		}
 		return result, nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -115,6 +135,9 @@ func (u *updater) run(ctx context.Context, cfg Config) (result Result, err error
 	path := filepath.Join(u.cacheDir, key+".json")
 	unlock, err := lock(path + ".lock")
 	if err != nil || unlock == nil {
+		if err == nil && cfg.Install {
+			err = errors.New("another version check or update is in progress; try again")
+		}
 		return result, err
 	}
 	defer unlock()
@@ -133,13 +156,19 @@ func (u *updater) run(ctx context.Context, cfg Config) (result Result, err error
 		// A process started before another invocation installed an update can
 		// still be running the old version. It must not reinstall or downgrade
 		// the executable the other invocation has just put in place.
-		if newer(s.Current, cfg.Version) || (s.Current == cfg.Version && s.AutoUpdate == cfg.AutoUpdate) {
+		if newer(s.Current, cfg.Version) {
+			if cfg.Install {
+				return result, errors.New("another process updated this executable; run the command again")
+			}
+			return result, nil
+		}
+		if !cfg.Install && s.Current == cfg.Version {
 			return result, nil
 		}
 	}
 	// Remember even a refused request: offline invocations and a rate limit
 	// should not make every subsequent cp wait for the network again.
-	s.Checked, s.Current, s.AutoUpdate = now, cfg.Version, cfg.AutoUpdate
+	s.Checked, s.Current = now, cfg.Version
 	if err := saveState(path, s); err != nil {
 		return result, err
 	}
@@ -150,7 +179,7 @@ func (u *updater) run(ctx context.Context, cfg Config) (result Result, err error
 		return result, err
 	}
 	result.Version = r.version
-	if !cfg.AutoUpdate {
+	if !cfg.Install {
 		return result, nil
 	}
 	installCtx, cancel := context.WithTimeout(ctx, installTimeout)

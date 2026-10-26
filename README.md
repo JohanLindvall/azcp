@@ -58,11 +58,10 @@ go install github.com/JohanLindvall/azcp/cmd/azcp@latest
 [All installation options](docs/installation.md) include Docker, manual
 downloads, checksum verification and building from source.
 
-Outside containers, stable releases check daily for a newer version and update
-the executable for the next invocation. Use `--no-auto-update` to check without
-installing, or `--no-version-check` to disable both. The environment variables
-`AZCP_NO_AUTO_UPDATE=1` and `AZCP_NO_VERSION_CHECK=1` do the same. See
-[updates](docs/installation.md#updates) for details.
+Outside containers, stable releases check daily for a newer version and tell
+you when one is available. Run `azcp --self-update` to install it. Use
+`--no-version-check` or `AZCP_NO_VERSION_CHECK=1` to disable automatic checks.
+See [updates](docs/installation.md#updates) for details.
 
 <a id="trying-it-without-an-account"></a>
 

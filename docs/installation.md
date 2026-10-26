@@ -32,9 +32,9 @@ curl -sSfL https://raw.githubusercontent.com/JohanLindvall/azcp/main/scripts/ins
   | sh -s -- --dir "$HOME/bin" --version v0.6.6
 ```
 
-To keep a pinned release, disable automatic updates as described below.
-You can also run the installer again to update manually. To uninstall, remove
-the `azcp` executable from the installation directory.
+A pinned release stays installed until you request an update. You can also run
+the installer again to update manually. To uninstall, remove the `azcp`
+executable from the installation directory.
 
 ## Windows and manual downloads
 
@@ -99,30 +99,35 @@ go run github.com/JohanLindvall/azcp/cmd/azcp@latest --help
 ## Updates
 
 Stable releases check GitHub for a newer stable release after a successful copy
-or after leaving the file manager. Both version checking and automatic
-installation are enabled by default outside containers. The check is cached
-for 24 hours per executable and user, including failed attempts; changing the
-installed version or automatic-update setting allows a fresh check.
+or after leaving the file manager. Checking is enabled by default outside
+containers and never installs anything. The check is cached for 24 hours per
+executable and user, including failed attempts; changing the installed version
+allows a fresh check. Each successful push to `main` produces a stable release
+after CI passes, with binaries for all supported platforms and container images.
 
 | Setting | Effect |
 | --- | --- |
-| `--no-auto-update` or `AZCP_NO_AUTO_UPDATE=1` | Check and report a newer version, but keep the installed executable. |
-| `--no-version-check` or `AZCP_NO_VERSION_CHECK=1` | Disable both features, with no update requests or cache writes. |
+| `azcp --self-update` | Check now and install the latest stable release. Takes no file operands. |
+| `--no-version-check` or `AZCP_NO_VERSION_CHECK=1` | Disable automatic checks, with no update requests or cache writes during copies. |
 
-For example, keep a pinned version while receiving update notices:
+Install a newer release explicitly:
 
 ```sh
-export AZCP_NO_AUTO_UPDATE=1
+azcp --self-update
 ```
 
-Or disable all update traffic in PowerShell:
+Or disable automatic checks in PowerShell:
 
 ```powershell
 $env:AZCP_NO_VERSION_CHECK = '1'
 ```
 
-Unset the variable to restore the default; `0`, `false` and `no` also leave the
-feature enabled. Command-line opt-outs always disable it for that invocation.
+Unset the variable to restore the default; `0`, `false` and `no` also leave
+checks enabled. `--self-update` bypasses the daily cache and automatic-check
+opt-outs, so a check or failed download never prevents an explicit retry.
+It exits with status 0 when updated or already current, and 1 on failure.
+`--no-auto-update` remains accepted for compatibility, and the old
+`AZCP_NO_AUTO_UPDATE` variable is no longer needed: copies never install updates.
 `--update` and `-u` still control which destination files are copied, as in `cp`.
 
 An update downloads the compressed binary for the current OS and architecture
@@ -134,16 +139,19 @@ executable is updated. Linux and macOS replace the name atomically. Windows
 moves the running executable aside, restores it if replacement fails, and
 removes the old image on a subsequent run after it is no longer in use.
 
-The current operation finishes before checking; the next invocation uses the
-new version. A check has a five-second timeout and downloading/installing has
-a one-minute deadline. An offline check or failed installation never changes
-the copy's exit status. Update notices appear only when stderr is a terminal;
-diagnostic details are available with `--log-level=debug`. JSON output is
-unchanged. State is stored under `azcp/updates` in the OS user cache directory.
+The current copy finishes before checking. An explicit update takes effect on
+the next invocation. A check has a five-second timeout and downloading/installing
+has a one-minute deadline. An offline automatic check never changes the copy's
+exit status. Automatic notices appear only when stderr is a terminal and name
+the `azcp --self-update` command; diagnostic details are available with
+`--log-level=debug`. The explicit command reports success or failure even in
+scripts. Copy JSON output is unchanged. State is stored under `azcp/updates` in
+the OS user cache directory.
 
 Containers, development or prerelease builds, `--dry-run`, `--help`,
-`--version`, benchmarks and failed copies skip this work. The official container
-image disables it at build time; Docker, Podman, Kubernetes, systemd and LXC
+`--version`, benchmarks and failed copies skip automatic checks. Explicit
+self-updates refuse containers and development or prerelease builds. The official
+container image disables updates at build time; Docker, Podman, Kubernetes, systemd and LXC
 runtime hints also disable it for binaries installed in other images. Custom
 container runtimes that expose none of these hints should set
 `AZCP_NO_VERSION_CHECK=1` explicitly. Update container installations by pulling

@@ -28,12 +28,12 @@ func TestMaintenanceRunsAfterCopyAndCannotFailIt(t *testing.T) {
 		if err != nil || string(b) != "payload" {
 			t.Fatalf("checked before copy completed: %q, %v", b, err)
 		}
-		if !cfg.VersionCheck || cfg.AutoUpdate {
+		if !cfg.VersionCheck || cfg.Install {
 			t.Fatalf("lost check-only policy: %+v", cfg)
 		}
 		return selfupdate.Result{}, errors.New("offline")
 	}
-	if code := runIn(t, dir, "--no-auto-update", "--no-progress", "src", "dst"); code != exitOK {
+	if code := runIn(t, dir, "--no-progress", "src", "dst"); code != exitOK {
 		t.Fatalf("maintenance failure changed exit status: %d", code)
 	}
 	if calls != 1 {
@@ -48,6 +48,33 @@ func TestMaintenanceRunsAfterCopyAndCannotFailIt(t *testing.T) {
 		runIn(t, dir, args...)
 		if calls != 1 {
 			t.Fatalf("maintenance ran for %v", args)
+		}
+	}
+}
+
+func TestSelfUpdateCommandReportsSuccessAndFailure(t *testing.T) {
+	t.Setenv("AZCP_NO_VERSION_CHECK", "1")
+	t.Setenv("AZCP_NO_AUTO_UPDATE", "1")
+	old := runSelfUpdate
+	t.Cleanup(func() { runSelfUpdate = old })
+	for _, fail := range []bool{false, true} {
+		calls := 0
+		runSelfUpdate = func(ctx context.Context, cfg selfupdate.Config) (selfupdate.Result, error) {
+			calls++
+			if !cfg.Install || !cfg.VersionCheck {
+				t.Fatalf("explicit update lost to automatic opt-out: %+v", cfg)
+			}
+			if fail {
+				return selfupdate.Result{}, errors.New("checksum mismatch")
+			}
+			return selfupdate.Result{Version: "v1.2.3", Installed: true}, nil
+		}
+		want := exitOK
+		if fail {
+			want = exitFail
+		}
+		if code := run([]string{"--self-update"}); code != want || calls != 1 {
+			t.Fatalf("exit %d, calls %d; want %d, 1", code, calls, want)
 		}
 	}
 }

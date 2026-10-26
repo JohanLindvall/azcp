@@ -116,9 +116,11 @@ var specs = []cpflags.Spec{
 	{Long: "tui", Arg: cpflags.NoArg,
 		Help: "open the two-pane file manager; optional operands are LEFT and RIGHT directories"},
 	{Long: "no-auto-update", Arg: cpflags.NoArg,
-		Help: "check for new versions without installing them (AZCP_NO_AUTO_UPDATE=1)"},
+		Help: "accepted for compatibility; copies only check for new versions"},
 	{Long: "no-version-check", Arg: cpflags.NoArg,
-		Help: "disable version checks and automatic updates (AZCP_NO_VERSION_CHECK=1)"},
+		Help: "disable automatic version checks (AZCP_NO_VERSION_CHECK=1)"},
+	{Long: "self-update", Arg: cpflags.NoArg,
+		Help: "check now and install the latest stable azcp; no file operands"},
 	{Long: "part-size", Arg: cpflags.RequiredArg, Meta: "SIZE",
 		Help: "block size for multi-part blob transfers (default 8MiB)"},
 	{Long: "part-concurrency", Arg: cpflags.RequiredArg, Meta: "N",
@@ -230,6 +232,7 @@ const usageHead = `Usage: azcp [OPTION]... [-T] SOURCE DEST
   or:  azcp [OPTION]... SOURCE... DIRECTORY
   or:  azcp [OPTION]... -t DIRECTORY SOURCE...
   or:  azcp --tui [OPTION]... [LEFT [RIGHT]]
+  or:  azcp --self-update
 
 Copy files, locally or to and from Azure Blob Storage. Either side may be an
 azure:// URL:
@@ -249,8 +252,9 @@ const usageTail = `
 Sizes accept K, M, G and T suffixes (powers of 1024). Durations accept Go
 syntax, e.g. 500ms, 30s, 2m.
 
-Release builds check for updates daily after a successful run and install them
-for the next invocation. Containers and --dry-run skip both features.
+Release builds check for new versions daily after a successful copy. Run
+azcp --self-update to install one. Containers disable checks and self-updates;
+--dry-run does not check for updates.
 
 Exit status is 0 on success and 1 for copy failures or an invalid command line.
 `
