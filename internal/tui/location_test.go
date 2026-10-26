@@ -3,12 +3,14 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
@@ -136,6 +138,33 @@ func TestEngineOperandsRoundTripExactBlobNamesAndSAS(t *testing.T) {
 			if err != nil || u.Host != v.Host || u.Account != v.Account || u.Container != v.Container || u.Key != v.Key || u.SAS != v.SAS || v.TrailingSlash != dir || u.Secure != v.Secure {
 				t.Fatalf("operand did not round-trip: %s; %v", u.Display(), err)
 			}
+		}
+	}
+}
+
+type listedBlobs struct {
+	blobStore
+	nodes []*store.Node
+}
+
+func (s listedBlobs) ReadDir(context.Context, *uri.URL) ([]*store.Node, error) {
+	return s.nodes, nil
+}
+
+func TestVirtualNavigationKeepsExactRemoteParents(t *testing.T) {
+	b := testBackend(t)
+	base := loc(t, "azure://account/c/prefix")
+	base.address = "virtual://work/cloud"
+	for _, key := range []string{"prefix/", "prefix/.", "prefix/.."} {
+		u := base.url.WithPathPart("c/" + key)
+		b.remote = listedBlobs{blobStore: b.remote, nodes: []*store.Node{{URL: u, Kind: store.KindDir}}}
+		entries, err := b.list(t.Context(), base)
+		if err != nil || len(entries) != 1 || entries[0].loc.url.Key != key {
+			t.Fatalf("listed %q: %v, %v", key, entries, err)
+		}
+		parent := b.collections.parent(entries[0].loc, "")
+		if parent.display() != base.display() || parent.url.Key != base.url.Key {
+			t.Fatalf("lost exact parent of %q: %+v", key, parent)
 		}
 	}
 }

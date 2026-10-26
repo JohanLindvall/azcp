@@ -33,6 +33,7 @@ type collections map[string]*virtualNode
 type location struct {
 	url     *uri.URL
 	address string
+	parent  *location
 }
 
 func (l location) display() string {
@@ -166,7 +167,7 @@ func (c collections) resolve(raw, suffix string) (location, error) {
 	var base *uri.URL
 	for i, part := range parts {
 		name, err := url.PathUnescape(part)
-		if err != nil || name == "." || name == ".." {
+		if err != nil || (name == "." || name == "..") && (base == nil || !base.IsRemote()) {
 			return location{}, errors.New("invalid path inside virtual container")
 		}
 		if i > 0 {
@@ -190,6 +191,9 @@ func (c collections) resolve(raw, suffix string) (location, error) {
 }
 
 func (c collections) parent(l location, suffix string) location {
+	if l.parent != nil {
+		return *l.parent
+	}
 	if l.address != "" {
 		rest := strings.TrimPrefix(l.address, "virtual://")
 		if i := strings.LastIndexByte(rest, '/'); i >= 0 {

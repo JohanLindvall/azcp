@@ -84,11 +84,26 @@ func (b *backend) list(ctx context.Context, l location) ([]entry, error) {
 	}
 	entries := make([]entry, 0, len(nodes))
 	for _, n := range nodes {
-		child := location{url: n.URL}
-		if l.address != "" {
-			child.address = l.address + "/" + url.PathEscape(n.Name())
+		name := n.Name()
+		if l.url.IsRemote() && l.url.Container != "" {
+			prefix := l.url.Key
+			if prefix != "" {
+				prefix += "/"
+			}
+			name = strings.TrimPrefix(n.URL.Key, prefix)
 		}
-		entries = append(entries, entry{name: n.Name(), loc: child, node: n})
+		child := location{url: n.URL, parent: &l}
+		if l.address != "" {
+			child.address = l.address + "/" + url.PathEscape(name)
+		}
+		if name == "" {
+			// An empty blob-key component is a real directory. Its plain
+			// Azure address is unambiguous; a trailing virtual-address slash
+			// would instead be parsed as directory syntax. The parent link
+			// still brings navigation back into the virtual hierarchy.
+			name, child.address = "/", ""
+		}
+		entries = append(entries, entry{name: name, loc: child, node: n})
 	}
 	slices.SortStableFunc(entries, func(a, b entry) int {
 		if a.directory() != b.directory() {
