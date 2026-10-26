@@ -88,9 +88,11 @@ func TestKeyboardCopyMoveAndDeleteRequireConfirmation(t *testing.T) {
 		t.Fatalf("marked %d entries", got)
 	}
 	press(a, tcell.KeyF5, 0)
-	press(a, tcell.KeyEnter, 0)
 	if a.modal == nil || a.modal.kind != "confirm" || a.busy != nil {
-		t.Fatal("copy started before confirmation")
+		t.Fatal("copy did not go straight to confirmation")
+	}
+	if a.modal.target.url.Path != loc(t, right).url.Path {
+		t.Fatal("copy confirmation did not use the other pane")
 	}
 	press(a, tcell.KeyEnter, 0) // default is cancel
 	if a.modal != nil || a.busy != nil {
@@ -100,14 +102,15 @@ func TestKeyboardCopyMoveAndDeleteRequireConfirmation(t *testing.T) {
 		t.Fatal("cancelled copy wrote data")
 	}
 	press(a, tcell.KeyF5, 0)
-	press(a, tcell.KeyEnter, 0)
 	press(a, tcell.KeyRune, 'y')
 	finishJobs(t, a)
 	read(t, filepath.Join(right, "a"), "a contents")
 	read(t, filepath.Join(right, "b"), "b contents")
 	// Move replaces the existing copy only after another explicit confirmation.
 	press(a, tcell.KeyF6, 0)
-	press(a, tcell.KeyEnter, 0)
+	if a.modal == nil || a.modal.kind != "confirm" || a.busy != nil {
+		t.Fatal("move did not go straight to confirmation")
+	}
 	press(a, tcell.KeyRune, 'y')
 	finishJobs(t, a)
 	if _, err := os.Stat(filepath.Join(left, "a")); !os.IsNotExist(err) {
@@ -124,6 +127,77 @@ func TestKeyboardCopyMoveAndDeleteRequireConfirmation(t *testing.T) {
 		t.Fatalf("delete left target: %v", err)
 	}
 	read(t, filepath.Join(right, "b"), "b contents")
+}
+
+func TestCopyAndMoveCanEditDestinationFromConfirmation(t *testing.T) {
+	for _, key := range []tcell.Key{tcell.KeyF5, tcell.KeyF6} {
+		t.Run(tcell.NewEventKey(key, 0, tcell.ModNone).Name(), func(t *testing.T) {
+			a, screen, left, right := testApp(t)
+			write(t, filepath.Join(left, "file"), "payload")
+			target := filepath.Join(right, "subdir")
+			if err := os.Mkdir(target, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			a.reload()
+			finishJobs(t, a)
+			press(a, key, 0)
+			a.draw()
+			if !strings.Contains(screenText(screen), "e: edit") {
+				t.Fatal("confirmation did not offer destination editing")
+			}
+			press(a, tcell.KeyRune, 'e')
+			if a.modal == nil || a.modal.kind != "input" {
+				t.Fatal("destination editor did not open")
+			}
+			for _, r := range "subdir" {
+				press(a, tcell.KeyRune, r)
+			}
+			press(a, tcell.KeyEnter, 0)
+			if a.modal == nil || a.modal.kind != "confirm" || a.modal.target.url.Path != loc(t, target).url.Path || a.busy != nil {
+				t.Fatal("edited destination was not presented for confirmation")
+			}
+			// Editing the same relative name again must not append it twice.
+			press(a, tcell.KeyRune, 'e')
+			press(a, tcell.KeyEnter, 0)
+			if a.modal.target.url.Path != loc(t, target).url.Path {
+				t.Fatal("reopening the editor changed the relative destination")
+			}
+			press(a, tcell.KeyRune, 'y')
+			finishJobs(t, a)
+			read(t, filepath.Join(target, "file"), "payload")
+			if _, err := os.Stat(filepath.Join(right, "file")); !os.IsNotExist(err) {
+				t.Fatal("transfer used the old destination")
+			}
+			if key == tcell.KeyF6 {
+				if _, err := os.Stat(filepath.Join(left, "file")); !os.IsNotExist(err) {
+					t.Fatal("move left the source behind")
+				}
+			} else {
+				read(t, filepath.Join(left, "file"), "payload")
+			}
+		})
+	}
+}
+
+func TestCancelledDestinationEditDoesNotTransfer(t *testing.T) {
+	for _, key := range []tcell.Key{tcell.KeyF5, tcell.KeyF6} {
+		t.Run(tcell.NewEventKey(key, 0, tcell.ModNone).Name(), func(t *testing.T) {
+			a, _, left, right := testApp(t)
+			write(t, filepath.Join(left, "file"), "keep")
+			a.reload()
+			finishJobs(t, a)
+			press(a, key, 0)
+			press(a, tcell.KeyRune, 'e')
+			press(a, tcell.KeyEscape, 0)
+			if a.busy != nil || a.modal != nil {
+				t.Fatal("cancelling destination edit did not cancel the operation")
+			}
+			read(t, filepath.Join(left, "file"), "keep")
+			if _, err := os.Stat(filepath.Join(right, "file")); !os.IsNotExist(err) {
+				t.Fatal("cancelled transfer wrote data")
+			}
+		})
+	}
 }
 
 func TestParentCannotBeSelectedForDeletion(t *testing.T) {

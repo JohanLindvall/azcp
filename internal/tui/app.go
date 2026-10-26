@@ -375,10 +375,10 @@ func (a *app) requestOperation(action string) {
 			}
 		}
 	}
-	d := &dialog{kind: "input", title: action + " to directory", action: action,
+	d := &dialog{kind: "confirm", title: action + " selected entries", action: action,
 		source: selected, target: a.panes[1-a.active].loc}
 	if action == "Delete" {
-		d.kind, d.title = "confirm", "Delete permanently"
+		d.title = "Delete permanently"
 	}
 	a.modal = d
 }
@@ -421,6 +421,8 @@ func (a *app) dialogKey(ev *tcell.EventKey) {
 			a.execute(d)
 		} else if r == 'n' || r == 'N' || k == tcell.KeyEnter {
 			a.modal = nil
+		} else if (r == 'e' || r == 'E') && (d.action == "Copy" || d.action == "Move") {
+			d.kind, d.title = "input", d.action+" to directory"
 		}
 		return
 	}
@@ -446,8 +448,14 @@ func (a *app) dialogKey(ev *tcell.EventKey) {
 		}
 		loc := d.target
 		if d.text != "" {
+			base := d.target
+			if d.action == "Copy" || d.action == "Move" {
+				// Reopening the editor must not resolve a relative path
+				// against the destination it previously produced.
+				base = a.panes[1-a.active].loc
+			}
 			var err error
-			loc, err = a.backend.resolve(d.text, d.target)
+			loc, err = a.backend.resolve(d.text, base)
 			if err != nil {
 				a.report(err)
 				return
@@ -513,6 +521,7 @@ F9 / l   Messages, including Azure sign-in instructions
 F10 / q  Quit (cancel active work and wait for it to stop)
 Ctrl-R/r Refresh both panes
 
+Copy and move use the other pane; e edits the destination in confirmation.
 Copy, move and delete require y in the confirmation dialog.
 Existing destination files are replaced. Enter/Esc cancels confirmation.
 Esc/Ctrl-C cancels active work. Completed changes are not rolled back.

@@ -217,6 +217,9 @@ func (a *app) drawDialog(w, h int) {
 			content = append(content, fmt.Sprintf("  ...and %d more", len(d.source)-5))
 		}
 		footer = "y: confirm   n / Enter / Esc: cancel"
+		if d.action == "Copy" || d.action == "Move" {
+			footer = "y: confirm  e: edit  Enter/Esc: cancel"
+		}
 	}
 	height := min(h-4, len(content)+4)
 	x, y := (w-width)/2, (h-height)/2

@@ -78,12 +78,13 @@ entry cannot be selected. Function keys also have letter alternatives for
 terminals that reserve those keys. F2 stays inside the current Azure container,
 so returning to its root works with a container-scoped SAS.
 
-Copy and move prompt for a destination directory. Leave the input empty to use
-the other pane, or enter another existing directory. A relative destination is
-resolved from the other pane. Use F7 to create a directory first. Path prompts
-accept Backspace and Ctrl-U to clear the input.
+Copy and move go directly to confirmation using the other pane as the
+destination. Press **e** in that confirmation to enter another existing
+directory if needed. Relative destinations are resolved from the other pane;
+empty input keeps the displayed destination. Use F7 to create a directory
+first. Path prompts accept Backspace and Ctrl-U to clear the input.
 
-Copy, move and delete then display a confirmation. Press **y** to proceed;
+In the copy, move or delete confirmation, press **y** to proceed;
 Enter, **n** and Esc cancel. Copies replace existing destination files and merge
 directory contents. Moves copy first and remove sources only after every copy
 succeeds, nothing was skipped, the operation was not cancelled, and a fresh
