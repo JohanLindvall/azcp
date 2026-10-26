@@ -40,6 +40,9 @@ type Config struct {
 	Progress *progress.Reporter
 	// Stdin is where an interactive overwrite prompt is read from.
 	Stdin io.Reader
+	// Azure reuses credentials and connections across operations in a TUI
+	// session. Ordinary command-line invocations leave it nil.
+	Azure *azure.Store
 }
 
 // Engine performs one invocation's worth of copying.
@@ -175,6 +178,9 @@ func New(cfg Config) (*Engine, error) {
 		// metadata on the routes the service does not copy it for.
 		IncludeMetadata: e.preservesToBlob() || o.Decompress || o.CopyMetadata,
 	})
+	if cfg.Azure != nil {
+		e.az = cfg.Azure
+	}
 	return e, nil
 }
 

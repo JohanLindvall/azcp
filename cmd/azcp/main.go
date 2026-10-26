@@ -48,6 +48,8 @@ func run(argv []string) int {
 	case opt.ShowVersion:
 		fmt.Print(cli.VersionText())
 		return exitOK
+	case opt.TUI:
+		return runTUI(opt)
 	}
 
 	mode := opt.Progress

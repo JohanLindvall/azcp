@@ -143,6 +143,9 @@ func orList(names []string) string {
 type Options struct {
 	ShowHelp    bool
 	ShowVersion bool
+	TUI         bool
+	TUIConfig   string
+	TUIPaths    [2]string
 
 	// cp behaviour
 	Recursive            bool
@@ -243,6 +246,7 @@ type Options struct {
 // Defaults returns the configuration used when no options are given.
 func Defaults() *Options {
 	return &Options{
+		TUIPaths:         [2]string{".", "."},
 		Suffix:           backupSuffixDefault(),
 		Jobs:             8,
 		PartSize:         8 << 20,
@@ -428,6 +432,23 @@ func Parse(argv []string) (*Options, error) {
 		return o, nil
 	}
 	operands := res.Operands
+	if o.TUI {
+		// Copy policy comes from the commander's dialogs. Reject flags that
+		// could silently turn a move into a partial copy before source removal.
+		for _, f := range res.Flags {
+			switch f.Spec.Long {
+			case "tui", "tui-config", "jobs", "part-size", "part-concurrency",
+				"retries", "retry-delay", "retry-max-delay", "bwlimit", "timeout",
+				"auth", "tenant", "endpoint-suffix", "create-container",
+				"log-level", "log-format", "log-file", "put-md5", "check-md5",
+				"resume", "dry-run":
+			default:
+				return nil, usagef("%s cannot be combined with --tui", f.Name())
+			}
+		}
+	} else if o.TUIConfig != "" {
+		return nil, usagef("--tui-config requires --tui")
+	}
 	if o.FilesFrom != "" {
 		if !o.HasTargetDir && len(operands) == 0 {
 			return nil, usagef("missing destination file operand with --files-from")
@@ -444,7 +465,7 @@ func Parse(argv []string) (*Options, error) {
 		return nil, err
 	}
 	if !o.jobsSet {
-		o.Jobs = defaultJobs(o.TouchesNetwork())
+		o.Jobs = defaultJobs(o.TUI || o.TouchesNetwork())
 	}
 	return o, o.validate()
 }
@@ -455,6 +476,10 @@ func (o *Options) apply(f cpflags.Flag) error {
 		name = string(f.Spec.Short)
 	}
 	switch name {
+	case "tui":
+		o.TUI = true
+	case "tui-config":
+		o.TUIConfig = f.Value
 	// --- cp ----------------------------------------------------------------
 	case "archive", "a":
 		o.NoPreserveMode = false
@@ -838,6 +863,13 @@ func readFilesFrom(name string) ([]string, error) {
 // resolveOperands splits the positional arguments into sources and a
 // destination, following cp's three call shapes.
 func (o *Options) resolveOperands(operands []string) error {
+	if o.TUI {
+		if len(operands) > 2 {
+			return usagef("--tui takes at most two starting directories")
+		}
+		copy(o.TUIPaths[:], operands)
+		return nil
+	}
 	if o.HasTargetDir {
 		if len(operands) == 0 {
 			return usagef("missing file operand")

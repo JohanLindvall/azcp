@@ -416,9 +416,7 @@ func (c *Credentials) deviceCode() (*azidentity.DeviceCodeCredential, error) {
 			// A prompt, not a log record: it has to appear whatever the log
 			// level, and it has to stand the progress display down first or it
 			// will be drawn over.
-			logx.WithTerminal(func() {
-				fmt.Fprintf(os.Stderr, "\n%s\n\n", m.Message)
-			})
+			logx.Errf("\n%s\n\n", m.Message)
 			return nil
 		},
 	})

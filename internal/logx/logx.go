@@ -35,6 +35,7 @@ var (
 	sharesTerminal atomic.Bool
 
 	guard   atomic.Pointer[func(func())]
+	sink    atomic.Pointer[func(string)]
 	counts  [4]atomic.Int64 // indexed by levelIndex
 	stdout  io.Writer       = os.Stdout
 	stderrW io.Writer       = os.Stderr
@@ -52,6 +53,27 @@ func SetGuard(g func(func())) {
 	guard.Store(&g)
 }
 
+// SetTerminalSink lets a full-screen UI receive terminal output without
+// interleaving ordinary writes with its screen. File logs still go to their
+// file. The sink must be safe for concurrent calls and must not call logx.
+// Clear it only after the UI's workers have stopped.
+func SetTerminalSink(fn func(string)) {
+	if fn == nil {
+		sink.Store(nil)
+	} else {
+		sink.Store(&fn)
+	}
+}
+
+func terminalWrite(w io.Writer, msg string) error {
+	if fn := sink.Load(); fn != nil {
+		(*fn)(msg)
+		return nil
+	}
+	_, err := io.WriteString(w, msg)
+	return err
+}
+
 // WithTerminal runs fn with exclusive, display-safe access to the terminal.
 func WithTerminal(fn func()) {
 	if g := guard.Load(); g != nil {
@@ -67,7 +89,7 @@ func WithTerminal(fn func()) {
 // stdout, coordinated with the progress display.
 func Printf(format string, args ...any) {
 	msg := Redact(fmt.Sprintf(format, args...))
-	WithTerminal(func() { io.WriteString(stdout, msg) })
+	WithTerminal(func() { _ = terminalWrite(stdout, msg) })
 }
 
 // Errf writes a line of diagnostic output to stderr, coordinated with the
@@ -75,7 +97,7 @@ func Printf(format string, args ...any) {
 // part of the command's contract rather than part of the log stream.
 func Errf(format string, args ...any) {
 	msg := Redact(fmt.Sprintf(format, args...))
-	WithTerminal(func() { io.WriteString(stderrW, msg) })
+	WithTerminal(func() { _ = terminalWrite(stderrW, msg) })
 }
 
 // Secrets can reach output from places we do not control — an SDK error that
@@ -194,7 +216,7 @@ type guardedWriter struct{ w io.Writer }
 func (g *guardedWriter) Write(p []byte) (int, error) {
 	clean := redactBytes(p)
 	var err error
-	WithTerminal(func() { _, err = g.w.Write(clean) })
+	WithTerminal(func() { err = terminalWrite(g.w, string(clean)) })
 	// Report the caller's own length: a redaction shortens the bytes written,
 	// and a short count would look like a write failure.
 	return len(p), err
