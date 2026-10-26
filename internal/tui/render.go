@@ -14,20 +14,11 @@ import (
 	"github.com/JohanLindvall/azcp/internal/logx"
 )
 
-var (
-	baseStyle   = tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorNavy)
-	barStyle    = tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorSilver)
-	activeStyle = tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorTeal).Bold(true)
-	markStyle   = baseStyle.Foreground(tcell.ColorYellow)
-	lineStyle   = baseStyle.Foreground(tcell.ColorAqua)
-	dialogStyle = tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorSilver)
-)
-
 // Names and previews are untrusted terminal text. Controls are rendered as
 // visible replacements, and credentials go through the same redactor as logs.
 func safeText(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || r == '\u202e' || r == '\u202d' || r >= '\u2066' && r <= '\u2069' {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
 			return '�'
 		}
 		return r
@@ -57,49 +48,60 @@ func (a *app) text(x, y, width int, s string, style tcell.Style) {
 	}
 }
 
+func (a *app) right(x, y, width int, s string, style tcell.Style) {
+	s = humanize.Elide(safeText(s), width)
+	a.text(x, y, width, strings.Repeat(" ", max(0, width-humanize.Width(s)))+s, style)
+}
+
+func (a *app) frame(x, y, width, height int, style tcell.Style) {
+	a.text(x, y, width, "╭"+strings.Repeat("─", width-2)+"╮", style)
+	a.text(x, y+height-1, width, "╰"+strings.Repeat("─", width-2)+"╯", style)
+	for row := y + 1; row < y+height-1; row++ {
+		a.screen.SetContent(x, row, '│', nil, style)
+		a.screen.SetContent(x+width-1, row, '│', nil, style)
+	}
+}
+
 func (a *app) draw() {
 	w, h := a.screen.Size()
-	a.screen.Fill(' ', baseStyle)
+	a.screen.Fill(' ', a.theme.base)
 	a.screen.HideCursor()
 	if w < 50 || h < 14 {
-		a.text(0, 0, w, "azcp: enlarge terminal to at least 50 x 14", barStyle)
-		a.text(0, 1, w, "q quits; Esc cancels active work", barStyle)
+		a.text(0, 0, w, "azcp: enlarge terminal to at least 50 x 14", a.theme.accent)
+		a.text(0, 1, w, "q quits; Esc cancels active work", a.theme.muted)
 		logx.WithTerminal(a.screen.Show)
 		return
 	}
-	title := " azcp Commander   Tab: switch pane   Space: select"
+	a.text(1, 0, 4, "azcp", a.theme.accent.Bold(true))
+	a.text(7, 0, 11, "Commander", a.theme.base.Bold(true))
+	hint := "Tab: panes · F1: help"
 	if a.backend.opt.DryRun {
-		title += "   DRY RUN"
+		hint = "DRY RUN · " + hint
 	}
-	a.text(0, 0, w, title, barStyle)
-	left := w / 2
-	a.drawPane(0, 0, left, h-6)
-	a.drawPane(1, left, w-left, h-6)
+	a.right(20, 0, w-21, hint, a.theme.muted)
+	left := (w - 1) / 2
+	a.drawPane(0, 0, left, h-7)
+	a.drawPane(1, left+1, w-left-1, h-7)
 	p := &a.panes[a.active]
 	if p.cursor >= 0 && p.cursor < len(p.entries) {
-		e := p.entries[p.cursor]
-		detail := e.loc.display()
-		if e.loc.url != nil {
-			detail = e.loc.url.Display()
-		}
-		a.text(0, h-5, w, detail, lineStyle)
+		a.text(1, h-6, w-2, humanize.Elide(safeText(p.entries[p.cursor].loc.display()), w-2), a.theme.muted)
 	}
-	status := a.status
-	if a.busy != nil {
-		done, failed, _, _, bytes, _ := a.busy.progress.Totals()
-		status = fmt.Sprintf("%s | %d done, %d failed, %s | Esc: cancel", a.busy.label, done, failed, humanize.Bytes(bytes))
-	}
-	a.text(0, h-4, w, status, barStyle)
+	a.drawStatus(w, h)
 	if logs := a.logs.snapshot(); len(logs) > 0 {
-		lines := wrap(logs[len(logs)-1], w)
+		lines := wrap(logs[len(logs)-1], w-4)
 		for i := 0; i < min(2, len(lines)); i++ {
-			a.text(0, h-3+i, w, lines[i], markStyle)
+			a.text(2, h-3+i, w-4, lines[i], a.theme.warn)
 		}
 	}
-	labels := []string{"1 Help", "2 Root", "3 View", "4 Go", "5 Copy", "6 Move", "7 Mkdir", "8 Delete", "9 Logs", "10 Quit"}
+	labels := []string{"Help", "Root", "View", "Go", "Copy", "Move", "Mkdir", "Delete", "Logs", "Quit"}
 	for i, label := range labels {
 		x, end := i*w/10, (i+1)*w/10
-		a.text(x, h-1, end-x, label, barStyle)
+		key := fmt.Sprint(i + 1)
+		if end-x < 8 && i == 7 {
+			label = "Del"
+		}
+		a.text(x, h-1, len(key), key, a.theme.key)
+		a.text(x+len(key)+1, h-1, end-x-len(key)-1, label, a.theme.base)
 	}
 	if a.modal != nil {
 		a.drawDialog(w, h)
@@ -107,15 +109,37 @@ func (a *app) draw() {
 	logx.WithTerminal(a.screen.Show)
 }
 
+func paneRows(height int) int { return max(1, height-11) }
+
 func (a *app) drawPane(index, x, width, bottom int) {
 	p := &a.panes[index]
-	header := lineStyle
-	if a.active == index {
-		header = activeStyle
+	active := a.active == index
+	border, pathStyle := a.theme.border, a.theme.muted
+	kind := "LOCAL"
+	if p.loc.url.IsRemote() {
+		kind = "AZURE"
 	}
-	a.text(x, 1, width, " "+humanize.Elide(safeText(p.loc.display()), width-2), header)
-	a.text(x, 2, width, " Name", lineStyle)
-	rows := bottom - 3
+	label := " " + kind + " "
+	if active {
+		border, pathStyle = a.theme.accent, a.theme.base.Bold(true)
+		label = " ● " + kind + " "
+	}
+	a.frame(x, 1, width, bottom, border)
+	a.text(x+2, 1, humanize.Width(label), label, border.Bold(active))
+	a.text(x+2, 2, width-4, humanize.Elide(safeText(p.loc.display()), width-4), pathStyle)
+	sizeWidth, dateWidth := 9, 0
+	screenWidth, _ := a.screen.Size()
+	if screenWidth >= 121 {
+		dateWidth = 14
+	}
+	nameWidth := width - 7 - sizeWidth - dateWidth
+	sizeX := x + width - 2 - dateWidth - sizeWidth
+	a.text(x+4, 3, nameWidth, "Name", a.theme.muted)
+	a.right(sizeX, 3, sizeWidth, "Size", a.theme.muted)
+	if dateWidth > 0 {
+		a.right(sizeX+sizeWidth+1, 3, dateWidth-1, "Modified", a.theme.muted)
+	}
+	rows := bottom - 4
 	if p.cursor < p.offset {
 		p.offset = p.cursor
 	}
@@ -129,28 +153,36 @@ func (a *app) drawPane(index, x, width, bottom int) {
 			break
 		}
 		e := p.entries[i]
-		style := baseStyle
-		prefix := " "
+		style, prefix := a.theme.base, "  "
 		if p.selected[i] {
-			style, prefix = markStyle, "*"
+			style, prefix = a.theme.marked, " ●"
 		}
-		if i == p.cursor && a.active == index {
-			style = activeStyle
+		if i == p.cursor && active {
+			style, prefix = a.theme.focus, "›"+prefix[1:]
+		} else if i == p.cursor {
+			prefix = "·" + prefix[1:]
 		}
 		name, size := e.name, ""
 		if e.directory() {
 			name += "/"
-			size = "<DIR>"
+			size = "dir"
+			if !p.selected[i] && !(i == p.cursor && active) {
+				style = style.Bold(true)
+			}
 		} else if e.node != nil {
 			size = humanize.Bytes(e.node.Size)
 			if e.node.IsSymlink() {
 				name += "@"
 			}
 		}
-		nameWidth := max(1, width-12)
-		a.text(x, row+3, width, "", style)
-		a.text(x, row+3, nameWidth, prefix+humanize.Truncate(safeText(name), nameWidth-1), style)
-		a.text(x+nameWidth, row+3, width-nameWidth-1, size, style)
+		y := row + 4
+		a.text(x+1, y, width-2, "", style)
+		a.text(x+1, y, 2, prefix, style)
+		a.text(x+4, y, nameWidth, humanize.Elide(safeText(name), nameWidth), style)
+		a.right(sizeX, y, sizeWidth, size, style)
+		if dateWidth > 0 && e.node != nil && !e.node.ModTime.IsZero() {
+			a.right(sizeX+sizeWidth+1, y, dateWidth-1, e.node.ModTime.Local().Format("Jan 02 15:04"), style)
+		}
 	}
 	marked := 0
 	for _, yes := range p.selected {
@@ -158,9 +190,16 @@ func (a *app) drawPane(index, x, width, bottom int) {
 			marked++
 		}
 	}
-	a.text(x, bottom, width, fmt.Sprintf(" %d entries | %d selected", max(0, len(p.entries)-1), marked), header)
-	for y := 2; y < bottom; y++ {
-		a.screen.SetContent(x+width-1, y, '│', nil, lineStyle)
+	n := int64(max(0, len(p.entries)-1))
+	count := fmt.Sprintf(" %d %s ", n, humanize.Plural(n, "entry", "entries"))
+	selected := fmt.Sprintf(" %d marked ", marked)
+	if marked > 0 && humanize.Width(count)+humanize.Width(selected)+6 > width {
+		a.text(x+2, bottom, width-4, selected, a.theme.marked)
+		return
+	}
+	a.text(x+2, bottom, min(width-4, humanize.Width(count)), count, a.theme.muted)
+	if marked > 0 {
+		a.text(x+width-2-humanize.Width(selected), bottom, humanize.Width(selected), selected, a.theme.marked)
 	}
 }
 
@@ -180,57 +219,4 @@ func wrap(s string, width int) []string {
 		used += w
 	}
 	return append(lines, line.String())
-}
-
-func (a *app) drawDialog(w, h int) {
-	d := a.modal
-	width := min(w-4, 96)
-	var content []string
-	footer := "Esc: close"
-	switch d.kind {
-	case "view":
-		for _, line := range d.lines {
-			content = append(content, wrap(strings.ReplaceAll(line, "\t", "    "), width-4)...)
-		}
-		footer = "Arrows/PgUp/PgDn: scroll   Enter/Esc: close"
-	case "input":
-		if d.action == "Copy" || d.action == "Move" {
-			content = append(content, wrap(fmt.Sprintf("%d entries. Empty input uses: %s", len(d.source), d.target.display()), width-4)...)
-		}
-		content = append(content, "", "> "+humanize.Elide(safeText(d.text), width-6), "")
-		footer = "Enter: continue   Ctrl-U: clear   Esc: cancel"
-	case "confirm":
-		content = append(content, wrap(fmt.Sprintf("%s %d entries and their directory contents?", d.action, len(d.source)), width-4)...)
-		if d.action == "Delete" {
-			content = append(content, "Deletion is permanent.")
-		} else {
-			content = append(content, "Existing files will be replaced.")
-			content = append(content, wrap("To: "+d.target.display(), width-4)...)
-		}
-		if a.backend.opt.DryRun {
-			content = append(content, "DRY RUN: no files will change.")
-		}
-		for _, e := range d.source[:min(5, len(d.source))] {
-			content = append(content, wrap("  "+e.loc.display(), width-4)...)
-		}
-		if len(d.source) > 5 {
-			content = append(content, fmt.Sprintf("  ...and %d more", len(d.source)-5))
-		}
-		footer = "y: confirm   n / Enter / Esc: cancel"
-		if d.action == "Copy" || d.action == "Move" {
-			footer = "y: confirm  e: edit  Enter/Esc: cancel"
-		}
-	}
-	height := min(h-4, len(content)+4)
-	x, y := (w-width)/2, (h-height)/2
-	for row := 0; row < height; row++ {
-		a.text(x, y+row, width, "", dialogStyle)
-	}
-	a.text(x, y, width, " "+d.title, activeStyle)
-	rows := height - 3
-	d.scroll = min(max(0, d.scroll), max(0, len(content)-rows))
-	for i := 0; i < rows && i+d.scroll < len(content); i++ {
-		a.text(x+2, y+1+i, width-4, content[i+d.scroll], dialogStyle)
-	}
-	a.text(x, y+height-1, width, footer, activeStyle)
 }

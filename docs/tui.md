@@ -15,6 +15,20 @@ to the current directory. Ordinary `azcp SOURCE DEST` commands keep their `cp`
 behavior, and an invocation without operands still reports a missing operand.
 Both stdin and stderr must be terminals.
 
+The panes use your terminal's background with the same blue and green accents
+as the `cp` progress display. A highlighted row and `›` identify the cursor;
+`●` marks selections. Sizes are aligned, and wider windows also show modified
+times. `NO_COLOR` (including an empty value) or `CLICOLOR=0` removes colors while
+keeping the cursor, marks and dialog borders visible.
+
+During a transfer, the status area shows file and byte totals, the active file,
+a gradient progress bar, average throughput and an estimated time remaining.
+Scanning uses an indeterminate bar until the totals are known. Failures, retries
+and skips stay visible when the window narrows. The display updates once a
+second during work; keyboard input and resizing update it immediately.
+
+![A live upload with progress, throughput and estimated time remaining](assets/commander-transfer.png)
+
 ## Azure as a directory tree
 
 An Azure account opens as a directory of storage containers. Open a container

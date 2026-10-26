@@ -116,6 +116,7 @@ func (m *messages) snapshot() []string {
 type app struct {
 	ctx     context.Context
 	screen  tcell.Screen
+	theme   theme
 	backend *backend
 	panes   [2]pane
 	active  int
@@ -129,7 +130,7 @@ type app struct {
 }
 
 func newApp(ctx context.Context, s tcell.Screen, b *backend) (*app, error) {
-	a := &app{ctx: ctx, screen: s, backend: b, status: "Tab switches panes; Space selects; F1 shows help"}
+	a := &app{ctx: ctx, screen: s, theme: newTheme(s.Colors()), backend: b, status: "Ready"}
 	for i, raw := range b.opt.TUIPaths {
 		loc, err := parseLocation(raw, b.opt.EndpointSuffix)
 		if err != nil {
@@ -157,14 +158,16 @@ func (a *app) run() error {
 	}()
 	defer func() { close(stopEvents); <-eventsStopped }()
 	a.screen.EnablePaste()
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(progress.DefaultInterval)
 	defer ticker.Stop()
 	a.reload()
 	for {
 		a.draw()
 		var done <-chan jobResult
+		var ticks <-chan time.Time
 		if a.busy != nil {
 			done = a.busy.done
+			ticks = ticker.C
 		}
 		select {
 		case <-ctx.Done():
@@ -192,7 +195,7 @@ func (a *app) run() error {
 			case *tcell.EventPaste:
 				a.pasting = ev.Start()
 			}
-		case <-ticker.C:
+		case <-ticks:
 		}
 		if a.quit && a.busy == nil {
 			return nil
@@ -300,7 +303,7 @@ func (a *app) key(ev *tcell.EventKey) {
 	}
 	p := &a.panes[a.active]
 	_, height := a.screen.Size()
-	page := max(1, height-9)
+	page := paneRows(height)
 	switch {
 	case k == tcell.KeyF10 || k == tcell.KeyCtrlC || r == 'q':
 		a.quit = true
