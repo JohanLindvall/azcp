@@ -245,7 +245,10 @@ entry that no longer matches is kept. A container chosen by name or type goes
 whole, in one request, with anything written to it meanwhile. One chosen for
 what it holds is listed in full and judged on that listing, its blobs are
 deleted by name, and the container itself only if nothing has arrived in it
-since; otherwise it is kept and reported. Blob names that
+since; otherwise it is kept and reported. `--whole-containers` deletes such a
+container in one request instead, after the same judgment, taking whatever was
+written to it since it was listed. `older:` weighs the newest blob inside: a
+container's own modification time changes only with its properties. Blob names that
 begin with `/` appear at a container root as a directory called `/`, which no
 URL names apart from the container, so that entry is refused rather than
 taken for the container; name such blobs one at a time, as
@@ -684,6 +687,7 @@ Added by `azcp`:
 | `--select=FILTER` | act on the entries of each source directory the filter picks (see [batches](#selecting-and-removing-in-batches)) |
 | `--rm` | delete the operands or the selection; lists only, unless `--yes` |
 | `--yes` | carry out `--rm` |
+| `--whole-containers` | with `--rm --select`, delete a container chosen for its contents in one request |
 | `--put-md5` | record a checksum on each uploaded blob |
 | `--check-md5=WHEN` | `off`, `warn`, `fail` (default), `require` |
 | `--bwlimit=RATE` | cap throughput, in bytes per second |

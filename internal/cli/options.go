@@ -165,6 +165,9 @@ type Options struct {
 	// copying. Without Confirmed it only lists what it would delete.
 	Remove    bool
 	Confirmed bool
+	// WholeContainers lets a container that Select picks for its contents go
+	// in one request, with whatever is written to it after it was listed.
+	WholeContainers bool
 
 	// cp behaviour
 	Recursive            bool
@@ -504,7 +507,7 @@ func Parse(argv []string) (*Options, error) {
 		// asks for what a removal already does.
 		for _, f := range res.Flags {
 			switch f.Spec.Long {
-			case "rm", "select", "yes", "dry-run", "verbose", "recursive", "files-from",
+			case "rm", "select", "yes", "whole-containers", "dry-run", "verbose", "recursive", "files-from",
 				"retries", "timeout", "auth", "tenant", "endpoint-suffix", "output", "no-progress",
 				"log-level", "log-format", "log-file", "no-auto-update", "no-version-check":
 			default:
@@ -556,6 +559,8 @@ func (o *Options) apply(f cpflags.Flag) error {
 		o.Select = f.Value
 	case "rm":
 		o.Remove = true
+	case "whole-containers":
+		o.WholeContainers = true
 	case "yes":
 		o.Confirmed = true
 	case "tui":
@@ -1008,6 +1013,9 @@ func (o *Options) validate() error {
 	}
 	if o.Confirmed && !o.Remove {
 		return usagef("--yes only confirms --rm")
+	}
+	if o.WholeContainers && (!o.Remove || o.Select == "") {
+		return usagef("--whole-containers only applies to --rm --select")
 	}
 	if o.Confirmed && o.DryRun {
 		return usagef("cannot combine --yes and --dry-run")

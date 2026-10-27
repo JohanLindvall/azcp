@@ -534,6 +534,12 @@ fi
   && ok "a container the filter did not pick survives" \
   || bad "--rm --select removed a container it did not pick"
 
+"$AZCP" --create-container "$SRC/file.txt" "$ACCOUNT/${CONTAINER}-whole-a/clip.mp4" >/dev/null
+"$AZCP" --rm -r --yes --whole-containers --select "${CONTAINER}-whole-* has:*.mp4" "$ACCOUNT/" >/dev/null 2>&1
+"$AZCP" "$ACCOUNT/${CONTAINER}-whole-a/clip.mp4" "$WORK/whole-a.mp4" >/dev/null 2>&1 \
+  && bad "--whole-containers left the matching container" \
+  || ok "--whole-containers removes a container chosen for its contents in one request"
+
 # --- machine-readable output ------------------------------------------------
 summary=$("$AZCP" --output=json "$SRC/file.txt" "$AZ/json.txt" 2>/dev/null | tail -1)
 if printf '%s' "$summary" | grep -q '"event":"summary"'; then

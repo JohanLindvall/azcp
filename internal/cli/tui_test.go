@@ -101,10 +101,14 @@ func TestRemoveTakesOnlyPathsAndNeedsYesToAct(t *testing.T) {
 		// An unset variable must not turn a selection into its directory.
 		{"--rm", "-r", "--select", "", "a"}, {"--rm", "-r", "--select=  ", "a"},
 		{"-r", "--select=", "src", "dst"},
+		{"--rm", "--whole-containers", "a"}, {"-r", "--whole-containers", "--select", "x", "a", "b"},
 	} {
 		if _, err := Parse(args); err == nil {
 			t.Errorf("accepted %q", args)
 		}
+	}
+	if o = mustParse(t, "--rm", "-r", "--whole-containers", "--select", "has:*.mp4", "azure://a/"); !o.WholeContainers {
+		t.Fatal("--whole-containers was not taken")
 	}
 	if o = mustParse(t, "-r", "--select", "*.mp4", "src", "dst"); o.Remove || o.Dest != "dst" {
 		t.Fatalf("a selected copy changed shape: %+v", o)

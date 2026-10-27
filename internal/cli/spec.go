@@ -126,6 +126,9 @@ var specs = []cpflags.Spec{
 			"copying; lists what would be deleted unless --yes is given"},
 	{Long: "yes", Arg: cpflags.NoArg,
 		Help: "carry out --rm rather than listing what it would delete"},
+	{Long: "whole-containers", Arg: cpflags.NoArg,
+		Help: "with --rm --select, delete a container picked for its contents in one " +
+			"request rather than blob by blob, taking anything written to it since it was listed"},
 	{Long: "no-auto-update", Arg: cpflags.NoArg,
 		Help: "accepted for compatibility; copies only check for new versions"},
 	{Long: "no-version-check", Arg: cpflags.NoArg,

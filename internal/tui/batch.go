@@ -472,7 +472,12 @@ func (r *removal) one(ctx context.Context, t target, tree inventoried) error {
 		}
 	}
 	if !r.dryRun {
-		if err := r.b.remove(ctx, []inventoried{tree}); err != nil {
+		doomed := tree
+		if r.opt.WholeContainers {
+			// Asked for: one request, though it takes what arrived since.
+			doomed.listed = false
+		}
+		if err := r.b.remove(ctx, []inventoried{doomed}); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}

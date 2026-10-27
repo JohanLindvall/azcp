@@ -593,7 +593,8 @@ in before the removal passes for what was listed. A container picked by name
 or type goes whole through `RemoveContainer`; one picked by its contents is
 listed (`inventoried.listed`), judged on that listing, emptied blob by blob
 under ETags, and removed only when `removeEmptied` finds nothing new in it —
-deleting it whole would take blobs written after the judgment. Operands that another one contains are taken
+deleting it whole would take blobs written after the judgment, which only
+`--whole-containers` asks for. Operands that another one contains are taken
 with it (`covered`) rather than failing on what it already removed, and an
 operand ending in `.` or `..` is refused, as rm refuses it.
 
