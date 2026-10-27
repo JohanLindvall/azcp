@@ -316,7 +316,7 @@ func (b *backend) inventoryOne(ctx context.Context, e entry) (inventoried, error
 	}
 	tree := inventoried{nodes: []*store.Node{n}}
 	if !n.URL.IsRemote() {
-		if tree.parent, err = os.Stat(filepath.Dir(n.URL.Path)); err != nil {
+		if tree.parent, err = dirIdentity(filepath.Dir(n.URL.Path)); err != nil {
 			return inventoried{}, err
 		}
 	}
@@ -347,6 +347,18 @@ func (b *backend) inventoryOne(ctx context.Context, e entry) (inventoried, error
 		}
 	}
 	return tree, nil
+}
+
+// dirIdentity stats dir through an open handle, as the removal does. On
+// Windows a stat by path keeps the path and decides which file it describes
+// only when compared, by which time the path may lead somewhere else.
+func dirIdentity(dir string) (fs.FileInfo, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return root.Stat(".")
 }
 
 // listError is a selection that could not be listed in full, which leaves
