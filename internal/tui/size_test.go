@@ -5,6 +5,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -465,5 +466,50 @@ func TestEnteringASizedDirectoryReusesItsTotals(t *testing.T) {
 	open("b")
 	if s := sizeOf("nested"); s != nil {
 		t.Fatalf("refresh left a stale total: %v", s)
+	}
+}
+
+func TestAMoveForgetsOnlyTheTotalsItChanged(t *testing.T) {
+	a, _, left, right := testApp(t)
+	write(t, filepath.Join(left, "big", "file"), strings.Repeat("x", 100))
+	write(t, filepath.Join(left, "mid", "file"), strings.Repeat("x", 10))
+	write(t, filepath.Join(left, "small", "file"), "x")
+	write(t, filepath.Join(right, "mid", "old"), "12345")
+	write(t, filepath.Join(right, "other", "file"), "123")
+	a.reload()
+	finishJobs(t, a)
+	for range a.panes {
+		press(a, tcell.KeyRune, 's')
+		press(a, tcell.KeyRune, '3')
+		press(a, tcell.KeyEnter, 0)
+		press(a, tcell.KeyRune, 'Z')
+		finishJobs(t, a)
+		press(a, tcell.KeyTab, 0)
+	}
+	p := &a.panes[0]
+	p.cursor = slices.IndexFunc(p.entries, func(e entry) bool { return e.name == "mid" })
+	press(a, tcell.KeyF6, 0)
+	press(a, tcell.KeyRune, 'y')
+	finishJobs(t, a)
+	if _, err := os.Stat(filepath.Join(left, "mid")); !os.IsNotExist(err) {
+		t.Fatalf("move left the source behind: %v", err)
+	}
+	sizes := func(p *pane) string {
+		var out []string
+		for _, e := range p.entries[1:] {
+			if e.dirSize == nil {
+				out = append(out, e.name+"=?")
+			} else {
+				out = append(out, fmt.Sprintf("%s=%d", e.name, e.dirSize.bytes))
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	if got := sizes(p); got != "small=1 big=100" {
+		t.Fatalf("source pane: %s", got)
+	}
+	// The destination merged into mid, so only its total is unknown.
+	if got := sizes(&a.panes[1]); !strings.Contains(got, "mid=?") || !strings.Contains(got, "other=3") {
+		t.Fatalf("destination pane: %s", got)
 	}
 }

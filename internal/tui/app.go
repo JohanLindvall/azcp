@@ -132,7 +132,7 @@ type app struct {
 	modal   *dialog
 	status  string
 	logs    messages
-	sizeGen uint64 // advanced by a refresh; older calculated totals are stale
+	sizeGen uint64 // advanced by an explicit refresh; older calculated totals are stale
 	workers sync.WaitGroup
 	quit    bool
 	pasting bool
@@ -251,7 +251,10 @@ func (a *app) setEntries(i int, loc location, entries []entry) {
 		e.loc.parent = &here
 		if child := loc.sizes.children[e.name]; child != nil && e.node != nil && e.node.IsDir() {
 			child.gen = loc.sizes.gen
-			e.dirSize, e.loc.sizes = &child.directorySize, child
+			e.loc.sizes = child
+			if !child.stale {
+				e.dirSize = &child.directorySize
+			}
 		}
 	}
 	p.loc = loc
@@ -263,7 +266,6 @@ func (a *app) setEntries(i int, loc location, entries []entry) {
 }
 
 func (a *app) reload() {
-	a.sizeGen++
 	locations := [2]location{a.panes[0].loc, a.panes[1].loc}
 	type listing struct {
 		entries []entry
@@ -418,6 +420,7 @@ func (a *app) key(ev *tcell.EventKey) {
 		if p.usage != nil {
 			a.scanUsagePane(a.active, p.usage.base, p.usagePath(), p.usage.oneFS)
 		} else {
+			a.sizeGen++
 			a.reload()
 		}
 	case r == 's':
@@ -609,6 +612,10 @@ func (a *app) execute(d *dialog) {
 		}
 		return out, err
 	}, func(r jobResult) {
+		if !a.backend.opt.DryRun {
+			// Forgotten even after a failure, which can leave partial changes.
+			a.forgetSizes(d.changes())
+		}
 		if r.err == nil {
 			out := r.value.(result)
 			if out.usage != nil {

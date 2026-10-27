@@ -187,7 +187,6 @@ func (a *app) refreshOtherPane(i int) {
 	p := &a.panes[i]
 	p.leaveUsage()
 	loc := p.loc
-	a.sizeGen++
 	a.start("Refreshing other pane", func(ctx context.Context, _ *progress.Reporter) (any, error) {
 		return a.backend.list(ctx, loc)
 	}, func(r jobResult) {

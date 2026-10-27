@@ -27,12 +27,13 @@ type sizeTree struct {
 	directorySize
 	children map[string]*sizeTree
 	gen      uint64
+	// stale says a mutation below this directory outdated its own total.
+	// Its untouched children are still exact, so the node stays to hold them.
+	stale bool
 }
 
 func (t *sizeTree) child(name string) *sizeTree {
-	if name == "" {
-		name = "/" // How the listing names a significant empty blob-key component.
-	}
+	name = sizeName(name)
 	c := t.children[name]
 	if c == nil {
 		if t.children == nil {
@@ -42,6 +43,128 @@ func (t *sizeTree) child(name string) *sizeTree {
 		t.children[name] = c
 	}
 	return c
+}
+
+// sizeChange names what a mutation may have altered: the location at, or the
+// entry within it named by tail.
+type sizeChange struct {
+	at   *uri.URL
+	tail []string
+}
+
+// forgetSizes drops the totals a mutation can have changed: the tree of each
+// changed location and the total of every directory above one. Siblings keep
+// theirs, so a sorted pane does not lose its order to an unrelated move.
+func (a *app) forgetSizes(changes []sizeChange) {
+	for i := range a.panes {
+		for l := &a.panes[i].loc; l != nil; l = l.parent {
+			if l.sizes == nil {
+				continue
+			}
+			for _, c := range changes {
+				l.sizes.forget(l.url, c)
+			}
+		}
+	}
+}
+
+func (t *sizeTree) forget(root *uri.URL, c sizeChange) {
+	paths := sizeRelations(root, c.at)
+	if len(paths) == 0 {
+		if len(sizeRelations(c.at, root)) > 0 {
+			// The whole tree lies inside what changed.
+			t.stale, t.children = true, nil
+		}
+		return
+	}
+	for _, path := range paths {
+		path = append(path, c.tail...)
+		if len(path) == 0 {
+			t.stale, t.children = true, nil
+			continue
+		}
+		n := t
+		for _, name := range path[:len(path)-1] {
+			n.stale = true
+			if n = n.children[sizeName(name)]; n == nil {
+				break
+			}
+		}
+		if n != nil {
+			n.stale = true
+			delete(n.children, sizeName(path[len(path)-1]))
+		}
+	}
+}
+
+func (d *dialog) changes() []sizeChange {
+	if d.action == "mkdir" {
+		return []sizeChange{{at: d.target.url, tail: []string{d.text}}}
+	}
+	var changes []sizeChange
+	for _, e := range d.source {
+		if e.node == nil {
+			continue
+		}
+		if d.action != "Copy" {
+			changes = append(changes, sizeChange{at: e.node.URL})
+		}
+		if d.action != "Delete" {
+			changes = append(changes, sizeChange{at: d.target.url, tail: []string{sizeBase(e.node.URL)}})
+		}
+	}
+	return changes
+}
+
+// sizeRelations gives the names leading from root to u, once for each way
+// root's URL can be read. A container root and the empty key component
+// beneath it share a URL; forgetting under both readings costs at most a
+// total that was still right.
+func sizeRelations(root, u *uri.URL) [][]string {
+	if root.IsRemote() != u.IsRemote() {
+		return nil
+	}
+	if !root.IsRemote() {
+		if path, below := sizePath(root, false, u); below {
+			return [][]string{path}
+		}
+		return nil
+	}
+	if root.Host != u.Host || root.Account != u.Account {
+		return nil
+	}
+	if root.Container == u.Container && root.Key == u.Key {
+		return [][]string{nil}
+	}
+	var paths [][]string
+	for _, prefixed := range []bool{false, true} {
+		if prefixed && root.Container == "" || !prefixed && root.Key != "" {
+			continue
+		}
+		if path, below := sizePath(root, prefixed, u); below {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+// sizeBase is the name a copy of u takes inside its destination directory.
+func sizeBase(u *uri.URL) string {
+	switch {
+	case !u.IsRemote():
+		return filepath.Base(u.Path)
+	case u.Key == "":
+		return u.Container
+	default:
+		return u.Key[strings.LastIndexByte(u.Key, '/')+1:]
+	}
+}
+
+func sizeName(name string) string {
+	if name == "" {
+		return "/" // How the listing names a significant empty blob-key component.
+	}
+	return name
 }
 
 func (a *app) calculateSizes(all bool) {
