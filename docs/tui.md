@@ -94,6 +94,7 @@ remains available during a slow request. SAS tokens stay redacted on screen.
 | `s` | Sort the active pane |
 | `u` | Scan a disk-usage view / return to the two-pane file manager |
 | `f` | Toggle the active pane's size / recursive file-count column |
+| `/` | Filter the active pane's names; empty input clears the filter |
 | `z` | Calculate sizes and file counts for marked directories, or the directory under the cursor |
 | Shift-Z / `Z` | Calculate sizes and file counts for all directories in the active pane |
 | F10 / `q` | Quit; cancel active work and wait for it to stop |
@@ -144,7 +145,7 @@ the current directory's totals. All sorting options remain available with **s**.
 | Enter / Right, Backspace / Left | Enter a cached directory / return to its parent |
 | `a` | Toggle allocated disk space and logical size for local entries |
 | `f` | Switch the primary numeric column between size and recursive file count |
-| `/` | Filter visible names by a case-insensitive substring; empty input clears it |
+| `/` | Filter this directory's names, as in the two-pane view; empty input clears it |
 | `i` | Show exact byte counts, type, timestamps, hard links and scan problems |
 | `x` | Rescan with filesystem boundaries enforced / crossed (local only) |
 | `r` / Ctrl-R | Rescan the original scan root and return to the current directory |
@@ -225,6 +226,27 @@ modified times) sort last within their group, in either direction. Results are
 snapshots and are cleared by refresh,
 navigation, or a copy, move, delete or mkdir operation. Press **z** or **Z** again
 to recalculate after external changes.
+
+## Filtering a pane
+
+Press **/** to show only the entries whose names match a filter. Each pane has
+its own, and it stays in force as that pane moves between directories and is
+refreshed, until **/** is given empty input (Ctrl-U clears the prompt). The
+pane's footer shows the filter and how many listed entries it hides.
+
+A filter is a list of words separated by spaces. A plain word matches anywhere
+in a name, ignoring case: `report` shows `Q3-Report.pdf`. A word containing
+`*`, `?`, `[...]`, `{a,b}` or an extglob such as `+(a|b)` is a pattern matched
+against the whole name exactly as bash matches it, so it is case-sensitive:
+`*.go` shows `main.go` but not `README`. A name is shown when it matches any
+word; a word beginning with `-` hides what it matches instead, so
+`*.go -*_test.go` shows Go sources without their tests and `-node_modules` on
+its own hides one directory. Patterns match one name, never a path, and apply to
+directories as well as files; the parent entry is always shown.
+
+Applying or clearing a filter clears selection marks, so nothing out of sight
+can be copied, moved or deleted, and **Z** calculates totals only for the
+directories on show.
 
 ## Transfer options
 

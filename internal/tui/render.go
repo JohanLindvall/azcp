@@ -234,12 +234,16 @@ func (a *app) drawPane(index, x, width, bottom int) {
 	}
 	n := int64(max(0, len(p.entries)-1))
 	count := fmt.Sprintf(" %d %s ", n, humanize.Plural(n, "entry", "entries"))
+	if p.listFilter.active() {
+		count = fmt.Sprintf(" %d of %d shown · filter: %s ", n, n+int64(len(p.hidden)), p.listFilter.text)
+	}
 	selected := fmt.Sprintf(" %d marked ", marked)
 	if marked > 0 && humanize.Width(count)+humanize.Width(selected)+6 > width {
 		a.text(x+2, bottom, width-4, selected, a.theme.marked)
 		return
 	}
-	a.text(x+2, bottom, min(width-4, humanize.Width(count)), count, a.theme.muted)
+	count = humanize.Elide(safeText(count), width-4-humanize.Width(selected)*min(marked, 1))
+	a.text(x+2, bottom, humanize.Width(count), count, a.theme.muted)
 	if marked > 0 {
 		a.text(x+width-2-humanize.Width(selected), bottom, humanize.Width(selected), selected, a.theme.marked)
 	}

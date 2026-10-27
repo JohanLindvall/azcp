@@ -21,7 +21,7 @@ func (a *app) drawStatus(w, h int) {
 		}
 		a.text(1, h-5, 1, mark, style)
 		a.text(3, h-5, w-4, humanize.Elide(safeText(a.status), w-4), style)
-		hint := "Enter: open · ←: parent · Space: mark · *: invert"
+		hint := "Enter: open · ←: parent · Space: mark · *: invert · /: filter"
 		if a.panes[a.active].usage != nil {
 			hint = "Enter: open · ←: parent · /: filter · i: info · x: one filesystem"
 			if w < 80 {

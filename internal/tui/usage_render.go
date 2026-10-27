@@ -152,8 +152,8 @@ func (a *app) drawUsagePane(index, width, bottom int) {
 	if !p.loc.url.IsRemote() && p.usage.oneFS {
 		footer += "· one filesystem "
 	}
-	if p.filter != "" {
-		footer += "· filter: " + p.filter + " (totals include hidden entries) "
+	if p.filter.active() {
+		footer += "· filter: " + p.filter.text + " (totals include hidden entries) "
 	}
 	if p.usageDir.total.excluded > 0 {
 		footer += fmt.Sprintf("· %d excluded ", p.usageDir.total.excluded)

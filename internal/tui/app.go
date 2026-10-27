@@ -54,7 +54,9 @@ type pane struct {
 	showCounts  bool
 	usage       *usageTree
 	usageDir    *usageNode
-	filter      string
+	filter      nameFilter // the usage view's, cleared on leaving a directory
+	listFilter  nameFilter // the two-pane view's, kept across navigation
+	hidden      []entry    // listed entries listFilter rules out
 	savedSort   paneSort
 	savedCounts bool
 }
@@ -258,11 +260,9 @@ func (a *app) setEntries(i int, loc location, entries []entry) {
 		}
 	}
 	p.loc = loc
-	p.entries = append([]entry{{name: "..", loc: parent}}, entries...)
-	p.cursor, p.offset = 0, 0
-	p.selected = map[int]bool{}
-	p.sortEntries()
-	p.cursor = min(1, len(entries))
+	p.entries, p.hidden = append([]entry{{name: "..", loc: parent}}, entries...), nil
+	p.refilter()
+	p.cursor = min(1, len(p.entries)-1)
 }
 
 func (a *app) reload() {
@@ -448,8 +448,12 @@ func (a *app) key(ev *tcell.EventKey) {
 		} else {
 			a.scanUsagePane(a.active, p.usage.base, p.usagePath(), !p.usage.oneFS)
 		}
-	case r == '/' && p.usage != nil:
-		a.modal = &dialog{kind: "input", title: "Filter names (empty shows all)", action: "usage-filter", text: p.filter}
+	case r == '/':
+		text := p.listFilter.text
+		if p.usage != nil {
+			text = p.filter.text
+		}
+		a.modal = &dialog{kind: "input", title: "Filter names: words, globs, -excluded (empty shows all)", action: "filter", text: text}
 	case r == 'i' && p.usage != nil:
 		a.usageInfo()
 	}
@@ -549,12 +553,8 @@ func (a *app) dialogKey(ev *tcell.EventKey) {
 			d.text += string(r)
 		}
 	case tcell.KeyEnter:
-		if d.action == "usage-filter" {
-			p := &a.panes[a.active]
-			p.filter = d.text
-			p.usageEntries(nil)
-			a.modal = nil
-			a.status = "Name filter applied; selection marks cleared"
+		if d.action == "filter" {
+			a.applyFilter(d.text)
 			return
 		}
 		if d.action == "mkdir" {
@@ -673,12 +673,16 @@ s        Sort this pane: name, modified time, size, extension or type
          Also sort by recursive file count (6 in the sort menu)
 f        Toggle this pane's size / recursive file-count column
 z / Z    Calculate directory totals: marked/cursor / all in this pane
+/        Filter this pane's names; the filter stays until cleared
+         Words match anywhere in a name, ignoring case; *.go, ?, [..],
+         {a,b} and extglobs match the whole name as bash does. A name
+         matching any word is shown; -word or -pattern hides matches.
 u        Scan a cached disk-usage view / return to two panes
 
 Disk-usage view (also available with --tui=usage):
 Enter / Backspace navigate the scanned tree without listing it again.
 a toggles disk allocation / logical size; Azure shows stored blob lengths.
-/ filters names; i shows details; x toggles crossing filesystem boundaries.
+/ filters names in this directory; i shows details; x toggles crossing filesystem boundaries.
 r refreshes the scan. F8 / d deletes with confirmation.
 H marks hard links, ! incomplete totals, > excluded directories.
 Incomplete or excluded trees cannot be moved or deleted from this view.

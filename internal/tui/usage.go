@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/JohanLindvall/azcp/internal/humanize"
@@ -30,9 +29,8 @@ func (p *pane) usageEntries(focus *usageNode) {
 	p.entries = make([]entry, 1, len(p.usageDir.children)+1)
 	p.entries[0] = parent
 	p.cursor, p.offset, p.selected = 0, 0, make(map[int]bool)
-	filter := strings.ToLower(p.filter)
 	for _, n := range p.usageDir.children {
-		if !strings.Contains(strings.ToLower(n.name), filter) {
+		if !p.filter.match(n.name) {
 			continue
 		}
 		name := n.name
@@ -56,7 +54,7 @@ func (p *pane) leaveUsage() {
 	if p.usage == nil {
 		return
 	}
-	p.usage, p.usageDir, p.filter = nil, nil, ""
+	p.usage, p.usageDir, p.filter = nil, nil, nameFilter{}
 	p.sort, p.showCounts = p.savedSort, p.savedCounts
 }
 
@@ -118,7 +116,7 @@ func (a *app) openUsage(n *usageNode) {
 		return
 	}
 	p.usageDir = n
-	p.filter = ""
+	p.filter = nameFilter{}
 	p.usageEntries(nil)
 }
 
@@ -129,7 +127,7 @@ func (a *app) usageParent() {
 		return
 	}
 	child := p.usageDir
-	p.usageDir, p.filter = child.parent, ""
+	p.usageDir, p.filter = child.parent, nameFilter{}
 	p.usageEntries(child)
 }
 
