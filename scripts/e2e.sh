@@ -520,6 +520,20 @@ fi
   && ok "the container around the \"/\" entry survives" \
   || bad "the \"/\" entry took its container"
 
+# A container chosen for what it holds goes blob by blob, then itself once
+# empty; one that does not match is untouched.
+"$AZCP" --create-container "$SRC/file.txt" "$ACCOUNT/${CONTAINER}-pick-a/clip.mp4" >/dev/null
+"$AZCP" --create-container "$SRC/file.txt" "$ACCOUNT/${CONTAINER}-pick-b/note.txt" >/dev/null
+"$AZCP" --rm -r --yes --select "${CONTAINER}-pick-* has:*.mp4" "$ACCOUNT/" >/dev/null 2>&1
+if "$AZCP" "$ACCOUNT/${CONTAINER}-pick-a/clip.mp4" "$WORK/pick-a.mp4" >/dev/null 2>&1; then
+  bad "--rm --select by contents left the matching container"
+else
+  ok "--rm --select removes a container chosen for its contents"
+fi
+"$AZCP" "$ACCOUNT/${CONTAINER}-pick-b/note.txt" "$WORK/pick-b.txt" >/dev/null 2>&1 \
+  && ok "a container the filter did not pick survives" \
+  || bad "--rm --select removed a container it did not pick"
+
 # --- machine-readable output ------------------------------------------------
 summary=$("$AZCP" --output=json "$SRC/file.txt" "$AZ/json.txt" 2>/dev/null | tail -1)
 if printf '%s' "$summary" | grep -q '"event":"summary"'; then

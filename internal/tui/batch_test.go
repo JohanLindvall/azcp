@@ -5,7 +5,6 @@ package tui
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -237,16 +236,6 @@ func TestRemoveWeighsTheFilterOnWhatItRemoves(t *testing.T) {
 	}
 	if got := strings.Join(lines(), "\n"); !strings.Contains(got, "kept '"+filepath.Join(root, "busy")+"'") {
 		t.Errorf("kept directory not reported: %s", got)
-	}
-}
-
-func TestRemoveRefusesToWeighContainersItDeletesWhole(t *testing.T) {
-	o := cli.Defaults()
-	o.Remove, o.Recursive, o.Select = true, true, "type:dir older:30d"
-	o.Sources = []string{"azure://account/"}
-	var usage *cli.UsageError
-	if _, err := Remove(t.Context(), o, slog.New(slog.DiscardHandler)); !errors.As(err, &usage) {
-		t.Fatalf("weighed whole containers: %v", err)
 	}
 }
 

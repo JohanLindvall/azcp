@@ -20,6 +20,7 @@ import (
 
 	"github.com/JohanLindvall/azcp/internal/cli"
 	"github.com/JohanLindvall/azcp/internal/engine"
+	"github.com/JohanLindvall/azcp/internal/parallel"
 	"github.com/JohanLindvall/azcp/internal/progress"
 	"github.com/JohanLindvall/azcp/internal/retryx"
 	"github.com/JohanLindvall/azcp/internal/store"
@@ -278,6 +279,9 @@ func isContainer(u *uri.URL) bool { return u.IsRemote() && u.Container != "" && 
 type inventoried struct {
 	nodes  []*store.Node
 	parent fs.FileInfo
+	// listed says a container's blobs were listed too, so the removal takes
+	// them by name and ETag before the container rather than in one request.
+	listed bool
 }
 
 // errSelectionChanged says a selection is no longer the kind of thing that
@@ -290,7 +294,7 @@ var errChanged = errors.New("changed since it was listed; left in place")
 func (b *backend) inventory(ctx context.Context, selected []entry) ([]inventoried, error) {
 	var trees []inventoried
 	for _, e := range selected {
-		tree, err := b.inventoryOne(ctx, e)
+		tree, err := b.inventoryOne(ctx, e, false)
 		if err != nil {
 			return nil, err
 		}
@@ -299,7 +303,9 @@ func (b *backend) inventory(ctx context.Context, selected []entry) ([]inventorie
 	return trees, nil
 }
 
-func (b *backend) inventoryOne(ctx context.Context, e entry) (inventoried, error) {
+// inventoryOne lists one selection in full. A container is only listed when
+// listContainer says its contents decide whether it goes.
+func (b *backend) inventoryOne(ctx context.Context, e entry, listContainer bool) (inventoried, error) {
 	if err := removable(e); err != nil {
 		return inventoried{}, err
 	}
@@ -326,7 +332,8 @@ func (b *backend) inventoryOne(ctx context.Context, e entry) (inventoried, error
 	seen := map[string]int{nodeKey(n): 0}
 	// A container is deleted in one request, so listing its blobs would
 	// only delay that; the stat has already shown it is there to delete.
-	if n.IsDir() && !isContainer(n.URL) {
+	tree.listed = listContainer && isContainer(n.URL)
+	if n.IsDir() && (!isContainer(n.URL) || tree.listed) {
 		err = s.WalkAll(ctx, n.URL, func(_ *uri.URL, err error) error { return err }, func(child *store.Node) error {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -490,7 +497,7 @@ func (b *backend) remove(ctx context.Context, trees []inventoried) error {
 			}
 			continue
 		}
-		if isContainer(top.URL) {
+		if isContainer(top.URL) && !tree.listed {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -499,29 +506,73 @@ func (b *backend) remove(ctx context.Context, trees []inventoried) error {
 			}
 			continue
 		}
-		// WalkAll may interleave key ranges. Depth, not arrival order, says
-		// which marker can be removed after all its children.
-		nodes := slices.Clone(tree.nodes)
-		slices.SortStableFunc(nodes, func(a, b *store.Node) int {
-			return strings.Count(b.URL.Key, "/") - strings.Count(a.URL.Key, "/")
-		})
-		for _, n := range nodes {
-			if err := ctx.Err(); err != nil {
+		if err := b.removeBlobs(ctx, tree.nodes); err != nil {
+			return err
+		}
+		if tree.listed {
+			if err := b.removeEmptied(ctx, top); err != nil {
 				return err
 			}
-			var err error
-			if n.IsDir() {
-				err = b.remote.RemoveMarker(ctx, n.URL)
-				if store.IsNotExist(err) {
-					err = nil
-				}
-			} else {
-				err = b.remote.RemoveBlob(ctx, n)
-			}
-			if err != nil {
-				return &removeError{node: n, err: err}
-			}
 		}
+	}
+	return nil
+}
+
+// removeBlobs deletes a listed tree by name: its blobs at once, each only if
+// it is still the revision listed, and then its markers, deepest first.
+func (b *backend) removeBlobs(ctx context.Context, tree []*store.Node) error {
+	var files, dirs []*store.Node
+	for _, n := range tree {
+		switch {
+		case n.IsDir():
+			if n.URL.Key != "" {
+				dirs = append(dirs, n)
+			}
+		default:
+			files = append(files, n)
+		}
+	}
+	err := parallel.Do(ctx, len(files), b.opt.JobsFor(true), func(ctx context.Context, i int) error {
+		if err := b.remote.RemoveBlob(ctx, files[i]); err != nil {
+			return &removeError{node: files[i], err: err}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	// WalkAll may interleave key ranges. Depth, not arrival order, says
+	// which marker can be removed after all its children.
+	slices.SortStableFunc(dirs, func(a, b *store.Node) int {
+		return strings.Count(b.URL.Key, "/") - strings.Count(a.URL.Key, "/")
+	})
+	for _, n := range dirs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := b.remote.RemoveMarker(ctx, n.URL); err != nil && !store.IsNotExist(err) {
+			return &removeError{node: n, err: err}
+		}
+	}
+	return nil
+}
+
+// errWrittenMeanwhile keeps a container that something was written to after
+// it was listed: what it holds now has not been judged.
+var errWrittenMeanwhile = errors.New("written to since it was listed; left in place")
+
+// removeEmptied deletes a container whose listed blobs are gone, and only if
+// nothing else has arrived in it since.
+func (b *backend) removeEmptied(ctx context.Context, container *store.Node) error {
+	left, err := b.remote.ReadDirEntries(ctx, container.URL)
+	if err != nil {
+		return &removeError{node: container, err: err}
+	}
+	if len(left) > 0 {
+		return &removeError{node: container, err: errWrittenMeanwhile}
+	}
+	if err := b.remote.RemoveContainer(ctx, container.URL); err != nil {
+		return &removeError{node: container, err: err}
 	}
 	return nil
 }

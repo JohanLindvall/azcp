@@ -285,7 +285,10 @@ func (r *removal) run(ctx context.Context) error {
 	targets = kept
 	trees := make([]inventoried, len(targets))
 	for i, t := range targets {
-		tree, err := r.b.inventoryOne(ctx, t.entry)
+		// A container picked for what it holds is listed too, so it is judged
+		// on what the removal takes, and goes blob by blob: deleted whole, it
+		// would take whatever was written to it after it was weighed.
+		tree, err := r.b.inventoryOne(ctx, t.entry, r.filter != nil && r.filter.walks)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -313,15 +316,6 @@ func (r *removal) targets(ctx context.Context) ([]target, error) {
 		f, err := parseSelect(r.opt.Select)
 		if err != nil {
 			return nil, err
-		}
-		if f.walks && slices.ContainsFunc(r.opt.Sources, func(raw string) bool {
-			u, err := parseURL(raw, r.opt.EndpointSuffix)
-			return err == nil && u.IsRemote() && u.Container == ""
-		}) {
-			// Weighed now, a container could take on anything before the one
-			// request that deletes it whole.
-			return nil, cli.Usage(errors.New("--select cannot weigh what is inside a container for --rm, " +
-				"since a container is deleted whole; select containers by name, or select inside one"))
 		}
 		r.filter = &f
 		return r.b.selectEach(ctx, f, r.opt.Sources)
@@ -465,7 +459,7 @@ func (r *removal) one(ctx context.Context, t target, tree inventoried) error {
 		_ = count(n)
 	}
 	top := tree.nodes[0]
-	whole := isContainer(top.URL)
+	whole := isContainer(top.URL) && !tree.listed
 	if r.dryRun && whole {
 		// The inventory leaves a container unlisted because one request
 		// deletes it; a listing of what would go needs its contents.

@@ -225,6 +225,7 @@ as its own `--remove-destination`, abbreviated.
 azcp --rm -r --select 'older:2024-01-01' azure://acct/logs/       # lists
 azcp --rm -r --select 'older:2024-01-01' --yes azure://acct/logs/ # deletes
 azcp --rm -r --select 'tmp-* scratch-*' azure://acct/              # whole containers
+azcp --rm -r --select 'has:*.mp4 older:60d' azure://acct/          # by what they hold
 ```
 
 A filter is weighed exactly as a pane weighs it, with one difference: a
@@ -240,9 +241,11 @@ before anything is deleted, local symbolic links are removed and never
 followed, and a blob is deleted only if it is still the version that was
 listed. The filter is weighed again on that listing, so whatever was written
 or changed after the selection was made is judged as it now stands, and an
-entry that no longer matches is kept. A container goes whole, in one request,
-with anything written to it meanwhile, so at an account root `--select` may
-choose containers by name or type, but not by what they hold. Blob names that
+entry that no longer matches is kept. A container chosen by name or type goes
+whole, in one request, with anything written to it meanwhile. One chosen for
+what it holds is listed in full and judged on that listing, its blobs are
+deleted by name, and the container itself only if nothing has arrived in it
+since; otherwise it is kept and reported. Blob names that
 begin with `/` appear at a container root as a directory called `/`, which no
 URL names apart from the container, so that entry is refused rather than
 taken for the container; name such blobs one at a time, as
