@@ -77,12 +77,12 @@ func TestAzuriteCommanderOperations(t *testing.T) {
 		t.Fatal("usage cache lost the empty directory marker")
 	}
 	for _, all := range []bool{false, true} {
-		trees, err := b.directorySizes(t.Context(), remote, []entry{tree}, all, reporter(t))
+		trees, err := b.directorySizes(t.Context(), remote, []entry{tree}, all, nil, reporter(t))
 		sizes := sizeTotals(trees)
 		if err != nil || len(sizes) != 1 || sizes[0] != (directorySize{28, 2}) {
 			t.Fatalf("remote tree size, all=%v: %v, %v", all, sizes, err)
 		}
-		trees, err = b.directorySizes(t.Context(), tree.loc, children[:2], all, reporter(t))
+		trees, err = b.directorySizes(t.Context(), tree.loc, children[:2], all, nil, reporter(t))
 		sizes = sizeTotals(trees)
 		if err != nil || len(sizes) != 2 || sizes[0] != (directorySize{}) || sizes[1] != (directorySize{15, 1}) {
 			t.Fatalf("remote child sizes, all=%v: %v, %v", all, sizes, err)
@@ -96,6 +96,20 @@ func TestAzuriteCommanderOperations(t *testing.T) {
 	for _, e := range accountEntries {
 		if e.name == container && e.directory() {
 			foundContainer = true
+			// What filtering containers by size and contents asks of one
+			// flat walk of the account.
+			f, err := parseFilter("has:*.txt has:*.mp4")
+			if err != nil {
+				t.Fatal(err)
+			}
+			trees, err := b.directorySizes(t.Context(), loc(t, endpoint), []entry{e}, true, f.has, reporter(t))
+			if err != nil || trees[0].directorySize != (directorySize{28, 2}) || !trees[0].contains["*.txt"] ||
+				trees[0].contains["*.mp4"] || trees[0].children["tree"].children["sub"].newest.IsZero() {
+				t.Fatalf("container totals at account level: %+v, %v", trees, err)
+			}
+			if _, known := trees[0].children["tree"].children["empty"].contains["*.mp4"]; !known {
+				t.Fatal("an empty directory left the question open")
+			}
 		}
 	}
 	if !foundContainer {
@@ -158,7 +172,7 @@ func TestAzuriteCommanderOperations(t *testing.T) {
 		t.Fatalf("filesystem view hid a colliding blob or prefix: %d files, %d directories", files, dirs)
 	}
 	for _, all := range []bool{false, true} {
-		trees, err := b.directorySizes(t.Context(), remote, []entry{tree}, all, reporter(t))
+		trees, err := b.directorySizes(t.Context(), remote, []entry{tree}, all, nil, reporter(t))
 		sizes := sizeTotals(trees)
 		if err != nil || len(sizes) != 1 || sizes[0] != (directorySize{}) {
 			t.Fatalf("empty prefix counted the independent blob, all=%v: %v, %v", all, sizes, err)

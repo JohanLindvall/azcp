@@ -52,7 +52,7 @@ func TestLocalDirectorySizesAreRecursiveLogicalLengths(t *testing.T) {
 		walk := &sizeWalkStore{Store: b.local}
 		b.local = walk
 		p := reporter(t)
-		trees, err := b.directorySizes(t.Context(), loc(t, root), entries, all, p)
+		trees, err := b.directorySizes(t.Context(), loc(t, root), entries, all, nil, p)
 		sizes := sizeTotals(trees)
 		if err != nil || !slices.Equal(sizes, want) {
 			t.Fatalf("all=%v: sizes=%v, err=%v; want %v", all, sizes, err, want)
@@ -85,7 +85,7 @@ func TestDirectorySizesDoNotFollowSymlinksAndCountHardLinkNames(t *testing.T) {
 	}
 	entries := []entry{selected(t, b, tree)}
 	for _, all := range []bool{false, true} {
-		trees, err := b.directorySizes(t.Context(), loc(t, root), entries, all, reporter(t))
+		trees, err := b.directorySizes(t.Context(), loc(t, root), entries, all, nil, reporter(t))
 		sizes := sizeTotals(trees)
 		if err != nil || !slices.Equal(sizes, []directorySize{{bytes: 10, files: 2}}) {
 			t.Fatalf("all=%v: sizes=%v, err=%v", all, sizes, err)
@@ -99,7 +99,7 @@ func TestDirectorySizesDoNotFollowSymlinksAndCountHardLinkNames(t *testing.T) {
 	if err := os.Symlink(outside, tree); err != nil {
 		t.Fatal(err)
 	}
-	trees, err := b.directorySizes(t.Context(), loc(t, root), entries, false, reporter(t))
+	trees, err := b.directorySizes(t.Context(), loc(t, root), entries, false, nil, reporter(t))
 	sizes := sizeTotals(trees)
 	if err == nil || sizes != nil {
 		t.Fatalf("followed a replaced root: %v, %v", sizes, err)
@@ -153,7 +153,7 @@ func TestAzureDirectorySizesUseFlatListingsAndExactPrefixes(t *testing.T) {
 	want := []directorySize{{18, 2}, {13, 1}, {17, 1}, {19, 1}, {}}
 	for _, all := range []bool{false, true} {
 		remote.walks = nil
-		trees, err := b.directorySizes(t.Context(), base, entries, all, reporter(t))
+		trees, err := b.directorySizes(t.Context(), base, entries, all, nil, reporter(t))
 		sizes := sizeTotals(trees)
 		if err != nil || !slices.Equal(sizes, want) {
 			t.Fatalf("all=%v: sizes=%v, err=%v; want %v", all, sizes, err, want)
@@ -187,7 +187,7 @@ func TestAzureDirectorySizesUseFlatListingsAndExactPrefixes(t *testing.T) {
 	add("//deep/file", store.KindFile, 5)
 	add("outside", store.KindFile, 100)
 	for _, all := range []bool{false, true} {
-		trees, err := b.directorySizes(t.Context(), base, []entry{emptyComponent}, all, reporter(t))
+		trees, err := b.directorySizes(t.Context(), base, []entry{emptyComponent}, all, nil, reporter(t))
 		sizes := sizeTotals(trees)
 		if err != nil || !slices.Equal(sizes, []directorySize{{8, 2}}) {
 			t.Fatalf("leading slash, all=%v: %v, %v", all, sizes, err)
@@ -213,7 +213,7 @@ func TestDirectorySizesAtAccountLevel(t *testing.T) {
 		remote.nodes = append(remote.nodes, &store.Node{URL: base.url.WithPathPart(name), Size: 3})
 	}
 	for _, all := range []bool{false, true} {
-		trees, err := b.directorySizes(t.Context(), base, entries, all, reporter(t))
+		trees, err := b.directorySizes(t.Context(), base, entries, all, nil, reporter(t))
 		sizes := sizeTotals(trees)
 		if err != nil || !slices.Equal(sizes, []directorySize{{6, 2}, {3, 1}, {}}) {
 			t.Fatalf("all=%v: sizes=%v, err=%v", all, sizes, err)
@@ -249,7 +249,7 @@ func TestFailedDirectorySizeScansDiscardPartialTotals(t *testing.T) {
 					return fn(n)
 				}
 			}}
-			trees, err := b.directorySizes(ctx, loc(t, root), entries, false, reporter(t))
+			trees, err := b.directorySizes(ctx, loc(t, root), entries, false, nil, reporter(t))
 			sizes := sizeTotals(trees)
 			if sizes != nil || err == nil || failure == "cancelled" && !errors.Is(err, context.Canceled) {
 				t.Fatalf("partial result: %v, %v", sizes, err)
@@ -436,7 +436,10 @@ func TestEnteringASizedDirectoryReusesItsTotals(t *testing.T) {
 		if i < 0 {
 			t.Fatalf("no %s in %v", name, entryNames(p.entries))
 		}
-		return p.entries[i].dirSize
+		if p.entries[i].dirSize == nil {
+			return nil
+		}
+		return &p.entries[i].dirSize.directorySize
 	}
 	press(a, tcell.KeyRune, 'Z')
 	finishJobs(t, a)

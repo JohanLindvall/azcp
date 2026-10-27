@@ -9,6 +9,7 @@ import (
 	"math"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/JohanLindvall/azcp/internal/humanize"
 	"github.com/JohanLindvall/azcp/internal/progress"
@@ -20,11 +21,49 @@ type directorySize struct {
 	bytes, files int64
 }
 
+// contentTerm asks a walk whether any file below a directory matches.
+type contentTerm struct {
+	pattern string
+	match   func(string) bool
+}
+
+// note records that the walk found the regular file n beneath t.
+func (t *sizeTree) note(n *store.Node, name string, terms []contentTerm) {
+	t.bytes += n.Size
+	t.files++
+	if n.ModTime.After(t.newest) {
+		t.newest = n.ModTime
+	}
+	for _, c := range terms {
+		if c.match(name) {
+			t.contains[c.pattern] = true
+		}
+	}
+}
+
+// settle records every pattern the walk was asked about as answered, so a
+// directory with no match is known not to contain one.
+func (t *sizeTree) settle(terms []contentTerm) {
+	if t.contains == nil {
+		t.contains = make(map[string]bool, len(terms))
+	}
+	for _, c := range terms {
+		t.contains[c.pattern] = t.contains[c.pattern] || false
+	}
+	for _, c := range t.children {
+		c.settle(terms)
+	}
+}
+
 // sizeTree keeps one total per directory the walk passed through, keyed by
 // the names the listing gives entries, so entering a sized directory needs
 // no second walk. It costs one node per directory, never one per file.
 type sizeTree struct {
 	directorySize
+	newest time.Time // the latest modification of a file anywhere below
+	// contains says, for each content pattern the walk was asked about,
+	// whether a file below has a name matching it.
+	contains map[string]bool
 	children map[string]*sizeTree
 	gen      uint64
 	// stale says a mutation below this directory outdated its own total.
@@ -39,7 +78,7 @@ func (t *sizeTree) child(name string) *sizeTree {
 		if t.children == nil {
 			t.children = map[string]*sizeTree{}
 		}
-		c = &sizeTree{}
+		c = &sizeTree{contains: map[string]bool{}}
 		t.children[name] = c
 	}
 	return c
@@ -168,6 +207,12 @@ func sizeName(name string) string {
 }
 
 func (a *app) calculateSizes(all bool) {
+	a.measure(all, func(entry) bool { return true })
+}
+
+// measure calculates totals for the pane's directories that want says need
+// them, answering the content patterns of the pane's filter on the same walk.
+func (a *app) measure(all bool, want func(entry) bool) {
 	p := &a.panes[a.active]
 	var indices []int
 	hasMarks := false
@@ -178,7 +223,7 @@ func (a *app) calculateSizes(all bool) {
 		if i == 0 || !e.node.IsDir() {
 			continue
 		}
-		if all || p.selected[i] || !hasMarks && i == p.cursor {
+		if (all || p.selected[i] || !hasMarks && i == p.cursor) && want(e) {
 			indices = append(indices, i)
 		}
 	}
@@ -192,7 +237,7 @@ func (a *app) calculateSizes(all bool) {
 		p.entries[row].sizePending = true
 		selected[i] = p.entries[row]
 	}
-	base := p.loc
+	base, terms := p.loc, p.listFilter.has
 	if p.loc.sizes == nil {
 		p.loc.sizes = &sizeTree{gen: a.sizeGen}
 	}
@@ -200,7 +245,7 @@ func (a *app) calculateSizes(all bool) {
 		p.loc.sizes.children = map[string]*sizeTree{}
 	}
 	a.start("Calculating directory totals", func(ctx context.Context, progress *progress.Reporter) (any, error) {
-		return a.backend.directorySizes(ctx, base, selected, all, progress)
+		return a.backend.directorySizes(ctx, base, selected, all, terms, progress)
 	}, func(r jobResult) {
 		for _, row := range indices {
 			p.entries[row].sizePending = false
@@ -212,13 +257,16 @@ func (a *app) calculateSizes(all bool) {
 				e := &p.entries[row]
 				trees[i].gen = p.loc.sizes.gen
 				p.loc.sizes.children[e.name] = trees[i]
-				e.dirSize, e.loc.sizes = &trees[i].directorySize, trees[i]
+				e.dirSize, e.loc.sizes = trees[i], trees[i]
 				total.bytes += trees[i].bytes
 				total.files += trees[i].files
 			}
 			a.status = fmt.Sprintf("%d directories: %s in %s files (logical sizes)", len(trees), humanize.Bytes(total.bytes), humanize.Count(total.files))
 		}
 		p.sortEntries()
+		if p.listFilter.walks {
+			p.refilter()
+		}
 	})
 	a.busy.sizing = true
 }
@@ -227,11 +275,16 @@ func (a *app) calculateSizes(all bool) {
 // one total per directory below each selection. A failed or cancelled walk
 // supplies no totals: a partial listing must not masquerade as an empty or
 // small tree.
-func (b *backend) directorySizes(ctx context.Context, base location, selected []entry, all bool, p *progress.Reporter) ([]*sizeTree, error) {
+func (b *backend) directorySizes(ctx context.Context, base location, selected []entry, all bool, terms []contentTerm, p *progress.Reporter) ([]*sizeTree, error) {
 	trees := make([]*sizeTree, len(selected))
 	for i := range trees {
-		trees[i] = &sizeTree{}
+		trees[i] = &sizeTree{contains: map[string]bool{}}
 	}
+	defer func() {
+		for _, t := range trees {
+			t.settle(terms)
+		}
+	}()
 	p.SetScanning(true)
 	var total int64
 	// path names n's location below selection i, and is empty for the
@@ -254,8 +307,7 @@ func (b *backend) directorySizes(ctx context.Context, base location, selected []
 			return errors.New("directory size exceeds the supported range")
 		}
 		for j := 0; ; j++ {
-			t.bytes += n.Size
-			t.files++
+			t.note(n, path[len(path)-1], terms)
 			if j == len(path)-1 {
 				break
 			}

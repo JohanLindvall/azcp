@@ -30,7 +30,7 @@ func (p *pane) usageEntries(focus *usageNode) {
 	p.entries[0] = parent
 	p.cursor, p.offset, p.selected = 0, 0, make(map[int]bool)
 	for _, n := range p.usageDir.children {
-		if !p.filter.match(n.name) {
+		if !p.filter.match(entry{name: n.name, usage: n}, p.sort.allocated) {
 			continue
 		}
 		name := n.name

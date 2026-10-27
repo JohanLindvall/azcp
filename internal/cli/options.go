@@ -102,7 +102,7 @@ var (
 	updateModes = []choice[Update]{
 		{"all", UpdateAll}, {"none", UpdateNone}, {"older", UpdateOlder}}
 	outputModes   = []choice[Output]{{"text", OutputText}, {"json", OutputJSON}}
-	tuiModes      = []choice[bool]{{"commander", false}, {"usage", true}}
+	tuiModes      = []choice[TUIMode]{{"commander", TUICommander}, {"single", TUISingle}, {"usage", TUIUsage}}
 	globModes     = []choice[GlobMode]{{"auto", GlobAuto}, {"always", GlobAlways}, {"never", GlobNever}}
 	progressModes = []choice[progress.Mode]{
 		{"auto", progress.ModeAuto}, {"always", progress.ModeAlways}, {"never", progress.ModeNever}}
@@ -140,12 +140,21 @@ func orList(names []string) string {
 	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
+// TUIMode selects what --tui opens first. The values index tuiModes.
+type TUIMode int
+
+const (
+	TUICommander TUIMode = iota // two panes, copying between them
+	TUISingle                   // one full-width pane: browse, sort, filter, delete
+	TUIUsage                    // a disk-usage scan of the starting directory
+)
+
 // Options is the fully resolved configuration for one invocation.
 type Options struct {
 	ShowHelp     bool
 	ShowVersion  bool
 	TUI          bool
-	TUIUsage     bool
+	TUIMode      TUIMode
 	TUIPaths     [2]string
 	VersionCheck bool
 	SelfUpdate   bool
@@ -507,9 +516,9 @@ func (o *Options) apply(f cpflags.Flag) error {
 	case "tui":
 		o.TUI = true
 		if f.HasValue {
-			return setChoice(&o.TUIUsage, f, lower(f.Value), tuiModes)
+			return setChoice(&o.TUIMode, f, lower(f.Value), tuiModes)
 		}
-		o.TUIUsage = Defaults().TUIUsage
+		o.TUIMode = Defaults().TUIMode
 	// --- cp ----------------------------------------------------------------
 	case "archive", "a":
 		o.NoPreserveMode = false
@@ -896,6 +905,9 @@ func (o *Options) resolveOperands(operands []string) error {
 	if o.TUI {
 		if len(operands) > 2 {
 			return usagef("--tui takes at most two starting directories")
+		}
+		if len(operands) > 1 && o.TUIMode == TUISingle {
+			return usagef("--tui=single takes at most one starting directory")
 		}
 		copy(o.TUIPaths[:], operands)
 		return nil

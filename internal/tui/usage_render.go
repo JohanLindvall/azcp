@@ -54,7 +54,11 @@ func (a *app) drawUsagePane(index, width, bottom int) {
 	}
 	a.text(2, 1, humanize.Width(label), label, a.theme.accent.Bold(true))
 	a.text(2, 2, width-4, humanize.Elide(safeText(p.loc.display()), width-4), a.theme.base.Bold(true))
-	metricX := width - 11
+	metricX, dateX := width-11, 0
+	if width >= 110 {
+		dateX = metricX - 3
+		metricX -= 15
+	}
 	extraX, shareX, graphX := 0, metricX-8, 0
 	if width >= 90 {
 		extraX = metricX - 10
@@ -71,6 +75,13 @@ func (a *app) drawUsagePane(index, width, bottom int) {
 		a.right(extraX, 3, 9, p.usageLabel(!p.showCounts), a.theme.muted)
 	}
 	a.right(shareX, 3, 7, "%", a.theme.muted)
+	if dateX > 0 {
+		heading := "Modified"
+		if p.sort.field == sortNewest {
+			heading = "Newest"
+		}
+		a.right(dateX, 3, 12, heading, a.theme.muted)
+	}
 	if graphX > 0 {
 		a.text(graphX, 3, 10, "Usage", a.theme.muted)
 	}
@@ -135,6 +146,9 @@ func (a *app) drawUsagePane(index, width, bottom int) {
 			share = fmt.Sprintf("%.1f%%", 100*float64(value)/float64(total))
 		}
 		a.right(shareX, y, 7, share, style)
+		if when := p.sort.when(e); dateX > 0 && !when.IsZero() {
+			a.right(dateX, y, 12, when.Local().Format("Jan 02 15:04"), style)
+		}
 		if graphX > 0 && known && largest > 0 {
 			filled := int(10 * float64(value) / float64(largest))
 			if value > 0 {

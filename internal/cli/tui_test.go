@@ -6,15 +6,22 @@ import "testing"
 
 func TestUsageTUIIsExplicitAndLeavesFollowingPathsAsOperands(t *testing.T) {
 	o := mustParse(t, "--tui=usage", "left", "azure://account/c")
-	if !o.TUI || !o.TUIUsage || o.TUIPaths != ([2]string{"left", "azure://account/c"}) {
+	if !o.TUI || o.TUIMode != TUIUsage || o.TUIPaths != ([2]string{"left", "azure://account/c"}) {
 		t.Fatalf("usage mode: %+v", o)
 	}
 	o = mustParse(t, "--tui", "usage")
-	if o.TUIUsage || o.TUIPaths[0] != "usage" {
+	if o.TUIMode != TUICommander || o.TUIPaths[0] != "usage" {
 		t.Fatal("optional TUI mode consumed a directory operand")
 	}
 	if _, err := Parse([]string{"--tui=invalid"}); err == nil {
 		t.Fatal("accepted an invalid TUI mode")
+	}
+	o = mustParse(t, "--tui=single", "azure://account/c")
+	if o.TUIMode != TUISingle || o.TUIPaths != ([2]string{"azure://account/c", "."}) {
+		t.Fatalf("single mode: %+v", o)
+	}
+	if _, err := Parse([]string{"--tui=single", "a", "b"}); err == nil {
+		t.Error("single mode accepted a second pane")
 	}
 }
 

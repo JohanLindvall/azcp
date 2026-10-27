@@ -76,6 +76,10 @@ func (a *app) draw() {
 	a.text(1, 0, 4, "azcp", a.theme.accent.Bold(true))
 	a.text(7, 0, 11, "Commander", a.theme.base.Bold(true))
 	hint := "u: usage · s: sort · f: counts · z: calc · Tab: panes"
+	if a.single {
+		a.text(7, 0, 11, "Browser", a.theme.base.Bold(true))
+		hint = "u: usage · s: sort · f: counts · z: calc · /: filter"
+	}
 	if w < 75 {
 		hint = "u: usage · s: sort · z: calc"
 	}
@@ -92,6 +96,8 @@ func (a *app) draw() {
 	a.right(20, 0, w-21, hint, a.theme.muted)
 	if a.panes[a.active].usage != nil {
 		a.drawUsagePane(a.active, w, h-7)
+	} else if a.single {
+		a.drawPane(0, 0, w, h-7)
 	} else {
 		left := (w - 1) / 2
 		a.drawPane(0, 0, left, h-7)
@@ -114,6 +120,9 @@ func (a *app) draw() {
 		}
 	}
 	labels := []string{"Help", "Root", "View", "Go", "Copy", "Move", "Mkdir", "Delete", "Logs", "Quit"}
+	if a.single {
+		labels[4], labels[5] = "", ""
+	}
 	for i, label := range labels {
 		x, end := i*w/10, (i+1)*w/10
 		key := fmt.Sprint(i + 1)
@@ -149,8 +158,8 @@ func (a *app) drawPane(index, x, width, bottom int) {
 	a.text(x+2, 1, min(width-4, humanize.Width(label)), humanize.Elide(label, width-4), border.Bold(active))
 	a.text(x+2, 2, width-4, humanize.Elide(safeText(p.loc.display()), width-4), pathStyle)
 	sizeWidth, dateWidth := 9, 0
-	screenWidth, _ := a.screen.Size()
-	if screenWidth >= 121 {
+	// Both panes of a pair decide together, so their columns line up.
+	if screenWidth, _ := a.screen.Size(); screenWidth >= 121 || a.single && width >= 60 {
 		dateWidth = 14
 	}
 	nameWidth := width - 7 - sizeWidth - dateWidth
@@ -162,7 +171,11 @@ func (a *app) drawPane(index, x, width, bottom int) {
 	}
 	a.right(sizeX, 3, sizeWidth, column, a.theme.muted)
 	if dateWidth > 0 {
-		a.right(sizeX+sizeWidth+1, 3, dateWidth-1, "Modified", a.theme.muted)
+		heading := "Modified"
+		if p.sort.field == sortNewest {
+			heading = "Newest"
+		}
+		a.right(sizeX+sizeWidth+1, 3, dateWidth-1, heading, a.theme.muted)
 	}
 	rows := bottom - 4
 	if p.cursor < p.offset {
@@ -222,8 +235,8 @@ func (a *app) drawPane(index, x, width, bottom int) {
 		a.text(x+1, y, 2, prefix, style)
 		a.text(x+4, y, nameWidth, humanize.Elide(safeText(name), nameWidth), style)
 		a.right(sizeX, y, sizeWidth, size, style)
-		if dateWidth > 0 && !e.modified().IsZero() {
-			a.right(sizeX+sizeWidth+1, y, dateWidth-1, e.modified().Local().Format("Jan 02 15:04"), style)
+		if when := p.sort.when(e); dateWidth > 0 && !when.IsZero() {
+			a.right(sizeX+sizeWidth+1, y, dateWidth-1, when.Local().Format("Jan 02 15:04"), style)
 		}
 	}
 	marked := 0

@@ -114,7 +114,7 @@ var specs = []cpflags.Spec{
 		Help: "transfer up to N files at once " +
 			"(default: scaled to the machine for network copies, 4 for local)"},
 	{Long: "tui", Arg: cpflags.OptionalArg, Meta: "MODE",
-		Help: "open the file manager (commander), or disk analysis (usage); operands: LEFT and RIGHT"},
+		Help: "open the file manager (commander), one pane without copying (single), or disk analysis (usage); operands: LEFT and RIGHT"},
 	{Long: "no-auto-update", Arg: cpflags.NoArg,
 		Help: "accepted for compatibility; copies only check for new versions"},
 	{Long: "no-version-check", Arg: cpflags.NoArg,

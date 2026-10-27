@@ -20,6 +20,7 @@ import (
 
 type usageTotals struct {
 	logical, disk, files, dirs int64
+	newest                     time.Time
 	incomplete, diskUnknown    bool
 	excluded                   int64
 }
@@ -167,6 +168,9 @@ func (t *usageTree) recount(ctx context.Context) error {
 			p.total.diskUnknown = p.total.diskUnknown || !n.diskKnown
 			if n.kind == store.KindFile {
 				p.total.files++
+				if n.modified.After(p.total.newest) {
+					p.total.newest = n.modified
+				}
 			}
 			if n.kind == store.KindDir && n != p {
 				p.total.dirs++

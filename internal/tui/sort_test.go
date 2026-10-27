@@ -30,7 +30,7 @@ func TestPaneSortFieldsAndDirections(t *testing.T) {
 		{name: ".."},
 		{name: "z-dir", node: &store.Node{Kind: store.KindDir, Size: 4096}},
 		file("z.txt", 2, 1), file("a.go", 4, 3), file("b.txt", 2, 3),
-		{name: "a-dir", node: &store.Node{Kind: store.KindDir, ModTime: time.Unix(2, 0)}, dirSize: &directorySize{bytes: 5}},
+		{name: "a-dir", node: &store.Node{Kind: store.KindDir, ModTime: time.Unix(2, 0)}, dirSize: &sizeTree{directorySize: directorySize{bytes: 5}}},
 	}
 	for _, tc := range []struct {
 		name string
@@ -94,9 +94,9 @@ func TestSortExtensionsAndTypes(t *testing.T) {
 func TestSortByRecursiveFileCount(t *testing.T) {
 	entries := []entry{
 		{name: ".."},
-		{name: "large", node: &store.Node{Kind: store.KindDir}, dirSize: &directorySize{bytes: 100, files: 1}},
-		{name: "many", node: &store.Node{Kind: store.KindDir}, dirSize: &directorySize{bytes: 2, files: 2}},
-		{name: "empty", node: &store.Node{Kind: store.KindDir}, dirSize: &directorySize{}},
+		{name: "large", node: &store.Node{Kind: store.KindDir}, dirSize: &sizeTree{directorySize: directorySize{bytes: 100, files: 1}}},
+		{name: "many", node: &store.Node{Kind: store.KindDir}, dirSize: &sizeTree{directorySize: directorySize{bytes: 2, files: 2}}},
+		{name: "empty", node: &store.Node{Kind: store.KindDir}, dirSize: &sizeTree{directorySize: directorySize{}}},
 		{name: "unknown", node: &store.Node{Kind: store.KindDir, Size: 4096}},
 		{name: "file", node: &store.Node{Kind: store.KindFile, Size: 999}},
 	}

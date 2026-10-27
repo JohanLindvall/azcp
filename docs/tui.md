@@ -8,6 +8,7 @@ Start the Norton Commander-style interface explicitly:
 azcp --tui
 azcp --tui ./photos azure://myaccount/backup
 azcp --tui --create-container . azure://myaccount
+azcp --tui=single azure://myaccount
 azcp --tui=usage /path/to/analyze
 azcp --tui=usage azure://myaccount/backup
 ```
@@ -17,7 +18,8 @@ to the current directory. Ordinary `azcp SOURCE DEST` commands keep their `cp`
 behavior, and an invocation without operands still reports a missing operand.
 Both stdin and stderr must be terminals.
 
-`--tui=usage` starts a live disk-usage scan and opens a full-width view of the
+`--tui=single` opens one full-width pane for browsing and deleting; see
+[single-pane mode](#single-pane-mode). `--tui=usage` starts a live disk-usage scan and opens a full-width view of the
 results. In the ordinary two-pane view, **u** scans the active directory and
 opens the same view; **u** returns to the file manager. No recursive scan runs
 unless you request one. `--tui=commander` is equivalent to plain `--tui`.
@@ -188,13 +190,22 @@ session; there is no saved-scan format.
 
 Press **s** to open the sort menu, then **1** for name, **2** for modified time,
 **3** for size, **4** for extension, **5** for entry type (directory, file,
-special file or symlink), or **6** for recursive file count. Changes apply
+special file or symlink), **6** for recursive file count, or **7** for the
+newest file inside. Changes apply
 immediately; Enter or Esc closes the menu. Inside the menu, **r** reverses the
 order and **d** toggles directories
 first. Each pane keeps its own settings during navigation and refreshes for the
 current session. The pane heading shows the field and direction: ↑ is ascending
 (oldest or smallest first), ↓ is descending. The parent stays at the top, and
 the cursor and selection marks stay with their entries.
+
+A directory's own modified time says little about its contents, and an Azure
+container's says nothing about its blobs. **7** sorts directories by the newest
+file anywhere inside, which **z** or **Z** (or a filter that needs it) finds in
+the same walk as the totals, and files by their own time. The date column shows
+the time the pane sorts by, and is headed **Newest** when that is the newest
+file inside. Unmeasured directories sort last. The usage view knows these times
+from its scan, and shows a date column in windows 110 columns or wider.
 
 Press **f**, either in the pane or in the sort menu, to switch that pane's numeric
 column between **Size** and **Files**. Selecting size or file-count sorting also
@@ -229,24 +240,59 @@ to recalculate after external changes.
 
 ## Filtering a pane
 
-Press **/** to show only the entries whose names match a filter. Each pane has
-its own, and it stays in force as that pane moves between directories and is
-refreshed, until **/** is given empty input (Ctrl-U clears the prompt). The
-pane's footer shows the filter and how many listed entries it hides.
+Press **/** to show only the entries a filter allows. The prompt lists the
+syntax, so there is nothing to memorize. Each pane has its own filter, and it
+stays in force as that pane moves between directories and refreshes, until
+**/** is given empty input (Ctrl-U clears the prompt). The footer shows the
+filter and how many listed entries it hides.
 
-A filter is a list of words separated by spaces. A plain word matches anywhere
-in a name, ignoring case: `report` shows `Q3-Report.pdf`. A word containing
-`*`, `?`, `[...]`, `{a,b}` or an extglob such as `+(a|b)` is a pattern matched
-against the whole name exactly as bash matches it, so it is case-sensitive:
-`*.go` shows `main.go` but not `README`. A name is shown when it matches any
-word; a word beginning with `-` hides what it matches instead, so
-`*.go -*_test.go` shows Go sources without their tests and `-node_modules` on
-its own hides one directory. Patterns match one name, never a path, and apply to
-directories as well as files; the parent entry is always shown.
+A filter is a list of terms separated by spaces:
 
-Applying or clearing a filter clears selection marks, so nothing out of sight
-can be copied, moved or deleted, and **Z** calculates totals only for the
-directories on show.
+| Term | Shows |
+| --- | --- |
+| `report` | names containing the word, ignoring case |
+| `*.mp4`, `IMG_????.jpg`, `*.{jpg,png}` | names matching the pattern as bash matches it, case-sensitively |
+| `name:TEXT` | the same, for a name that looks like one of the terms below |
+| `size>50M`, `size<=1G`, `>50M` | files by length, directories by recursive total |
+| `files>=100` | directories holding at least that many files |
+| `newer:7d`, `older:2024-01-01` | files by modification time, directories by the newest file inside |
+| `has:.mp4`, `has:*.mp4` | directories holding, at any depth, a file whose name matches |
+| `type:dir`, `type:file`, `type:link` | entries of that kind |
+
+Any one name term may match; every other term must hold. A leading `-` turns
+any term into an exclusion: `*.go -*_test.go` shows Go sources without their
+tests, and `-has:*.tmp` hides directories holding temporary files. Quote a
+term to include spaces: `"holiday photos"`. Sizes take `K`, `M`, `G` and `T`
+(powers of 1024). Times are a date, an RFC 3339 timestamp, or an age such as
+`7d` or `36h` before now, as with `--newer-than`. Patterns match one name,
+never a path; the parent entry is always shown.
+
+Sizes, file counts, ages and contents of directories come from walking them,
+so applying a filter that asks about them measures the directories on show in
+one walk, exactly as **Z** does, and answers every `has:` term on the way.
+The answers are kept with the directory totals, so entering a measured
+directory filters its subdirectories without walking again. A directory that
+has not been measured (for example after navigating into one under a new
+`has:` term) is kept rather than hidden; **Z** measures it. For example, at an
+Azure account root:
+
+```text
+/ type:dir size>50M has:.mp4        containers over 50 MiB holding .mp4 files
+s 7 r                               newest content first
+```
+
+Changing the filter keeps the marks on entries that remain visible and drops
+the rest, so nothing out of sight can be copied, moved or deleted. In the
+usage view the same filter applies to the current directory and reads the
+cached scan, so it never walks again.
+
+## Single-pane mode
+
+`azcp --tui=single [DIR]` opens one full-width pane, for browsing and cleaning
+up rather than copying: it lists, previews, sorts, filters, measures and
+deletes as the two-pane view does, and shows modified times at any width of
+60 columns or more. Copy, move and Tab have nothing to act on and say so.
+**u** opens the usage view, and **u** returns to the single pane.
 
 ## Transfer options
 

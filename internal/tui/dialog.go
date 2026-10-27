@@ -34,7 +34,15 @@ func (a *app) drawDialog(w, h int) {
 		}
 		field = len(content)
 		content = append(content, "> "+humanize.Elide(safeText(d.text), inner-3), "")
+		if d.action == "filter" {
+			for _, line := range filterHelp {
+				content = append(content, wrap(line, inner)...)
+			}
+		}
 		footer = "Enter: use  Ctrl-U: clear  Esc: cancel"
+		if d.fresh {
+			footer = "Type to replace  Backspace: edit  Enter: keep"
+		}
 	case "confirm":
 		content = append(content, wrap(fmt.Sprintf("%s %d %s (including contents)?", d.action, len(d.source), humanize.Plural(int64(len(d.source)), "entry", "entries")), inner)...)
 		if d.action == "Delete" {

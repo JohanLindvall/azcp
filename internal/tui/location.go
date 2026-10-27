@@ -29,7 +29,7 @@ type entry struct {
 	node *store.Node
 	// A calculated total is display state, never the directory's stat size
 	// which the copy/move inventory uses to detect changes.
-	dirSize     *directorySize
+	dirSize     *sizeTree
 	sizePending bool
 	usage       *usageNode
 }

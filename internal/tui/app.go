@@ -95,6 +95,7 @@ type dialog struct {
 	lines  []string
 	scroll int
 	action string
+	fresh  bool // the text was offered, not typed: typing replaces it
 	source []entry
 	target location
 }
@@ -138,10 +139,12 @@ type app struct {
 	workers sync.WaitGroup
 	quit    bool
 	pasting bool
+	single  bool // one pane: browsing and deleting, never copying between panes
 }
 
 func newApp(ctx context.Context, s tcell.Screen, b *backend) (*app, error) {
-	a := &app{ctx: ctx, screen: s, theme: newTheme(s.Colors()), backend: b, status: "Ready"}
+	a := &app{ctx: ctx, screen: s, theme: newTheme(s.Colors()), backend: b, status: "Ready",
+		single: b.opt.TUIMode == cli.TUISingle}
 	for i, raw := range b.opt.TUIPaths {
 		loc, err := parseLocation(raw, b.opt.EndpointSuffix)
 		if err != nil {
@@ -171,7 +174,7 @@ func (a *app) run() error {
 	a.screen.EnablePaste()
 	ticker := time.NewTicker(progress.DefaultInterval)
 	defer ticker.Stop()
-	if a.backend.opt.TUIUsage {
+	if a.backend.opt.TUIMode == cli.TUIUsage {
 		a.scanUsagePane(0, a.panes[0].loc, "", false)
 	} else {
 		a.reload()
@@ -255,12 +258,14 @@ func (a *app) setEntries(i int, loc location, entries []entry) {
 			child.gen = loc.sizes.gen
 			e.loc.sizes = child
 			if !child.stale {
-				e.dirSize = &child.directorySize
+				e.dirSize = child
 			}
 		}
 	}
 	p.loc = loc
 	p.entries, p.hidden = append([]entry{{name: "..", loc: parent}}, entries...), nil
+	// Marks belong to the previous listing's rows, not this one's.
+	p.selected, p.cursor = map[int]bool{}, 0
 	p.refilter()
 	p.cursor = min(1, len(p.entries)-1)
 }
@@ -274,9 +279,13 @@ func (a *app) reload() {
 	}
 	usage := [2]*usageTree{a.panes[0].usage, a.panes[1].usage}
 	current := [2]string{a.panes[0].usagePath(), a.panes[1].usagePath()}
+	single := a.single
 	a.start("Refreshing panes", func(ctx context.Context, progress *progress.Reporter) (any, error) {
 		var result [2]listing
 		for i, loc := range locations {
+			if single && i == 1 {
+				break
+			}
 			if usage[i] != nil {
 				result[i].usage, result[i].err = a.backend.scanUsage(ctx, usage[i].base, usage[i].oneFS, progress)
 			} else {
@@ -292,6 +301,9 @@ func (a *app) reload() {
 			return
 		}
 		for i, l := range r.value.([2]listing) {
+			if single && i == 1 {
+				break
+			}
 			if l.err != nil {
 				a.report(l.err)
 				// A failed refresh cannot leave stale entries actionable.
@@ -326,6 +338,9 @@ func (a *app) key(ev *tcell.EventKey) {
 	// Text is accepted only inside the path/name prompt, without submission.
 	if a.pasting {
 		if a.modal != nil && a.modal.kind == "input" && ev.Key() == tcell.KeyRune && ev.Rune() >= ' ' && len(a.modal.text) < 8192 {
+			if a.modal.fresh {
+				a.modal.text, a.modal.fresh = "", false
+			}
 			a.modal.text += string(ev.Rune())
 		}
 		return
@@ -353,6 +368,8 @@ func (a *app) key(ev *tcell.EventKey) {
 	switch {
 	case k == tcell.KeyF10 || k == tcell.KeyCtrlC || r == 'q':
 		a.quit = true
+	case (k == tcell.KeyTab || k == tcell.KeyBacktab) && a.single:
+		a.status = "Single-pane mode has no second pane"
 	case k == tcell.KeyTab || k == tcell.KeyBacktab:
 		a.active = 1 - a.active
 		if a.panes[a.active].entries == nil {
@@ -440,7 +457,16 @@ func (a *app) key(ev *tcell.EventKey) {
 			a.status = "Azure reports stored blob lengths; physical disk allocation is unavailable"
 		} else {
 			p.sort.allocated = !p.sort.allocated
-			p.sortEntries()
+			if p.filter.walks {
+				// The filter weighs the column shown, which has just changed.
+				var focus *usageNode
+				if p.cursor > 0 {
+					focus = p.entries[p.cursor].usage
+				}
+				p.usageEntries(focus)
+			} else {
+				p.sortEntries()
+			}
 		}
 	case r == 'x' && p.usage != nil:
 		if p.loc.url.IsRemote() {
@@ -453,13 +479,17 @@ func (a *app) key(ev *tcell.EventKey) {
 		if p.usage != nil {
 			text = p.filter.text
 		}
-		a.modal = &dialog{kind: "input", title: "Filter names: words, globs, -excluded (empty shows all)", action: "filter", text: text}
+		a.modal = &dialog{kind: "input", title: "Filter this pane", action: "filter", text: text, fresh: text != ""}
 	case r == 'i' && p.usage != nil:
 		a.usageInfo()
 	}
 }
 
 func (a *app) requestOperation(action string) {
+	if a.single && action != "Delete" {
+		a.status = action + " needs a destination pane; single-pane mode only browses and deletes"
+		return
+	}
 	p := &a.panes[a.active]
 	selected := p.selection()
 	if p.usage != nil {
@@ -538,6 +568,8 @@ func (a *app) dialogKey(ev *tcell.EventKey) {
 		}
 		return
 	}
+	fresh := d.fresh
+	d.fresh = false
 	switch k {
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		g := uniseg.NewGraphemes(d.text)
@@ -549,6 +581,9 @@ func (a *app) dialogKey(ev *tcell.EventKey) {
 	case tcell.KeyCtrlU:
 		d.text = ""
 	case tcell.KeyRune:
+		if fresh {
+			d.text = ""
+		}
 		if len(d.text) < 8192 && r >= ' ' {
 			d.text += string(r)
 		}
@@ -621,7 +656,9 @@ func (a *app) execute(d *dialog) {
 			if out.usage != nil {
 				a.setUsage(i, out.usage, current)
 				a.status = out.text
-				a.refreshOtherPane(1 - i)
+				if !a.single {
+					a.refreshOtherPane(1 - i)
+				}
 				return
 			}
 			a.status = out.text
@@ -654,15 +691,16 @@ func (a *app) preview(e entry) {
 	})
 }
 
-const help = `Two panes browse local folders, Azure accounts, containers and prefixes.
-Tab switches panes. Arrows, Home/End and Page Up/Down navigate.
+const help = `Two panes browse local folders, Azure accounts, containers and prefixes;
+--tui=single shows one, for browsing and deleting only. Tab switches panes.
+Arrows, Home/End and Page Up/Down navigate.
 Enter opens a folder or previews a file. Backspace goes to the parent.
 Space / Insert marks entries; * inverts marks. No marks means the cursor.
 
 F2 / v   Root of the current filesystem or Azure container
 F3       Read-only text preview (first 64 KiB)
 F4 / g   Go to a local path or Azure URL
-F5 / c   Copy to the other pane or an entered directory
+F5 / c   Copy to the other pane or an entered directory (two panes only)
 F6 / m   Move: copy, then remove sources only after full success
 F7 / n   Create directory (Azure container needs --create-container)
 F8 / d   Delete selected entries and their contents permanently
@@ -670,13 +708,14 @@ F9 / l   Messages, including Azure sign-in instructions
 F10 / q  Quit (cancel active work and wait for it to stop)
 Ctrl-R/r Refresh both panes
 s        Sort this pane: name, modified time, size, extension or type
-         Also sort by recursive file count (6 in the sort menu)
+         Also recursive file count (6) and newest file inside (7)
 f        Toggle this pane's size / recursive file-count column
 z / Z    Calculate directory totals: marked/cursor / all in this pane
-/        Filter this pane's names; the filter stays until cleared
-         Words match anywhere in a name, ignoring case; *.go, ?, [..],
-         {a,b} and extglobs match the whole name as bash does. A name
-         matching any word is shown; -word or -pattern hides matches.
+/        Filter this pane until cleared; the prompt lists the syntax
+         report *.mp4   names (any may match; other terms must all hold)
+         size>50M files>=100 newer:7d older:2024-01-01 type:dir
+         has:.mp4  directories holding a matching file; -term excludes
+         Directory sizes, ages and contents are measured when asked for
 u        Scan a cached disk-usage view / return to two panes
 
 Disk-usage view (also available with --tui=usage):

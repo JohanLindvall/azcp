@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
+
+	"github.com/JohanLindvall/azcp/internal/store"
 )
 
 type sortField int
@@ -20,6 +23,7 @@ const (
 	sortExtension
 	sortType
 	sortFiles
+	sortNewest
 )
 
 type paneSort struct {
@@ -30,7 +34,7 @@ type paneSort struct {
 }
 
 func (s paneSort) label() string {
-	names := [...]string{"Name", "Modified", "Size", "Extension", "Type", "Files"}
+	names := [...]string{"Name", "Modified", "Size", "Extension", "Type", "Files", "Newest"}
 	arrow := "↑"
 	if s.reverse {
 		arrow = "↓"
@@ -78,6 +82,31 @@ func (e entry) fileCount() (int64, bool) {
 	return 0, true
 }
 
+// newest is the latest modification of a file anywhere below a directory,
+// once its totals are known, and a file's own modification time. A container
+// or directory's own timestamp says nothing about when its contents changed.
+func (e entry) newest() time.Time {
+	switch {
+	case e.usage != nil && e.usage.kind == store.KindDir:
+		return e.usage.total.newest
+	case e.usage != nil:
+		return e.usage.modified
+	case !e.directory():
+		return e.modified()
+	case e.dirSize != nil:
+		return e.dirSize.newest
+	}
+	return time.Time{}
+}
+
+// when is the time the pane shows and sorts by.
+func (s paneSort) when(e entry) time.Time {
+	if s.field == sortNewest {
+		return e.newest()
+	}
+	return e.modified()
+}
+
 func extension(e entry) string {
 	if e.directory() {
 		return ""
@@ -98,8 +127,8 @@ func (s paneSort) compare(a, b entry) int {
 	}
 	n := 0
 	switch s.field {
-	case sortModified:
-		at, bt := a.modified(), b.modified()
+	case sortModified, sortNewest:
+		at, bt := s.when(a), s.when(b)
 		ak, bk := !at.IsZero(), !bt.IsZero()
 		if ak != bk {
 			return knownFirst(ak)
@@ -176,7 +205,7 @@ func (a *app) sortKey(ev *tcell.EventKey) {
 	case ev.Key() == tcell.KeyEnter:
 		a.modal = nil
 		return
-	case ev.Rune() >= '1' && ev.Rune() <= '6':
+	case ev.Rune() >= '1' && ev.Rune() <= '7':
 		p.sort.field = sortField(ev.Rune() - '1')
 		if p.sort.field == sortSize || p.sort.field == sortFiles {
 			p.showCounts = p.sort.field == sortFiles
@@ -217,7 +246,7 @@ func (p *pane) sortMenu() []string {
 	}
 	return []string{
 		"1 Name   2 Modified   3 Size",
-		"4 Extension   5 Type   6 Files",
+		"4 Extension  5 Type  6 Files  7 Newest",
 		"Current: " + p.sort.label(),
 		fmt.Sprintf("r Reverse: %s   d Dirs first: %s", onOff(p.sort.reverse), onOff(!p.sort.mixDirectories)),
 		"f Column: " + column + " (toggle)",
