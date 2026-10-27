@@ -575,7 +575,10 @@ recursive scans. Sum regular-file lengths and counts in the same walk
 without following symlinks, discard partial totals on error or cancellation,
 and keep them separate from `Node.Size`, which move inventories compare.
 Calculating the whole pane uses one `WalkAll`, preserving Azure's flat listing
-and significant empty or dot key components. Sorts must move marks and the
+and significant empty or dot key components. That walk keeps a `sizeTree` of
+one total per directory it passed, carried on `location`, so entering a sized
+directory shows its children's totals without walking again. A refresh or
+mutation advances `app.sizeGen`, which retires every older tree. Sorts must move marks and the
 cursor with the original entries, including a blob and prefix of the same name.
 
 **The usage view is a live snapshot.** `--tui=usage` or `u` requests its scan.

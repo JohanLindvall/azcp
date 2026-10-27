@@ -16,6 +16,9 @@ import (
 type location struct {
 	url    *uri.URL
 	parent *location
+	// sizes holds totals calculated earlier for the directories below this
+	// one, so entering a sized directory shows its children without a walk.
+	sizes *sizeTree
 }
 
 func (l location) display() string { return l.url.Display() }

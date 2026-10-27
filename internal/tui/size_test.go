@@ -51,7 +51,8 @@ func TestLocalDirectorySizesAreRecursiveLogicalLengths(t *testing.T) {
 		walk := &sizeWalkStore{Store: b.local}
 		b.local = walk
 		p := reporter(t)
-		sizes, err := b.directorySizes(t.Context(), loc(t, root), entries, all, p)
+		trees, err := b.directorySizes(t.Context(), loc(t, root), entries, all, p)
+		sizes := sizeTotals(trees)
 		if err != nil || !slices.Equal(sizes, want) {
 			t.Fatalf("all=%v: sizes=%v, err=%v; want %v", all, sizes, err, want)
 		}
@@ -83,7 +84,8 @@ func TestDirectorySizesDoNotFollowSymlinksAndCountHardLinkNames(t *testing.T) {
 	}
 	entries := []entry{selected(t, b, tree)}
 	for _, all := range []bool{false, true} {
-		sizes, err := b.directorySizes(t.Context(), loc(t, root), entries, all, reporter(t))
+		trees, err := b.directorySizes(t.Context(), loc(t, root), entries, all, reporter(t))
+		sizes := sizeTotals(trees)
 		if err != nil || !slices.Equal(sizes, []directorySize{{bytes: 10, files: 2}}) {
 			t.Fatalf("all=%v: sizes=%v, err=%v", all, sizes, err)
 		}
@@ -96,7 +98,8 @@ func TestDirectorySizesDoNotFollowSymlinksAndCountHardLinkNames(t *testing.T) {
 	if err := os.Symlink(outside, tree); err != nil {
 		t.Fatal(err)
 	}
-	sizes, err := b.directorySizes(t.Context(), loc(t, root), entries, false, reporter(t))
+	trees, err := b.directorySizes(t.Context(), loc(t, root), entries, false, reporter(t))
+	sizes := sizeTotals(trees)
 	if err == nil || sizes != nil {
 		t.Fatalf("followed a replaced root: %v, %v", sizes, err)
 	}
@@ -149,9 +152,13 @@ func TestAzureDirectorySizesUseFlatListingsAndExactPrefixes(t *testing.T) {
 	want := []directorySize{{18, 2}, {13, 1}, {17, 1}, {19, 1}, {}}
 	for _, all := range []bool{false, true} {
 		remote.walks = nil
-		sizes, err := b.directorySizes(t.Context(), base, entries, all, reporter(t))
+		trees, err := b.directorySizes(t.Context(), base, entries, all, reporter(t))
+		sizes := sizeTotals(trees)
 		if err != nil || !slices.Equal(sizes, want) {
 			t.Fatalf("all=%v: sizes=%v, err=%v; want %v", all, sizes, err, want)
+		}
+		if deep := trees[0].children["deep"]; deep == nil || deep.directorySize != (directorySize{11, 1}) || len(trees[0].children) != 1 {
+			t.Fatalf("all=%v: nested totals %v", all, trees[0].children)
 		}
 		walks := len(entries)
 		if all {
@@ -176,11 +183,17 @@ func TestAzureDirectorySizesUseFlatListingsAndExactPrefixes(t *testing.T) {
 	remote.nodes = nil
 	emptyComponent := add("", store.KindDir, 0)
 	add("/inside", store.KindFile, 3)
+	add("//deep/file", store.KindFile, 5)
 	add("outside", store.KindFile, 100)
 	for _, all := range []bool{false, true} {
-		sizes, err := b.directorySizes(t.Context(), base, []entry{emptyComponent}, all, reporter(t))
-		if err != nil || !slices.Equal(sizes, []directorySize{{3, 1}}) {
+		trees, err := b.directorySizes(t.Context(), base, []entry{emptyComponent}, all, reporter(t))
+		sizes := sizeTotals(trees)
+		if err != nil || !slices.Equal(sizes, []directorySize{{8, 2}}) {
 			t.Fatalf("leading slash, all=%v: %v, %v", all, sizes, err)
+		}
+		// Listings name an empty component "/", and so must the cache.
+		if empty := trees[0].children["/"]; empty == nil || empty.children["deep"] == nil || empty.children["deep"].directorySize != (directorySize{5, 1}) {
+			t.Fatalf("leading slash, all=%v: nested totals %v", all, trees[0].children)
 		}
 	}
 }
@@ -199,9 +212,13 @@ func TestDirectorySizesAtAccountLevel(t *testing.T) {
 		remote.nodes = append(remote.nodes, &store.Node{URL: base.url.WithPathPart(name), Size: 3})
 	}
 	for _, all := range []bool{false, true} {
-		sizes, err := b.directorySizes(t.Context(), base, entries, all, reporter(t))
+		trees, err := b.directorySizes(t.Context(), base, entries, all, reporter(t))
+		sizes := sizeTotals(trees)
 		if err != nil || !slices.Equal(sizes, []directorySize{{6, 2}, {3, 1}, {}}) {
 			t.Fatalf("all=%v: sizes=%v, err=%v", all, sizes, err)
+		}
+		if sub := trees[0].children["sub"]; sub == nil || sub.directorySize != (directorySize{3, 1}) {
+			t.Fatalf("all=%v: container subtotals %v", all, trees[0].children)
 		}
 	}
 }
@@ -231,7 +248,8 @@ func TestFailedDirectorySizeScansDiscardPartialTotals(t *testing.T) {
 					return fn(n)
 				}
 			}}
-			sizes, err := b.directorySizes(ctx, loc(t, root), entries, false, reporter(t))
+			trees, err := b.directorySizes(ctx, loc(t, root), entries, false, reporter(t))
+			sizes := sizeTotals(trees)
 			if sizes != nil || err == nil || failure == "cancelled" && !errors.Is(err, context.Canceled) {
 				t.Fatalf("partial result: %v, %v", sizes, err)
 			}
@@ -379,5 +397,73 @@ func TestFileCountColumnAndSortingReuseRecursiveScan(t *testing.T) {
 	finishJobs(t, a)
 	if !p.showCounts || p.sort.field != sortFiles || !p.sort.reverse || walk.walks != 1 {
 		t.Fatal("refresh lost column/sort settings or triggered a recursive scan")
+	}
+}
+
+func sizeTotals(trees []*sizeTree) []directorySize {
+	if trees == nil {
+		return nil
+	}
+	sizes := make([]directorySize, len(trees))
+	for i, t := range trees {
+		sizes[i] = t.directorySize
+	}
+	return sizes
+}
+
+func TestEnteringASizedDirectoryReusesItsTotals(t *testing.T) {
+	a, _, left, _ := testApp(t)
+	write(t, filepath.Join(left, "b", "nested", "deep", "file"), "12")
+	write(t, filepath.Join(left, "b", "top"), "1234")
+	if err := os.MkdirAll(filepath.Join(left, "b", "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	walk := &sizeWalkStore{Store: a.backend.local}
+	a.backend.local = walk
+	a.reload()
+	finishJobs(t, a)
+	p := &a.panes[0]
+	open := func(name string) {
+		t.Helper()
+		p.cursor = slices.IndexFunc(p.entries, func(e entry) bool { return e.name == name })
+		press(a, tcell.KeyEnter, 0)
+		finishJobs(t, a)
+	}
+	sizeOf := func(name string) *directorySize {
+		t.Helper()
+		i := slices.IndexFunc(p.entries, func(e entry) bool { return e.name == name })
+		if i < 0 {
+			t.Fatalf("no %s in %v", name, entryNames(p.entries))
+		}
+		return p.entries[i].dirSize
+	}
+	press(a, tcell.KeyRune, 'Z')
+	finishJobs(t, a)
+	open("b")
+	if s := sizeOf("nested"); s == nil || *s != (directorySize{2, 1}) {
+		t.Fatalf("nested total not reused: %v", s)
+	}
+	if s := sizeOf("empty"); s == nil || *s != (directorySize{}) {
+		t.Fatalf("empty directory has no cached total: %v", s)
+	}
+	open("nested")
+	if s := sizeOf("deep"); s == nil || *s != (directorySize{2, 1}) {
+		t.Fatalf("deep total not reused: %v", s)
+	}
+	press(a, tcell.KeyBackspace, 0)
+	finishJobs(t, a)
+	press(a, tcell.KeyBackspace, 0)
+	finishJobs(t, a)
+	if s := sizeOf("b"); s == nil || *s != (directorySize{6, 2}) {
+		t.Fatalf("total forgotten on the way back up: %v", s)
+	}
+	if walk.walks != 1 {
+		t.Fatalf("navigation walked again: %d walks", walk.walks)
+	}
+	press(a, tcell.KeyCtrlR, 0)
+	finishJobs(t, a)
+	open("b")
+	if s := sizeOf("nested"); s != nil {
+		t.Fatalf("refresh left a stale total: %v", s)
 	}
 }

@@ -132,6 +132,7 @@ type app struct {
 	modal   *dialog
 	status  string
 	logs    messages
+	sizeGen uint64 // advanced by a refresh; older calculated totals are stale
 	workers sync.WaitGroup
 	quit    bool
 	pasting bool
@@ -239,6 +240,20 @@ func (a *app) report(err error) {
 func (a *app) setEntries(i int, loc location, entries []entry) {
 	p := &a.panes[i]
 	parent := parentLocation(loc)
+	if loc.sizes == nil || loc.sizes.gen != a.sizeGen {
+		loc.sizes = &sizeTree{gen: a.sizeGen}
+	}
+	// Children must return to this tree, not the listing's copy of the
+	// location, or totals calculated here are forgotten on the way back up.
+	here := loc
+	for i := range entries {
+		e := &entries[i]
+		e.loc.parent = &here
+		if child := loc.sizes.children[e.name]; child != nil && e.node != nil && e.node.IsDir() {
+			child.gen = loc.sizes.gen
+			e.dirSize, e.loc.sizes = &child.directorySize, child
+		}
+	}
 	p.loc = loc
 	p.entries = append([]entry{{name: "..", loc: parent}}, entries...)
 	p.cursor, p.offset = 0, 0
@@ -248,6 +263,7 @@ func (a *app) setEntries(i int, loc location, entries []entry) {
 }
 
 func (a *app) reload() {
+	a.sizeGen++
 	locations := [2]location{a.panes[0].loc, a.panes[1].loc}
 	type listing struct {
 		entries []entry

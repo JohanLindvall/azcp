@@ -20,6 +20,30 @@ type directorySize struct {
 	bytes, files int64
 }
 
+// sizeTree keeps one total per directory the walk passed through, keyed by
+// the names the listing gives entries, so entering a sized directory needs
+// no second walk. It costs one node per directory, never one per file.
+type sizeTree struct {
+	directorySize
+	children map[string]*sizeTree
+	gen      uint64
+}
+
+func (t *sizeTree) child(name string) *sizeTree {
+	if name == "" {
+		name = "/" // How the listing names a significant empty blob-key component.
+	}
+	c := t.children[name]
+	if c == nil {
+		if t.children == nil {
+			t.children = map[string]*sizeTree{}
+		}
+		c = &sizeTree{}
+		t.children[name] = c
+	}
+	return c
+}
+
 func (a *app) calculateSizes(all bool) {
 	p := &a.panes[a.active]
 	var indices []int
@@ -46,6 +70,12 @@ func (a *app) calculateSizes(all bool) {
 		selected[i] = p.entries[row]
 	}
 	base := p.loc
+	if p.loc.sizes == nil {
+		p.loc.sizes = &sizeTree{gen: a.sizeGen}
+	}
+	if p.loc.sizes.children == nil {
+		p.loc.sizes.children = map[string]*sizeTree{}
+	}
 	a.start("Calculating directory totals", func(ctx context.Context, progress *progress.Reporter) (any, error) {
 		return a.backend.directorySizes(ctx, base, selected, all, progress)
 	}, func(r jobResult) {
@@ -53,14 +83,17 @@ func (a *app) calculateSizes(all bool) {
 			p.entries[row].sizePending = false
 		}
 		if r.err == nil {
-			sizes := r.value.([]directorySize)
+			trees := r.value.([]*sizeTree)
 			var total directorySize
 			for i, row := range indices {
-				p.entries[row].dirSize = &sizes[i]
-				total.bytes += sizes[i].bytes
-				total.files += sizes[i].files
+				e := &p.entries[row]
+				trees[i].gen = p.loc.sizes.gen
+				p.loc.sizes.children[e.name] = trees[i]
+				e.dirSize, e.loc.sizes = &trees[i].directorySize, trees[i]
+				total.bytes += trees[i].bytes
+				total.files += trees[i].files
 			}
-			a.status = fmt.Sprintf("%d directories: %s in %s files (logical sizes)", len(sizes), humanize.Bytes(total.bytes), humanize.Count(total.files))
+			a.status = fmt.Sprintf("%d directories: %s in %s files (logical sizes)", len(trees), humanize.Bytes(total.bytes), humanize.Count(total.files))
 		}
 		p.sortEntries()
 	})
@@ -68,24 +101,43 @@ func (a *app) calculateSizes(all bool) {
 }
 
 // directorySizes adds metadata lengths, never reads file bodies, and retains
-// only one total per selected directory. A failed or cancelled walk supplies
-// no totals: a partial listing must not masquerade as an empty or small tree.
-func (b *backend) directorySizes(ctx context.Context, base location, selected []entry, all bool, p *progress.Reporter) ([]directorySize, error) {
-	sizes := make([]directorySize, len(selected))
+// one total per directory below each selection. A failed or cancelled walk
+// supplies no totals: a partial listing must not masquerade as an empty or
+// small tree.
+func (b *backend) directorySizes(ctx context.Context, base location, selected []entry, all bool, p *progress.Reporter) ([]*sizeTree, error) {
+	trees := make([]*sizeTree, len(selected))
+	for i := range trees {
+		trees[i] = &sizeTree{}
+	}
 	p.SetScanning(true)
 	var total int64
-	add := func(i int, n *store.Node) error {
+	// path names n's location below selection i, and is empty for the
+	// selection itself. Every total along it shares the file's bytes.
+	add := func(i int, path []string, n *store.Node) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if i < 0 || !n.IsRegular() {
+		t := trees[i]
+		if n.IsDir() {
+			for _, name := range path {
+				t = t.child(name)
+			}
+			return nil
+		}
+		if !n.IsRegular() || len(path) == 0 {
 			return nil
 		}
 		if n.Size < 0 || n.Size > math.MaxInt64-total {
 			return errors.New("directory size exceeds the supported range")
 		}
-		sizes[i].bytes += n.Size
-		sizes[i].files++
+		for j := 0; ; j++ {
+			t.bytes += n.Size
+			t.files++
+			if j == len(path)-1 {
+				break
+			}
+			t = t.child(path[j])
+		}
 		total += n.Size
 		p.Plan(1, n.Size)
 		return nil
@@ -112,7 +164,8 @@ func (b *backend) directorySizes(ctx context.Context, base location, selected []
 		err := walk(base.url, func(n *store.Node) error {
 			if name, below := sizeChildName(base.url, n.URL, false); below {
 				if i, ok := children[name]; ok {
-					return add(i, n)
+					path, _ := sizePath(base.url, base.url.Key != "", n.URL)
+					return add(i, path[1:], n)
 				}
 			}
 			return ctx.Err()
@@ -120,7 +173,7 @@ func (b *backend) directorySizes(ctx context.Context, base location, selected []
 		if err != nil {
 			return nil, err
 		}
-		return sizes, nil
+		return trees, nil
 	}
 	for i, e := range selected {
 		u := nodeURL(e.node)
@@ -137,15 +190,55 @@ func (b *backend) directorySizes(ctx context.Context, base location, selected []
 		if err := walk(u, func(n *store.Node) error {
 			// The empty component at a container root has the same URL key
 			// as the container. Only names starting with "/" belong to it.
-			if u.IsRemote() && base.url.Container != "" && !strings.HasPrefix(n.URL.Key, u.Key+"/") {
+			path, below := sizePath(u, base.url.Container != "", n.URL)
+			if !below {
 				return ctx.Err()
 			}
-			return add(i, n)
+			return add(i, path, n)
 		}); err != nil {
 			return nil, err
 		}
 	}
-	return sizes, nil
+	return trees, nil
+}
+
+// sizePath splits the location of child below root into the names the
+// listing gives each level. prefixed says root is a prefix inside a
+// container, whose children follow a "/" even when its own key is empty.
+func sizePath(root *uri.URL, prefixed bool, child *uri.URL) ([]string, bool) {
+	var rel string
+	switch {
+	case !root.IsRemote():
+		path, err := filepath.Rel(root.Path, child.Path)
+		if err != nil || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
+			return nil, false
+		}
+		if path == "." {
+			return nil, true
+		}
+		return strings.Split(filepath.ToSlash(path), "/"), true
+	case root.Container == "":
+		if child.Container == "" {
+			return nil, false
+		}
+		if child.Key == "" {
+			return []string{child.Container}, true
+		}
+		return append([]string{child.Container}, strings.Split(child.Key, "/")...), true
+	case child.Container != root.Container:
+		return nil, false
+	case prefixed:
+		var ok bool
+		if rel, ok = strings.CutPrefix(child.Key, root.Key+"/"); !ok {
+			return nil, false
+		}
+	default:
+		if child.Key == "" {
+			return nil, true
+		}
+		rel = child.Key
+	}
+	return strings.Split(rel, "/"), true
 }
 
 // Preserve significant empty components and dot components in blob names.
