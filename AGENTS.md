@@ -573,10 +573,22 @@ selection completely, never follows local symlinks, and uses anchored local
 roots. Azure files are removed by exact name and ETag (`RemoveBlob`); prefixes
 use `RemoveMarker`, never the file-first fallback in `Remove`. Containers may
 be deleted but never moved, and go whole through `RemoveContainer` without a
-blob listing first; accounts are never removed. The Azure
+blob listing first; accounts are never removed. The `/` entry a container root
+lists for blob names beginning with `/` has the container's own URL, since no
+URL can name that prefix, so `sharesContainerURL` refuses every operation on
+it; taken for the container, it let `--select type:dir` delete a whole one. The Azure
 hierarchy is the storage account, its containers, and nested blob prefixes;
 it is exposed directly as directories, without a separate collection or
 mount configuration.
+
+**A batch removal judges what it removes.** `--rm --select` picks on one
+measuring walk and then lists each selection in full, and `rejudge` weighs the
+filter again on that inventory — exactly what `remove` takes, under its inode,
+parent and ETag checks — so nothing written after the measurement goes
+unjudged. A container is deleted whole without a listing, so at an account the
+filter may not weigh contents. Operands that another one contains are taken
+with it (`covered`) rather than failing on what it already removed, and an
+operand ending in `.` or `..` is refused, as rm refuses it.
 
 **TUI directory totals are optional display state.** In the two-pane view,
 `z` and `Z` request them;
@@ -695,7 +707,10 @@ build tag in `tokencache_persist.go` with an in-memory stand-in beside it.
   (`azcp: cannot stat 'x': No such file or directory`). The location is named
   by the engine, so store-level errors return the cause unadorned.
 - New options: extensions get long names; short forms are reserved for `cp`'s
-  own, with `-j` the sole exception since `cp` does not define it.
+  own, with `-j` the sole exception since `cp` does not define it. A long name
+  must not begin one of `cp`'s, because getopt takes an unambiguous prefix as
+  that option: `--remove` is `cp`'s `--remove-destination`.
+  `TestNoExtensionBeginsACpOption` holds it.
 - An option that takes one of a fixed set of words goes through `choose` in
   `cli/options.go`, with its values listed once in the order `--help` gives
   them; the rejection message is derived from that list, not written by hand.

@@ -214,28 +214,43 @@ azcp -r --select 'type:dir has:*.mp4' azure://acct/media/ ./clips/
 azcp -r --select 'older:90d -*.keep' ./scratch azure://acct/archive/
 ```
 
-`--remove` deletes instead of copying, and by default only lists what it would
+`--rm` deletes instead of copying, and by default only lists what it would
 delete, with each entry's size and file count and a total on stderr. Add `--yes`
 to delete. Without `--select` it removes the operands themselves. As with `rm`,
-a directory needs `-r`, and `-v` names each entry as it goes:
+a directory needs `-r`, `-v` names each entry as it goes, and an operand ending
+in `.` or `..` is refused. It is not called `--remove` because `cp` reads that
+as its own `--remove-destination`, abbreviated.
 
 ```
-azcp --remove -r --select 'older:2024-01-01' azure://acct/logs/       # lists
-azcp --remove -r --select 'older:2024-01-01' --yes azure://acct/logs/ # deletes
-azcp --remove -r --select 'type:dir size>10G' azure://acct/            # whole containers
+azcp --rm -r --select 'older:2024-01-01' azure://acct/logs/       # lists
+azcp --rm -r --select 'older:2024-01-01' --yes azure://acct/logs/ # deletes
+azcp --rm -r --select 'tmp-* scratch-*' azure://acct/              # whole containers
 ```
 
 A filter is weighed exactly as a pane weighs it, with one difference: a
 directory the filter cannot judge is left out rather than kept. Directories are
 always measured, in one walk, when the filter asks about their sizes, ages or
 contents, so in practice this means a directory with no files, which has no
-age, is never `older:` anything. Removal keeps the file manager's guarantees:
-every selection is listed in full before anything is deleted, local symbolic
-links are removed and never followed, a blob is deleted only if it is still the
-version that was listed, and a container goes in one request. Operands are
-taken literally, without wildcard expansion: the filter is the pattern.
-`--remove` accepts only options that make sense without a copy, and
-`--output=json` writes one `would-remove` or `removed` event per entry.
+age, is never `older:` anything. A plain word matches any name that contains
+it, ignoring case, while a pattern must match the whole name: `log` picks
+`catalog` too, and `log*` does not.
+
+Removal keeps the file manager's guarantees: every selection is listed in full
+before anything is deleted, local symbolic links are removed and never
+followed, and a blob is deleted only if it is still the version that was
+listed. The filter is weighed again on that listing, so whatever was written
+or changed after the selection was made is judged as it now stands, and an
+entry that no longer matches is kept. A container goes whole, in one request,
+with anything written to it meanwhile, so at an account root `--select` may
+choose containers by name or type, but not by what they hold. Blob names that
+begin with `/` appear at a container root as a directory called `/`, which no
+URL names apart from the container, so that entry is refused rather than
+taken for the container; name such blobs one at a time, as
+`azure://acct/c/%2Fname`. An operand inside another is removed with it.
+Operands are taken literally, without wildcard expansion: the filter is the
+pattern. `--rm` accepts only options that make sense without a copy, and
+`--output=json` writes one `would-remove` or `removed` event per entry, an
+`error` event for each failure, and a closing `summary`.
 
 ## Archiving a tree
 
@@ -664,8 +679,8 @@ Added by `azcp`:
 | `--include=PATTERN` | copy only matching entries; repeatable |
 | `--files-from=FILE` | read further sources from FILE, one per line; `-` is standard input |
 | `--select=FILTER` | act on the entries of each source directory the filter picks (see [batches](#selecting-and-removing-in-batches)) |
-| `--remove` | delete the operands or the selection; lists only, unless `--yes` |
-| `--yes` | carry out `--remove` |
+| `--rm` | delete the operands or the selection; lists only, unless `--yes` |
+| `--yes` | carry out `--rm` |
 | `--put-md5` | record a checksum on each uploaded blob |
 | `--check-md5=WHEN` | `off`, `warn`, `fail` (default), `require` |
 | `--bwlimit=RATE` | cap throughput, in bytes per second |

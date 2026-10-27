@@ -3,15 +3,23 @@
 package tui
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/JohanLindvall/azcp/internal/cli"
+	"github.com/JohanLindvall/azcp/internal/logx"
+	"github.com/JohanLindvall/azcp/internal/store"
+	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
 func batchTree(t *testing.T) string {
@@ -117,5 +125,195 @@ func TestRemoveNeedsRecursionForADirectory(t *testing.T) {
 	o.Sources = []string{filepath.Join(root, "missing")}
 	if _, err := Remove(t.Context(), o, log); err == nil {
 		t.Fatal("removed something that is not there")
+	}
+}
+
+// output collects what a run writes for the terminal, a line at a time.
+func output(t *testing.T) func() []string {
+	t.Helper()
+	var mu sync.Mutex
+	var lines []string
+	logx.SetTerminalSink(func(s string) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, strings.Split(strings.TrimSuffix(s, "\n"), "\n")...)
+	})
+	t.Cleanup(func() { logx.SetTerminalSink(nil) })
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(lines)
+	}
+}
+
+func TestRemoveRefusesDotOperandsAndTheEmptyName(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a", "b", "c", "f"), "keep")
+	// Inside the temporary tree, so a regression removes nothing else.
+	t.Chdir(filepath.Join(root, "a", "b"))
+	log := slog.New(slog.DiscardHandler)
+	o := cli.Defaults()
+	o.Remove, o.Recursive, o.Confirmed = true, true, true
+	o.Sources = []string{".", "..", "c/.", "c/..", "c/./", "./"}
+	if runtime.GOOS == "windows" {
+		o.Sources = append(o.Sources, filepath.VolumeName(root))
+	}
+	lines := output(t)
+	failed, err := Remove(t.Context(), o, log)
+	if err != nil || failed != len(o.Sources) {
+		t.Fatalf("got %d failures, %v; want every operand refused", failed, err)
+	}
+	read(t, filepath.Join(root, "a", "b", "c", "f"), "keep")
+	if got := lines(); !slices.Contains(got, "azcp: refusing to remove '.' or '..' directory: skipping '..'") {
+		t.Errorf("refusal not reported as rm reports it: %q", got)
+	}
+	o.Sources = []string{""}
+	if _, err := Remove(t.Context(), o, log); err == nil || !strings.Contains(err.Error(), "cannot remove '': No such file or directory") {
+		t.Fatalf("the empty name: %v", err)
+	}
+	o.Select, o.Sources = "*", []string{""}
+	if _, err := Remove(t.Context(), o, log); err == nil {
+		t.Fatal("selected from the empty name")
+	}
+	read(t, filepath.Join(root, "a", "b", "c", "f"), "keep")
+}
+
+// hooked lets a test change the tree at the moments a race would.
+type hooked struct {
+	store.Store
+	beforeStat, afterWalk func(path string)
+}
+
+func (s *hooked) Stat(ctx context.Context, u *uri.URL, follow bool) (*store.Node, error) {
+	if s.beforeStat != nil {
+		s.beforeStat(u.Path)
+	}
+	return s.Store.Stat(ctx, u, follow)
+}
+
+func (s *hooked) WalkAll(ctx context.Context, u *uri.URL, onError func(*uri.URL, error) error, fn func(*store.Node) error) error {
+	err := s.Store.WalkAll(ctx, u, onError, fn)
+	if s.afterWalk != nil {
+		s.afterWalk(u.Path)
+	}
+	return err
+}
+
+func TestRemoveWeighsTheFilterOnWhatItRemoves(t *testing.T) {
+	root := t.TempDir()
+	past := time.Now().AddDate(-2, 0, 0)
+	for _, f := range []string{"busy/stale.log", "idle/stale.log", "old.log"} {
+		write(t, filepath.Join(root, f), "stale")
+		if err := os.Chtimes(filepath.Join(root, f), past, past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := testBackend(t)
+	o := batchOptions(root, "older:30d")
+	o.Remove, o.Recursive, o.Confirmed = true, true, true
+	b.opt = *o
+	b.local = &hooked{Store: b.local,
+		// After the walk that measured busy, before the one listing it for removal.
+		afterWalk: func(path string) {
+			if path == filepath.ToSlash(root) {
+				write(t, filepath.Join(root, "busy", "fresh.txt"), "written meanwhile")
+			}
+		},
+		// After the listing that judged it, before the stat it is removed by.
+		beforeStat: func(path string) {
+			if strings.HasSuffix(path, "/old.log") {
+				write(t, filepath.Join(root, "old.log"), "rewritten meanwhile")
+			}
+		},
+	}
+	lines := output(t)
+	if failed, err := b.removeBatch(t.Context(), o); err != nil || failed != 0 {
+		t.Fatalf("remove: %d, %v", failed, err)
+	}
+	read(t, filepath.Join(root, "busy", "fresh.txt"), "written meanwhile")
+	read(t, filepath.Join(root, "old.log"), "rewritten meanwhile")
+	if _, err := os.Lstat(filepath.Join(root, "idle")); !os.IsNotExist(err) {
+		t.Fatalf("the directory nobody touched survived: %v", err)
+	}
+	if got := strings.Join(lines(), "\n"); !strings.Contains(got, "kept '"+filepath.Join(root, "busy")+"'") {
+		t.Errorf("kept directory not reported: %s", got)
+	}
+}
+
+func TestRemoveRefusesToWeighContainersItDeletesWhole(t *testing.T) {
+	o := cli.Defaults()
+	o.Remove, o.Recursive, o.Select = true, true, "type:dir older:30d"
+	o.Sources = []string{"azure://account/"}
+	var usage *cli.UsageError
+	if _, err := Remove(t.Context(), o, slog.New(slog.DiscardHandler)); !errors.As(err, &usage) {
+		t.Fatalf("weighed whole containers: %v", err)
+	}
+}
+
+func TestRemoveTakesNestedAndRepeatedOperandsOnce(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "d", "sub", "x"), "x")
+	write(t, filepath.Join(root, "d", "y"), "y")
+	write(t, filepath.Join(root, "f"), "f")
+	o := cli.Defaults()
+	o.Remove, o.Recursive, o.Confirmed = true, true, true
+	o.Sources = []string{filepath.Join(root, "d", "sub"), filepath.Join(root, "d"), filepath.Join(root, "f"), filepath.Join(root, "f")}
+	if failed, err := Remove(t.Context(), o, slog.New(slog.DiscardHandler)); err != nil || failed != 0 {
+		t.Fatalf("got %d failures, %v", failed, err)
+	}
+	for _, gone := range []string{"d", "f"} {
+		if _, err := os.Lstat(filepath.Join(root, gone)); !os.IsNotExist(err) {
+			t.Errorf("%s survived: %v", gone, err)
+		}
+	}
+}
+
+func TestRemoveNamesWhatItCouldNotRemove(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory its owner cannot write to")
+	}
+	root := t.TempDir()
+	locked := filepath.Join(root, "d", "locked")
+	write(t, filepath.Join(locked, "x"), "x")
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	t.Chdir(root)
+	o := cli.Defaults()
+	o.Remove, o.Recursive, o.Confirmed = true, true, true
+	o.Sources = []string{"d"}
+	lines := output(t)
+	if failed, err := Remove(t.Context(), o, slog.New(slog.DiscardHandler)); err != nil || failed != 1 {
+		t.Fatalf("got %d failures, %v", failed, err)
+	}
+	if got := lines(); !slices.Contains(got, "azcp: cannot remove 'd/locked/x': Permission denied") {
+		t.Errorf("the failure does not name its file as rm would: %q", got)
+	}
+}
+
+func TestRemoveInJSONReportsFailuresAndASummary(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "f"), "f")
+	write(t, filepath.Join(root, "d", "x"), "x")
+	o := cli.Defaults()
+	o.Remove, o.Confirmed, o.Output = true, true, cli.OutputJSON
+	o.Sources = []string{filepath.Join(root, "d"), filepath.Join(root, "f")}
+	lines := output(t)
+	if failed, err := Remove(t.Context(), o, slog.New(slog.DiscardHandler)); err != nil || failed != 1 {
+		t.Fatalf("got %d failures, %v", failed, err)
+	}
+	var events []map[string]any
+	for _, line := range lines() {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("not JSON: %q", line)
+		}
+		events = append(events, event)
+	}
+	if len(events) != 3 || events[0]["event"] != "error" || events[0]["path"] != filepath.Join(root, "d") ||
+		events[1]["event"] != "removed" || events[2]["event"] != "summary" ||
+		events[2]["removed"] != 1.0 || events[2]["failed"] != 1.0 {
+		t.Fatalf("events: %v", events)
 	}
 }

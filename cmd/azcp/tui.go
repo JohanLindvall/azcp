@@ -30,7 +30,7 @@ func runTUI(opt *cli.Options) int {
 	return exitOK
 }
 
-// runRemove deletes, or by default lists, what --remove names.
+// runRemove deletes, or by default lists, what --rm names.
 func runRemove(opt *cli.Options) int {
 	logger, closer, err := logx.Init(logx.Config{Level: opt.LogLevel, Format: opt.LogFormat,
 		File: opt.LogFile, Color: colorSupported()})
@@ -47,7 +47,11 @@ func runRemove(opt *cli.Options) int {
 		logx.Errf("%s: interrupted\n", cli.Program)
 		return exitFail
 	case err != nil:
-		logx.Errf("%s: %v\n", cli.Program, err)
+		// In JSON the failure is already an event; only a command-line
+		// problem stays out of that stream.
+		if opt.Output != cli.OutputJSON || isUsage(err) {
+			logx.Errf("%s: %v\n", cli.Program, err)
+		}
 		if isUsage(err) {
 			logx.Errf("Try '%s --help' for more information.\n", cli.Program)
 		}

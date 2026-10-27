@@ -9,16 +9,19 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"golang.org/x/term"
 
 	"github.com/JohanLindvall/azcp/internal/cli"
 	"github.com/JohanLindvall/azcp/internal/engine"
 	"github.com/JohanLindvall/azcp/internal/progress"
+	"github.com/JohanLindvall/azcp/internal/retryx"
 	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/store/azure"
 	"github.com/JohanLindvall/azcp/internal/store/local"
@@ -143,6 +146,9 @@ func (b *backend) transfer(ctx context.Context, selected []entry, target locatio
 		if e.node == nil {
 			return errors.New("select a file or directory first")
 		}
+		if sharesContainerURL(e) {
+			return errSharedURL
+		}
 		if move {
 			if err := movable(e); err != nil {
 				return err
@@ -157,14 +163,14 @@ func (b *backend) transfer(ctx context.Context, selected []entry, target locatio
 		return errors.New("nothing selected")
 	}
 	o.Jobs = o.JobsFor(u.IsRemote() || slices.ContainsFunc(selected, func(e entry) bool { return e.loc.url.IsRemote() }))
-	var before [][]*store.Node
+	var before []inventoried
 	if move {
 		before, err = b.inventory(ctx, selected)
 		if err != nil {
 			return err
 		}
 		for _, tree := range before {
-			for _, n := range tree {
+			for _, n := range tree.nodes {
 				if n.Kind == store.KindOther {
 					return fmt.Errorf("cannot move special file %s", n.URL.Display())
 				}
@@ -231,10 +237,24 @@ func removable(e entry) error {
 		if u.Container == "" {
 			return errors.New("an Azure account cannot be moved or deleted; select its containers")
 		}
+		if sharesContainerURL(e) {
+			return errSharedURL
+		}
 	} else if filepath.Dir(u.Path) == filepath.Clean(u.Path) {
 		return errors.New("filesystem roots cannot be moved or deleted")
 	}
 	return nil
+}
+
+// errSharedURL refuses the entry a container root lists for the blob names
+// that begin with "/". No URL addresses those names apart from the container
+// itself, so copying, moving or deleting the entry would take every blob in it.
+var errSharedURL = errors.New(`"/" at a container root has the container's own URL, so it cannot be copied, moved or deleted as one directory`)
+
+// sharesContainerURL reports the entry errSharedURL refuses: listed inside a
+// container, yet addressed as the container.
+func sharesContainerURL(e entry) bool {
+	return e.loc.url != nil && isContainer(e.loc.url) && e.loc.parent != nil && e.loc.parent.url.Container != ""
 }
 
 // movable is removable, less containers: a move would recreate one
@@ -252,53 +272,131 @@ func movable(e entry) error {
 
 func isContainer(u *uri.URL) bool { return u.IsRemote() && u.Container != "" && u.Key == "" }
 
-func (b *backend) inventory(ctx context.Context, selected []entry) ([][]*store.Node, error) {
-	var trees [][]*store.Node
+// inventoried is one selection listed in full: the selected node first, then
+// everything below it. A local selection also keeps the directory it was found
+// in, because removing it follows the path to that directory again.
+type inventoried struct {
+	nodes  []*store.Node
+	parent fs.FileInfo
+}
+
+// errSelectionChanged says a selection is no longer the kind of thing that
+// was selected.
+var errSelectionChanged = errors.New("selected entry changed; refresh before trying again")
+
+// errChanged says a removal found something other than what was listed.
+var errChanged = errors.New("changed since it was listed; left in place")
+
+func (b *backend) inventory(ctx context.Context, selected []entry) ([]inventoried, error) {
+	var trees []inventoried
 	for _, e := range selected {
-		if err := removable(e); err != nil {
-			return nil, err
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		s := b.store(e.loc.url)
-		n, err := s.Stat(ctx, nodeURL(e.node), false)
+		tree, err := b.inventoryOne(ctx, e)
 		if err != nil {
 			return nil, err
-		}
-		if n.Kind != e.node.Kind {
-			return nil, errors.New("selected entry changed; refresh before trying again")
-		}
-		tree := []*store.Node{n}
-		seen := map[string]int{nodeKey(n): 0}
-		// A container is deleted in one request, so listing its blobs would
-		// only delay that; the stat has already shown it is there to delete.
-		if n.IsDir() && !isContainer(n.URL) {
-			err = s.WalkAll(ctx, n.URL, func(_ *uri.URL, err error) error { return err }, func(child *store.Node) error {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				key := nodeKey(child)
-				if index, ok := seen[key]; ok {
-					// A prefix stat synthesizes the root; its own marker can
-					// also arrive in the flat walk. Keep one entry, with the
-					// marker's properties when it exists.
-					if child.ETag != "" {
-						tree[index] = child
-					}
-				} else {
-					seen[key] = len(tree)
-					tree = append(tree, child)
-				}
-				return nil
-			})
-			if err != nil {
-				return nil, fmt.Errorf("cannot list %s in full: %w", n.URL.Display(), err)
-			}
 		}
 		trees = append(trees, tree)
 	}
 	return trees, nil
+}
+
+func (b *backend) inventoryOne(ctx context.Context, e entry) (inventoried, error) {
+	if err := removable(e); err != nil {
+		return inventoried{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return inventoried{}, err
+	}
+	s := b.store(e.loc.url)
+	n, err := s.Stat(ctx, nodeURL(e.node), false)
+	if err != nil {
+		return inventoried{}, err
+	}
+	if n.Kind != e.node.Kind {
+		return inventoried{}, errSelectionChanged
+	}
+	tree := inventoried{nodes: []*store.Node{n}}
+	if !n.URL.IsRemote() {
+		if tree.parent, err = os.Stat(filepath.Dir(n.URL.Path)); err != nil {
+			return inventoried{}, err
+		}
+	}
+	seen := map[string]int{nodeKey(n): 0}
+	// A container is deleted in one request, so listing its blobs would
+	// only delay that; the stat has already shown it is there to delete.
+	if n.IsDir() && !isContainer(n.URL) {
+		err = s.WalkAll(ctx, n.URL, func(_ *uri.URL, err error) error { return err }, func(child *store.Node) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			key := nodeKey(child)
+			if index, ok := seen[key]; ok {
+				// A prefix stat synthesizes the root; its own marker can
+				// also arrive in the flat walk. Keep one entry, with the
+				// marker's properties when it exists.
+				if child.ETag != "" {
+					tree.nodes[index] = child
+				}
+			} else {
+				seen[key] = len(tree.nodes)
+				tree.nodes = append(tree.nodes, child)
+			}
+			return nil
+		})
+		if err != nil {
+			return inventoried{}, &listError{url: n.URL, err: err}
+		}
+	}
+	return tree, nil
+}
+
+// listError is a selection that could not be listed in full, which leaves
+// nothing in it safe to remove.
+type listError struct {
+	url *uri.URL
+	err error
+}
+
+func (e *listError) Error() string {
+	why := reason(e.err)
+	var pe *fs.PathError
+	if errors.As(e.err, &pe) {
+		// The walk names the directory it could not read; that is the news.
+		why = engine.Quote(pe.Path) + ": " + why
+	}
+	return fmt.Sprintf("cannot list %s in full: %s", engine.Quote(e.url.Display()), why)
+}
+
+func (e *listError) Unwrap() error { return e.err }
+
+// removeError names what a removal stopped at, which may lie deep inside the
+// selection it came from.
+type removeError struct {
+	node *store.Node
+	err  error
+}
+
+func (e *removeError) Error() string {
+	return fmt.Sprintf("cannot remove %s: %s", engine.Quote(e.node.URL.Display()), reason(e.err))
+}
+
+func (e *removeError) Unwrap() error { return e.err }
+
+// reason words a failure the way rm does: the system's message for a
+// filesystem error and a service failure's status and code, never the SDK's
+// dump of the whole exchange.
+func reason(err error) string {
+	var pe *fs.PathError
+	var re *azcore.ResponseError
+	switch {
+	case store.IsNotExist(err):
+		return "No such file or directory"
+	case errors.As(err, &pe):
+		return engine.Sentence(pe.Err)
+	case errors.As(err, &re) && re.StatusCode == http.StatusPreconditionFailed:
+		// The delete named the revision that was listed, and it is gone.
+		return errChanged.Error()
+	}
+	return retryx.Describe(err)
 }
 
 func nodeKey(n *store.Node) string {
@@ -313,19 +411,22 @@ func sameNode(a, b *store.Node) bool {
 	return a.Info == nil || b.Info != nil && os.SameFile(a.Info, b.Info)
 }
 
-func sameInventory(a, b [][]*store.Node) bool {
+func sameInventory(a, b []inventoried) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i, tree := range a {
-		if len(tree) != len(b[i]) {
+		if len(tree.nodes) != len(b[i].nodes) {
+			return false
+		}
+		if tree.parent != nil && (b[i].parent == nil || !os.SameFile(tree.parent, b[i].parent)) {
 			return false
 		}
 		byName := map[string]*store.Node{}
-		for _, n := range tree {
+		for _, n := range tree.nodes {
 			byName[nodeKey(n)] = n
 		}
-		for _, n := range b[i] {
+		for _, n := range b[i].nodes {
 			old := byName[nodeKey(n)]
 			if old == nil || !sameNode(old, n) {
 				return false
@@ -345,29 +446,31 @@ func (b *backend) delete(ctx context.Context, selected []entry) error {
 	return b.remove(ctx, trees)
 }
 
-func (b *backend) remove(ctx context.Context, trees [][]*store.Node) error {
+func (b *backend) remove(ctx context.Context, trees []inventoried) error {
 	for _, tree := range trees {
-		if !tree[0].URL.IsRemote() {
+		top := tree.nodes[0]
+		if !top.URL.IsRemote() {
 			if err := removeLocal(ctx, tree); err != nil {
 				return err
 			}
 			continue
 		}
-		if isContainer(tree[0].URL) {
+		if isContainer(top.URL) {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if err := b.remote.RemoveContainer(ctx, tree[0].URL); err != nil {
-				return fmt.Errorf("cannot remove %s: %w", tree[0].URL.Display(), err)
+			if err := b.remote.RemoveContainer(ctx, top.URL); err != nil {
+				return &removeError{node: top, err: err}
 			}
 			continue
 		}
 		// WalkAll may interleave key ranges. Depth, not arrival order, says
 		// which marker can be removed after all its children.
-		slices.SortStableFunc(tree, func(a, b *store.Node) int {
+		nodes := slices.Clone(tree.nodes)
+		slices.SortStableFunc(nodes, func(a, b *store.Node) int {
 			return strings.Count(b.URL.Key, "/") - strings.Count(a.URL.Key, "/")
 		})
-		for _, n := range tree {
+		for _, n := range nodes {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -381,63 +484,77 @@ func (b *backend) remove(ctx context.Context, trees [][]*store.Node) error {
 				err = b.remote.RemoveBlob(ctx, n)
 			}
 			if err != nil {
-				return fmt.Errorf("cannot remove %s: %w", n.URL.Display(), err)
+				return &removeError{node: n, err: err}
 			}
 		}
 	}
 	return nil
 }
 
-func removeLocal(ctx context.Context, tree []*store.Node) error {
-	top := tree[0]
+func removeLocal(ctx context.Context, tree inventoried) error {
+	top := tree.nodes[0]
+	fail := func(n *store.Node, err error) error { return &removeError{node: n, err: err} }
 	parent, err := os.OpenRoot(filepath.Dir(top.URL.Path))
 	if err != nil {
-		return err
+		return fail(top, err)
 	}
 	defer parent.Close()
+	// The path to the selection is followed again here. A directory swapped
+	// in on the way could hold a hard link to a selected file, which would
+	// pass for it, so the directory itself has to be the one listed.
+	if tree.parent != nil {
+		here, err := parent.Stat(".")
+		if err != nil {
+			return fail(top, err)
+		}
+		if !os.SameFile(tree.parent, here) {
+			return fail(top, errChanged)
+		}
+	}
 	base := filepath.Base(top.URL.Path)
 	info, err := parent.Lstat(base)
 	if err != nil {
-		return err
+		return fail(top, err)
 	}
 	if top.Info == nil || !os.SameFile(top.Info, info) || top.Kind == store.KindDir && !info.IsDir() {
-		return errors.New("source changed before removal; retained")
+		return fail(top, errChanged)
 	}
 	if top.IsDir() {
 		root, err := parent.OpenRoot(base)
 		if err != nil {
-			return err
+			return fail(top, err)
 		}
 		defer root.Close()
 		opened, err := root.Stat(".")
 		if err != nil {
-			return err
+			return fail(top, err)
 		}
 		if !os.SameFile(top.Info, opened) {
-			return errors.New("source directory changed before removal; retained")
+			return fail(top, errChanged)
 		}
 		// An anchored root prevents an intervening directory symlink from
 		// making a recursive removal reach outside the selected tree.
-		slices.SortStableFunc(tree[1:], func(a, b *store.Node) int {
+		below := slices.Clone(tree.nodes[1:])
+		slices.SortStableFunc(below, func(a, b *store.Node) int {
 			return strings.Count(b.URL.Path, "/") - strings.Count(a.URL.Path, "/")
 		})
-		for _, n := range tree[1:] {
+		for _, n := range below {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			rel, err := filepath.Rel(top.URL.Path, n.URL.Path)
 			if err != nil {
-				return err
+				return fail(n, err)
 			}
 			fi, err := root.Lstat(rel)
 			if err != nil {
-				return err
+				return fail(n, err)
 			}
 			if !unchangedLocal(n, fi) {
-				return errors.New("source changed before removal; retained")
+				return fail(n, errChanged)
 			}
 			if err := root.Remove(rel); err != nil {
-				return err
+				return fail(n, err)
 			}
 		}
 	}
@@ -446,12 +563,15 @@ func removeLocal(ctx context.Context, tree []*store.Node) error {
 	}
 	info, err = parent.Lstat(base)
 	if err != nil {
-		return err
+		return fail(top, err)
 	}
 	if !unchangedLocal(top, info) {
-		return errors.New("source changed before removal; retained")
+		return fail(top, errChanged)
 	}
-	return parent.Remove(base)
+	if err := parent.Remove(base); err != nil {
+		return fail(top, err)
+	}
+	return nil
 }
 
 func unchangedLocal(n *store.Node, info os.FileInfo) bool {

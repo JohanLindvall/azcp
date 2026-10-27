@@ -499,15 +499,17 @@ func Parse(argv []string) (*Options, error) {
 	}
 	if o.Remove {
 		// Nothing is copied, so nothing that shapes a copy may be asked for.
+		// The retry delays pace whole-file restarts and a removal makes none;
+		// there is no display for --progress to ask for, and --no-progress
+		// asks for what a removal already does.
 		for _, f := range res.Flags {
 			switch f.Spec.Long {
-			case "remove", "select", "yes", "dry-run", "verbose", "recursive", "files-from",
-				"retries", "retry-delay", "retry-max-delay", "timeout",
-				"auth", "tenant", "endpoint-suffix", "output", "progress", "no-progress",
+			case "rm", "select", "yes", "dry-run", "verbose", "recursive", "files-from",
+				"retries", "timeout", "auth", "tenant", "endpoint-suffix", "output", "no-progress",
 				"log-level", "log-format", "log-file", "no-auto-update", "no-version-check":
 			default:
 				if f.Spec.Short != 'r' && f.Spec.Short != 'R' {
-					return nil, usagef("%s cannot be combined with --remove", f.Name())
+					return nil, usagef("%s cannot be combined with --rm", f.Name())
 				}
 			}
 		}
@@ -546,8 +548,13 @@ func (o *Options) apply(f cpflags.Flag) error {
 	case "no-version-check":
 		o.VersionCheck = false
 	case "select":
+		// An empty filter is most likely an unset variable, and must not quietly
+		// turn a selection from a directory into the directory itself.
+		if strings.TrimSpace(f.Value) == "" {
+			return fmt.Errorf("invalid argument %q for '%s' (want a filter, such as 'older:30d')", f.Value, f.Name())
+		}
 		o.Select = f.Value
-	case "remove":
+	case "rm":
 		o.Remove = true
 	case "yes":
 		o.Confirmed = true
@@ -1000,7 +1007,7 @@ func (o *Options) validate() error {
 		return usagef("cannot make both hard and symbolic links")
 	}
 	if o.Confirmed && !o.Remove {
-		return usagef("--yes only confirms --remove")
+		return usagef("--yes only confirms --rm")
 	}
 	if o.Confirmed && o.DryRun {
 		return usagef("cannot combine --yes and --dry-run")

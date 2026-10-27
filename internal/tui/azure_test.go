@@ -4,10 +4,12 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -136,6 +138,35 @@ func TestAzuriteCommanderOperations(t *testing.T) {
 	}
 	if _, err := b.az.Stat(t.Context(), doomed.url, false); !store.IsNotExist(err) {
 		t.Fatalf("deleted container remains: %v", err)
+	}
+	// Blob names that begin with "/" are listed as a directory called "/",
+	// whose only URL is the container's: acting on it must not take the rest.
+	shared := loc(t, endpoint+"/"+container+"-slash")
+	if err := b.az.MkdirAll(t.Context(), shared.url, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := client.DeleteContainer(ctx, container+"-slash", nil); err != nil {
+			t.Errorf("clean up test container: %v", err)
+		}
+	})
+	for _, name := range []string{"keep.txt", "%2Fleading.txt"} {
+		if err := b.az.Upload(t.Context(), filepath.Join(left, "tree", "a[1]%.txt"), loc(t, shared.url.String()+"/"+name).url, azure.TransferOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed, err := b.list(t.Context(), shared)
+	slash := slices.IndexFunc(listed, func(e entry) bool { return e.name == "/" })
+	if err != nil || slash < 0 {
+		t.Fatalf("container root: %+v, %v", listed, err)
+	}
+	if err := b.delete(t.Context(), []entry{listed[slash]}); !errors.Is(err, errSharedURL) {
+		t.Fatalf("deleted the \"/\" entry: %v", err)
+	}
+	if _, err := b.az.Stat(t.Context(), shared.url.Join("keep.txt"), false); err != nil {
+		t.Fatalf("a blob beside the \"/\" entry went with it: %v", err)
 	}
 	deeper, err := b.list(t.Context(), children[1].loc)
 	if err != nil || len(deeper) != 1 || deeper[0].name != "deep" || !deeper[0].directory() {

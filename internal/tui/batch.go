@@ -7,9 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"math"
 	"path/filepath"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/JohanLindvall/azcp/internal/cli"
 	"github.com/JohanLindvall/azcp/internal/engine"
@@ -21,26 +25,41 @@ import (
 )
 
 // The command line reaches the same selections as the file manager: --select
-// is the pane filter applied to each operand directory, and --remove is the
+// is the pane filter applied to each operand directory, and --rm is the
 // delete key. Both reuse what the panes do, so a filter means one thing and a
 // deletion keeps the same guarantees wherever it was asked for.
 
 // Select replaces each source directory in opt with the entries of it that
 // opt.Select picks, written as literal operands for the engine.
 func Select(ctx context.Context, opt *cli.Options, log *slog.Logger) error {
-	b := newBackend(opt, log)
-	picked, err := b.selectEach(ctx, opt.Select, opt.Sources)
+	f, err := parseSelect(opt.Select)
 	if err != nil {
 		return err
 	}
+	picked, err := newBackend(opt, log).selectEach(ctx, f, opt.Sources)
+	if err != nil {
+		return err
+	}
+	for _, t := range picked {
+		if sharesContainerURL(t.entry) {
+			return fmt.Errorf("cannot copy %s: %w", engine.Quote(t.shown), errSharedURL)
+		}
+	}
 	opt.Sources = opt.Sources[:0]
 	for _, t := range picked {
-		e := t.entry
-		opt.Sources = append(opt.Sources, operand(e.loc.url, e.node.IsDir()))
+		opt.Sources = append(opt.Sources, operand(t.loc.url, t.node.IsDir()))
 	}
 	// Selected names are exact; a bracket in one is not a pattern.
 	opt.Glob = cli.GlobNever
 	return nil
+}
+
+func parseSelect(text string) (nameFilter, error) {
+	f, err := parseFilter(text)
+	if err != nil {
+		return nameFilter{}, cli.Usage(fmt.Errorf("--select: %w", err))
+	}
+	return f, nil
 }
 
 // target is an entry with the name messages give it, which starts from the
@@ -51,44 +70,109 @@ type target struct {
 }
 
 func shownBelow(raw string, base location, e entry) string {
-	if base.url.IsRemote() {
-		return e.loc.display()
+	if !base.url.IsRemote() {
+		return filepath.Join(raw, e.name)
 	}
-	return filepath.Join(raw, e.name)
+	if sharesContainerURL(e) {
+		// Its URL is the container's; name it where the listing found it.
+		u := *e.loc.url
+		u.Key = "/"
+		return u.Display()
+	}
+	return e.loc.display()
 }
+
+// below names path, at or below the local directory dir, starting from shown:
+// the name dir has on the command line.
+func below(shown, dir, path string) string {
+	rel, err := filepath.Rel(dir, path)
+	switch {
+	case err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)):
+		return path
+	case rel == ".":
+		return shown
+	}
+	return filepath.Join(shown, rel)
+}
+
+func (t target) nameOf(u *uri.URL) string {
+	if u.IsRemote() {
+		return u.Display()
+	}
+	return below(t.shown, t.loc.url.Path, u.Path)
+}
+
+// detail is reason for a failure somewhere below what a message names, so a
+// filesystem error also says which path it was about.
+func detail(err error, name func(string) string) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return engine.Quote(name(filepath.ToSlash(pe.Path))) + ": " + reason(err)
+	}
+	return reason(err)
+}
+
+// explain words err, which stopped t's removal, naming entries the way the
+// operand named them. It returns the entry the message is about as well.
+func (t target) explain(err error) (name, msg string) {
+	var re *removeError
+	var le *listError
+	switch {
+	case errors.As(err, &re):
+		name = t.nameOf(re.node.URL)
+		return name, fmt.Sprintf("cannot remove %s: %s", engine.Quote(name), reason(re.err))
+	case errors.As(err, &le):
+		local := func(p string) string { return below(t.shown, t.loc.url.Path, p) }
+		return t.shown, fmt.Sprintf("cannot list %s in full: %s", engine.Quote(t.shown), detail(le.err, local))
+	case errors.Is(err, errSelectionChanged):
+		return t.shown, fmt.Sprintf("cannot remove %s: it changed while it was being listed", engine.Quote(t.shown))
+	}
+	return t.shown, fmt.Sprintf("cannot remove %s: %s", engine.Quote(t.shown), reason(err))
+}
+
+// phrased is a message about err that still answers errors.Is and errors.As.
+type phrased struct {
+	msg string
+	err error
+}
+
+func (p *phrased) Error() string { return p.msg }
+func (p *phrased) Unwrap() error { return p.err }
 
 // selectEach lists every directory and keeps what the filter selects. Only an
 // entry the filter can positively judge is selected: unlike a pane, which keeps
 // an unmeasured directory on show, a batch acts on what it picks without
 // anyone looking first.
-func (b *backend) selectEach(ctx context.Context, text string, dirs []string) ([]target, error) {
-	f, err := parseFilter(text)
-	if err != nil {
-		return nil, cli.Usage(fmt.Errorf("--select: %w", err))
-	}
+func (b *backend) selectEach(ctx context.Context, f nameFilter, dirs []string) ([]target, error) {
 	var picked []target
 	for _, raw := range dirs {
+		if raw == "" {
+			// Made absolute, the empty name would be the working directory.
+			return nil, errors.New("cannot stat '': No such file or directory")
+		}
 		base, err := parseLocation(raw, b.opt.EndpointSuffix)
 		if err != nil {
 			return nil, err
 		}
 		shown := engine.Quote(base.display())
+		name := func(p string) string { return p }
 		if !base.url.IsRemote() {
 			shown = engine.Quote(raw)
+			name = func(p string) string { return below(raw, base.url.Path, p) }
 		}
 		n, err := b.store(base.url).Stat(ctx, base.url, true)
 		if err != nil {
-			return nil, fmt.Errorf("cannot stat %s: %w", shown, describe(err))
+			return nil, &phrased{fmt.Sprintf("cannot stat %s: %s", shown, reason(err)), err}
 		}
 		if !n.IsDir() {
 			return nil, fmt.Errorf("cannot select from %s: Not a directory", shown)
 		}
 		entries, err := b.list(ctx, base)
 		if err != nil {
-			return nil, fmt.Errorf("cannot list %s: %w", shown, describe(err))
+			return nil, &phrased{fmt.Sprintf("cannot list %s: %s", shown, detail(err, name)), err}
 		}
 		if err := b.measureFor(ctx, f, base, entries); err != nil {
-			return nil, err
+			return nil, &phrased{fmt.Sprintf("cannot measure %s: %s", shown, detail(err, name)), err}
 		}
 		for _, e := range entries {
 			if f.selects(e) {
@@ -153,109 +237,336 @@ func (f nameFilter) selects(e entry) bool {
 
 // Remove deletes the operands, or what opt.Select picks from them, and lists
 // them instead unless opt.Confirmed. Every selection is listed in full before
-// anything is removed, as the file manager's delete does. It returns how many
-// operands failed.
+// anything is removed, as the file manager's delete does, and the filter is
+// weighed again on that listing, so what it judged is what goes. It returns
+// how many entries failed.
 func Remove(ctx context.Context, opt *cli.Options, log *slog.Logger) (int, error) {
-	b := newBackend(opt, log)
-	var targets []target
-	if opt.Select != "" {
-		picked, err := b.selectEach(ctx, opt.Select, opt.Sources)
-		if err != nil {
-			return 0, err
-		}
-		targets = picked
-	} else {
-		for _, raw := range opt.Sources {
-			l, err := parseLocation(raw, b.opt.EndpointSuffix)
-			if err != nil {
-				return 0, err
-			}
-			shown := raw
-			if l.url.IsRemote() {
-				shown = l.display()
-			}
-			n, err := b.store(l.url).Stat(ctx, l.url, false)
-			if err != nil {
-				return 0, fmt.Errorf("cannot remove %s: %w", engine.Quote(shown), describe(err))
-			}
-			targets = append(targets, target{entry{name: n.Name(), loc: l, node: n}, shown})
-		}
+	return newBackend(opt, log).removeBatch(ctx, opt)
+}
+
+func (b *backend) removeBatch(ctx context.Context, opt *cli.Options) (int, error) {
+	r := &removal{b: b, opt: opt, dryRun: opt.DryRun || !opt.Confirmed, start: time.Now()}
+	err := r.run(ctx)
+	r.finish(ctx, err)
+	return r.failed, err
+}
+
+// removal is one --rm run and its account of what it did.
+type removal struct {
+	b      *backend
+	opt    *cli.Options
+	filter *nameFilter
+	dryRun bool
+	start  time.Time
+
+	removed, failed int
+	containers      int // removed whole, their contents uncounted
+	files, bytes    int64
+	failures        []map[string]string
+}
+
+func (r *removal) run(ctx context.Context) error {
+	targets, err := r.targets(ctx)
+	if err != nil {
+		return err
 	}
-	failed := 0
 	kept := targets[:0]
-	var entries []entry
-	for _, e := range targets {
-		err := removable(e.entry)
-		if err == nil && e.node.IsDir() && !opt.Recursive {
+	for _, t := range targets {
+		err := removable(t.entry)
+		if err == nil && t.node.IsDir() && !r.opt.Recursive {
 			err = errors.New("Is a directory")
 		}
 		if err != nil {
-			logx.Errf("%s: cannot remove %s: %v\n", cli.Program, engine.Quote(e.shown), err)
-			failed++
+			r.fail(t.shown, fmt.Sprintf("cannot remove %s: %v", engine.Quote(t.shown), err), err)
 			continue
 		}
-		kept = append(kept, e)
-		entries = append(entries, e.entry)
+		kept = append(kept, t)
 	}
 	targets = kept
-	trees, err := b.inventory(ctx, entries)
-	if err != nil {
-		return failed, err
+	trees := make([]inventoried, len(targets))
+	for i, t := range targets {
+		tree, err := r.b.inventoryOne(ctx, t.entry)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			_, msg := t.explain(err)
+			return &phrased{msg, err}
+		}
+		trees[i] = tree
 	}
-	dryRun := opt.DryRun || !opt.Confirmed
-	var files, bytes int64
-	removed, uncounted := 0, false
+	targets, trees = r.rejudge(targets, trees)
+	skip := covered(trees)
 	for i, tree := range trees {
-		var n, size int64
-		count := func(node *store.Node) error {
-			if node.IsRegular() {
-				n++
-				size += max(node.Size, 0)
-			}
-			return ctx.Err()
-		}
-		for _, node := range tree {
-			_ = count(node)
-		}
-		uncounted = uncounted || !dryRun && isContainer(tree[0].URL)
-		if dryRun && isContainer(tree[0].URL) {
-			// The inventory leaves a container unlisted because one request
-			// deletes it; a listing of what would go needs its contents.
-			err := b.remote.WalkAll(ctx, tree[0].URL, func(_ *uri.URL, err error) error { return err }, count)
-			if err != nil {
-				return failed, fmt.Errorf("cannot list %s: %w", engine.Quote(targets[i].shown), err)
+		if !skip[i] {
+			if err := r.one(ctx, targets[i], tree); err != nil {
+				return err
 			}
 		}
-		if !dryRun {
-			if err := b.remove(ctx, trees[i:i+1]); err != nil {
-				if ctx.Err() != nil {
-					return failed, ctx.Err()
+	}
+	return nil
+}
+
+// targets resolves the operands, or what the filter picks from them.
+func (r *removal) targets(ctx context.Context) ([]target, error) {
+	if r.opt.Select != "" {
+		f, err := parseSelect(r.opt.Select)
+		if err != nil {
+			return nil, err
+		}
+		if f.walks && slices.ContainsFunc(r.opt.Sources, func(raw string) bool {
+			u, err := parseURL(raw, r.opt.EndpointSuffix)
+			return err == nil && u.IsRemote() && u.Container == ""
+		}) {
+			// Weighed now, a container could take on anything before the one
+			// request that deletes it whole.
+			return nil, cli.Usage(errors.New("--select cannot weigh what is inside a container for --rm, " +
+				"since a container is deleted whole; select containers by name, or select inside one"))
+		}
+		r.filter = &f
+		return r.b.selectEach(ctx, f, r.opt.Sources)
+	}
+	var targets []target
+	for _, raw := range r.opt.Sources {
+		if raw == "" {
+			return nil, errors.New("cannot remove '': No such file or directory")
+		}
+		if !uri.IsRemoteArg(raw) && throughDot(raw) {
+			r.fail(raw, "refusing to remove '.' or '..' directory: skipping "+engine.Quote(raw), nil)
+			continue
+		}
+		l, err := parseLocation(raw, r.opt.EndpointSuffix)
+		if err != nil {
+			return nil, err
+		}
+		shown := raw
+		if l.url.IsRemote() {
+			shown = l.display()
+		}
+		n, err := r.b.store(l.url).Stat(ctx, l.url, false)
+		if err != nil {
+			return nil, &phrased{fmt.Sprintf("cannot remove %s: %s", engine.Quote(shown), reason(err)), err}
+		}
+		targets = append(targets, target{entry{name: n.Name(), loc: l, node: n}, shown})
+	}
+	return targets, nil
+}
+
+// throughDot reports a local operand ending in . or .., or on Windows a bare
+// drive such as C:, which is that drive's current directory. Each names a
+// directory the path passes through rather than an entry in one, and rm
+// refuses them all.
+func throughDot(raw string) bool {
+	if vol := filepath.VolumeName(raw); vol == raw && len(vol) == 2 {
+		return true
+	}
+	base := filepath.Base(raw)
+	return base == "." || base == ".."
+}
+
+// rejudge weighs the filter again on each inventory, which is what the
+// removal will take. The selection was made on an earlier walk, and anything
+// written or changed since then went unjudged.
+func (r *removal) rejudge(targets []target, trees []inventoried) ([]target, []inventoried) {
+	if r.filter == nil || !r.filter.walks {
+		return targets, trees
+	}
+	kept := 0
+	for i, t := range targets {
+		e := t.entry
+		e.node = trees[i].nodes[0]
+		var err error
+		if e.node.IsDir() {
+			e.dirSize, err = measured(trees[i].nodes, r.filter.has)
+		}
+		if err != nil || !r.filter.selects(e) {
+			if r.opt.Output != cli.OutputJSON {
+				logx.Errf("%s: kept %s: it changed after it was selected and no longer matches\n",
+					cli.Program, engine.Quote(t.shown))
+			}
+			continue
+		}
+		targets[kept], trees[kept] = t, trees[i]
+		kept++
+	}
+	return targets[:kept], trees[:kept]
+}
+
+// measured totals an inventory the way the walk behind a pane's sizes does.
+func measured(tree []*store.Node, terms []contentTerm) (*sizeTree, error) {
+	t := &sizeTree{contains: map[string]bool{}}
+	for _, n := range tree[1:] {
+		if !n.IsRegular() {
+			continue
+		}
+		if n.Size < 0 || n.Size > math.MaxInt64-t.bytes {
+			return nil, errors.New("directory size exceeds the supported range")
+		}
+		t.note(n, leaf(n.URL), terms)
+	}
+	t.settle(terms)
+	return t, nil
+}
+
+// leaf is the last component of u's name, which a has: term looks at.
+func leaf(u *uri.URL) string {
+	if u.IsRemote() {
+		return u.Key[strings.LastIndexByte(u.Key, '/')+1:]
+	}
+	return filepath.Base(u.Path)
+}
+
+// covered marks the trees that another in the batch removes already: a later
+// duplicate, one whose top another directory's inventory reached, and
+// anything in a container, which goes whole. Removed on their own as well,
+// they would fail on what the other had taken.
+func covered(trees []inventoried) []bool {
+	skip := make([]bool, len(trees))
+	tops := make(map[string]int, len(trees))
+	for i, t := range trees {
+		key := nodeKey(t.nodes[0])
+		if _, dup := tops[key]; dup {
+			skip[i] = true
+			continue
+		}
+		tops[key] = i
+	}
+	for i, t := range trees {
+		top := t.nodes[0].URL
+		if isContainer(top) {
+			for j, other := range trees {
+				u := other.nodes[0].URL
+				if j != i && !isContainer(u) && top.SameAccount(u) && u.Container == top.Container {
+					skip[j] = true
 				}
-				logx.Errf("%s: %v\n", cli.Program, describe(err))
-				failed++
-				continue
+			}
+			continue
+		}
+		for _, n := range t.nodes[1:] {
+			if j, ok := tops[nodeKey(n)]; ok && j != i {
+				skip[j] = true
 			}
 		}
-		files, bytes, removed = files+n, bytes+size, removed+1
-		if dryRun || opt.Verbose || opt.Output == cli.OutputJSON {
-			report(opt, dryRun, targets[i], n, size)
+	}
+	return skip
+}
+
+// one removes a single selection, or in a dry run measures it.
+func (r *removal) one(ctx context.Context, t target, tree inventoried) error {
+	var files, bytes int64
+	count := func(n *store.Node) error {
+		if n.IsRegular() {
+			files++
+			bytes += max(n.Size, 0)
+		}
+		return ctx.Err()
+	}
+	for _, n := range tree.nodes {
+		_ = count(n)
+	}
+	top := tree.nodes[0]
+	whole := isContainer(top.URL)
+	if r.dryRun && whole {
+		// The inventory leaves a container unlisted because one request
+		// deletes it; a listing of what would go needs its contents.
+		err := r.b.remote.WalkAll(ctx, top.URL, func(_ *uri.URL, err error) error { return err }, count)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return &phrased{fmt.Sprintf("cannot list %s: %s", engine.Quote(t.shown), reason(err)), err}
 		}
 	}
-	if opt.Output != cli.OutputJSON {
-		verb := "Removed"
-		if dryRun {
-			verb = "Would remove"
+	if !r.dryRun {
+		if err := r.b.remove(ctx, []inventoried{tree}); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			name, msg := t.explain(err)
+			r.fail(name, msg, err)
+			return nil
 		}
-		totals := fmt.Sprintf(": %s in %s %s", humanize.Bytes(bytes), humanize.Count(files), humanize.Plural(files, "file", "files"))
-		if uncounted {
-			totals = "" // A container went in one request, its contents uncounted.
-		}
-		logx.Errf("  %s %d %s%s\n", verb, removed, humanize.Plural(int64(removed), "entry", "entries"), totals)
-		if dryRun && !opt.DryRun && removed > 0 {
-			logx.Errf("  Nothing was removed; add --yes to remove them\n")
+		if whole {
+			r.containers++
 		}
 	}
-	return failed, nil
+	r.removed++
+	r.files += files
+	r.bytes += bytes
+	if r.dryRun || r.opt.Verbose || r.opt.Output == cli.OutputJSON {
+		report(r.opt, r.dryRun, t, files, bytes)
+	}
+	return nil
+}
+
+// fail reports an entry that is not removed, as rm would, or as an event.
+func (r *removal) fail(name, msg string, err error) {
+	r.failed++
+	if err != nil {
+		// The SDK's own text is a dump of the whole exchange: worth keeping,
+		// but only for someone who asked for detail.
+		r.b.log.Debug("removal failure detail", "path", name, "error", err)
+	}
+	if r.opt.Output == cli.OutputJSON {
+		r.failures = append(r.failures, map[string]string{"path": name, "error": msg})
+		logx.Printf("%s\n", jsonLine(map[string]any{"event": "error", "path": name, "error": msg}))
+		return
+	}
+	logx.Errf("%s: %s\n", cli.Program, msg)
+}
+
+// finish closes the run's account: the totals on stderr, or in JSON an event
+// for a failure that stopped the run and then the summary. A command-line
+// problem is the caller's to report.
+func (r *removal) finish(ctx context.Context, err error) {
+	var usage *cli.UsageError
+	if errors.As(err, &usage) {
+		return
+	}
+	interrupted := ctx.Err() != nil
+	if r.opt.Output == cli.OutputJSON {
+		failed := r.failed
+		if err != nil && !interrupted {
+			failed++
+			r.failures = append(r.failures, map[string]string{"error": err.Error()})
+			logx.Printf("%s\n", jsonLine(map[string]any{"event": "error", "error": err.Error()}))
+		}
+		warns, errs := logx.Counts()
+		summary := map[string]any{
+			"event":           "summary",
+			"version":         cli.VersionString(),
+			"removed":         r.removed,
+			"containers":      r.containers,
+			"failed":          failed,
+			"files":           r.files,
+			"bytes":           r.bytes,
+			"elapsed_seconds": time.Since(r.start).Seconds(),
+			"dry_run":         r.dryRun,
+			"interrupted":     interrupted,
+			"warnings":        warns,
+			"errors":          errs,
+		}
+		if len(r.failures) > 0 {
+			summary["failures"] = r.failures
+		}
+		logx.Printf("%s\n", jsonLine(summary))
+		return
+	}
+	if err != nil {
+		return
+	}
+	verb := "Removed"
+	if r.dryRun {
+		verb = "Would remove"
+	}
+	totals := fmt.Sprintf(": %s in %s %s", humanize.Bytes(r.bytes), humanize.Count(r.files), humanize.Plural(r.files, "file", "files"))
+	if r.containers > 0 {
+		totals = "" // A container went in one request, its contents uncounted.
+	}
+	logx.Errf("  %s %d %s%s\n", verb, r.removed, humanize.Plural(int64(r.removed), "entry", "entries"), totals)
+	if r.dryRun && !r.opt.DryRun && r.removed > 0 {
+		logx.Errf("  Nothing was removed; add --yes to remove them\n")
+	}
 }
 
 func report(opt *cli.Options, dryRun bool, e target, files, bytes int64) {
@@ -264,12 +575,8 @@ func report(opt *cli.Options, dryRun bool, e target, files, bytes int64) {
 		if dryRun {
 			kind = "would-remove"
 		}
-		line, err := json.Marshal(map[string]any{"event": kind, "path": e.shown,
-			"directory": e.node.IsDir(), "files": files, "bytes": bytes})
-		if err != nil {
-			line = []byte(`{"event":"error","error":"could not encode this record"}`)
-		}
-		logx.Printf("%s\n", line)
+		logx.Printf("%s\n", jsonLine(map[string]any{"event": kind, "path": e.shown,
+			"directory": e.node.IsDir(), "files": files, "bytes": bytes}))
 		return
 	}
 	name := engine.Quote(e.shown)
@@ -288,10 +595,10 @@ func report(opt *cli.Options, dryRun bool, e target, files, bytes int64) {
 	}
 }
 
-// describe gives a missing name the wording cp uses for one.
-func describe(err error) error {
-	if store.IsNotExist(err) {
-		return errors.New("No such file or directory")
+func jsonLine(v any) string {
+	line, err := json.Marshal(v)
+	if err != nil {
+		return `{"event":"error","error":"could not encode this record"}`
 	}
-	return err
+	return string(line)
 }

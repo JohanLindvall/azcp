@@ -230,6 +230,52 @@ func TestDeleteRefusesReplacedRoot(t *testing.T) {
 	read(t, filepath.Join(root, "saved", "file"), "selected")
 }
 
+func TestDeleteRefusesASwappedParentHoldingAHardLink(t *testing.T) {
+	b := testBackend(t)
+	root := t.TempDir()
+	write(t, filepath.Join(root, "dir", "file"), "selected")
+	trees, err := b.inventory(t.Context(), []entry{selected(t, b, filepath.Join(root, "dir", "file"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another directory takes the path with a second link to the file, so
+	// everything the file's own identity says still holds.
+	if err := os.Rename(filepath.Join(root, "dir"), filepath.Join(root, "saved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(root, "saved", "file"), filepath.Join(root, "dir", "file")); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if err := b.remove(t.Context(), trees); !errors.Is(err, errChanged) {
+		t.Fatalf("removed through a directory that was not the one listed: %v", err)
+	}
+	read(t, filepath.Join(root, "dir", "file"), "selected")
+}
+
+func TestTheSlashEntryAtAContainerRootIsNotTheContainer(t *testing.T) {
+	b := testBackend(t)
+	account := loc(t, "azure://account.blob.core.windows.net")
+	container := loc(t, "azure://account.blob.core.windows.net/container")
+	dir := &store.Node{URL: container.url, Kind: store.KindDir}
+	// What a listing of the container gives the names beginning with "/".
+	slash := entry{name: "/", loc: location{url: container.url, parent: &container}, node: dir}
+	for _, check := range []func(entry) error{removable, movable} {
+		if err := check(slash); !errors.Is(err, errSharedURL) {
+			t.Errorf("acted on the whole container: %v", err)
+		}
+	}
+	if err := b.transfer(t.Context(), []entry{slash}, loc(t, t.TempDir()), false, reporter(t)); !errors.Is(err, errSharedURL) {
+		t.Errorf("copied the whole container: %v", err)
+	}
+	whole := entry{name: "container", loc: location{url: container.url, parent: &account}, node: dir}
+	if err := removable(whole); err != nil {
+		t.Errorf("refused the container itself: %v", err)
+	}
+}
+
 func TestCopyRefusesDestinationInsideSource(t *testing.T) {
 	b := testBackend(t)
 	root := t.TempDir()

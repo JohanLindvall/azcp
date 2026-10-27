@@ -131,10 +131,10 @@ azcp -rT --decompress azure://myaccount/archive/reports ./restored-reports
 ```
 
 **Clean up in batches.** `--select` uses the file manager's filter;
-`--remove` lists what it would delete until you add `--yes`.
+`--rm` lists what it would delete until you add `--yes`.
 
 ```sh
-azcp --remove -r --select 'type:dir older:180d' azure://myaccount/builds/
+azcp --rm -r --select 'type:dir older:180d' azure://myaccount/builds/
 ```
 
 **Preview a copy between accounts.** Remove `--dry-run` when the destination

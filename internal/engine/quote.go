@@ -66,3 +66,6 @@ func quotePlain(s string) string {
 
 // Quote is cp's quoting of a name, for other commands' messages to match.
 func Quote(s string) string { return quote(s) }
+
+// Sentence is an error worded the way strerror reads, for the same reason.
+func Sentence(err error) string { return sentence(err) }

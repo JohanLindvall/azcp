@@ -2,7 +2,11 @@
 
 package cli
 
-import "testing"
+import (
+	"slices"
+	"strings"
+	"testing"
+)
 
 func TestUsageTUIIsExplicitAndLeavesFollowingPathsAsOperands(t *testing.T) {
 	o := mustParse(t, "--tui=usage", "left", "azure://account/c")
@@ -80,23 +84,54 @@ func TestTUIJobsFollowEachCopyUnlessGiven(t *testing.T) {
 }
 
 func TestRemoveTakesOnlyPathsAndNeedsYesToAct(t *testing.T) {
-	o := mustParse(t, "--remove", "-r", "--select", "older:30d", "a", "azure://account/c/")
+	o := mustParse(t, "--rm", "-r", "--select", "older:30d", "a", "azure://account/c/")
 	if !o.Remove || o.Confirmed || !o.Recursive || o.Select != "older:30d" || len(o.Sources) != 2 || o.Dest != "" {
 		t.Fatalf("remove: %+v", o)
 	}
-	if o = mustParse(t, "--remove", "--yes", "a"); !o.Confirmed {
+	if o = mustParse(t, "--rm", "--yes", "--no-progress", "a"); !o.Confirmed {
 		t.Fatal("--yes did not confirm")
 	}
 	for _, args := range [][]string{
-		{"--remove"}, {"--yes", "a", "b"}, {"--remove", "--yes", "--dry-run", "a"},
-		{"--remove", "-i", "a"}, {"--remove", "-t", "d", "a"}, {"--remove", "--delete", "a"},
+		{"--rm"}, {"--yes", "a", "b"}, {"--rm", "--yes", "--dry-run", "a"},
+		{"--rm", "-i", "a"}, {"--rm", "-t", "d", "a"}, {"--rm", "--delete", "a"},
 		{"--tui", "--select", "x"},
+		// Accepted and then ignored would be doing less than asked.
+		{"--rm", "--progress=always", "a"}, {"--rm", "--retry-delay=1s", "a"},
+		{"--rm", "--retry-max-delay=1m", "a"},
+		// An unset variable must not turn a selection into its directory.
+		{"--rm", "-r", "--select", "", "a"}, {"--rm", "-r", "--select=  ", "a"},
+		{"-r", "--select=", "src", "dst"},
 	} {
 		if _, err := Parse(args); err == nil {
-			t.Errorf("accepted %v", args)
+			t.Errorf("accepted %q", args)
 		}
 	}
 	if o = mustParse(t, "-r", "--select", "*.mp4", "src", "dst"); o.Remove || o.Dest != "dst" {
 		t.Fatalf("a selected copy changed shape: %+v", o)
+	}
+}
+
+// getopt_long takes any unambiguous prefix of a long option, so an option of
+// azcp's own that begins one of cp's changes what a cp command line means.
+// --remove is how cp's own --remove-destination may be written.
+func TestNoExtensionBeginsACpOption(t *testing.T) {
+	cp := []string{"archive", "attributes-only", "backup", "copy-contents", "debug",
+		"dereference", "force", "help", "interactive", "link", "no-clobber",
+		"no-dereference", "no-preserve", "no-target-directory", "one-file-system",
+		"parents", "preserve", "recursive", "reflink", "remove-destination", "sparse",
+		"strip-trailing-slashes", "suffix", "symbolic-link", "target-directory",
+		"update", "verbose", "version", "context"}
+	for _, s := range specs {
+		if s.Long == "" || slices.Contains(cp, s.Long) {
+			continue
+		}
+		for _, name := range cp {
+			if strings.HasPrefix(name, s.Long) {
+				t.Errorf("--%s begins cp's --%s, so it changes what --%s already means", s.Long, name, s.Long)
+			}
+		}
+	}
+	if o := mustParse(t, "--remove", "a", "b"); !o.RemoveDestination || o.Remove || o.Dest != "b" {
+		t.Fatalf("--remove is not cp's --remove-destination: %+v", o)
 	}
 }

@@ -140,6 +140,11 @@ short while afterward, as the service decides. A credential limited to one
 container, such as a container SAS, may not delete the container itself;
 the error says so and nothing else is removed.
 
+Blob names that begin with `/` appear at a container root as a directory
+called `/`. No URL names them apart from the container itself, so that entry
+cannot be copied, moved or deleted: any of those would reach every blob in the
+container.
+
 ## Live disk-usage analysis
 
 The usage view scans once, then lets you drill down through the cached tree
@@ -289,7 +294,7 @@ s 7 r                               newest content first
 ```
 
 The same filter works without the file manager: `--select` picks entries from
-a directory for a copy, and `--remove` deletes them, listing them first unless
+a directory for a copy, and `--rm` deletes them, listing them first unless
 given `--yes` (see [the user guide](guide.md#selecting-and-removing-in-batches)).
 
 Changing the filter keeps the marks on entries that remain visible and drops

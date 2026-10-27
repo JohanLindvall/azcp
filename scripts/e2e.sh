@@ -496,14 +496,29 @@ mkdir -p "$WORK/batch-out"
 "$AZCP" -r --select 'type:dir -has:*.mp4' "$AZ/batch/" "$WORK/batch-out" >/dev/null
 check "--select copies only the directories it picks" \
   "$(cd "$WORK/batch-out" && find . | sort | tr '\n' ' ')" ". ./empty ./logs ./logs/a.log "
-listed=$("$AZCP" --remove -r --select 'clips *.txt' "$AZ/batch/" 2>/dev/null)
-check "--remove lists what it would delete" "$(echo "$listed" | wc -l | tr -d ' ')" "2"
+listed=$("$AZCP" --rm -r --select 'clips *.txt' "$AZ/batch/" 2>/dev/null)
+check "--rm lists what it would delete" "$(echo "$listed" | wc -l | tr -d ' ')" "2"
 "$AZCP" -rT "$AZ/batch" "$WORK/batch-intact" >/dev/null
-check "--remove without --yes deletes nothing" "$(sums "$WORK/batch-intact")" "$(sums "$WORK/batch")"
-"$AZCP" --remove -r --yes --select 'clips *.txt' "$AZ/batch/" >/dev/null 2>&1
+check "--rm without --yes deletes nothing" "$(sums "$WORK/batch-intact")" "$(sums "$WORK/batch")"
+"$AZCP" --rm -r --yes --select 'clips *.txt' "$AZ/batch/" >/dev/null 2>&1
 "$AZCP" -rT "$AZ/batch" "$WORK/batch-after" >/dev/null
-check "--remove --yes deletes the selection and nothing else" \
+check "--rm --yes deletes the selection and nothing else" \
   "$(cd "$WORK/batch-after" && find . | sort | tr '\n' ' ')" ". ./empty ./logs ./logs/a.log "
+
+# A container root lists blob names beginning with "/" as a directory called
+# "/", and its only URL is the container's: a selection must refuse it rather
+# than delete the container.
+SLASH="${ACCOUNT}/${CONTAINER}-slash"
+"$AZCP" --create-container "$SRC/file.txt" "$SLASH/keep.txt" >/dev/null
+"$AZCP" "$SRC/file.txt" "$SLASH/%2Fleading.txt" >/dev/null
+if "$AZCP" --rm -r --yes --select 'type:dir' "$SLASH/" >/dev/null 2>&1; then
+  bad "--rm took the \"/\" entry at a container root"
+else
+  ok "--rm refuses the \"/\" entry at a container root"
+fi
+"$AZCP" "$SLASH/keep.txt" "$WORK/slash-keep.txt" >/dev/null 2>&1 \
+  && ok "the container around the \"/\" entry survives" \
+  || bad "the \"/\" entry took its container"
 
 # --- machine-readable output ------------------------------------------------
 summary=$("$AZCP" --output=json "$SRC/file.txt" "$AZ/json.txt" 2>/dev/null | tail -1)

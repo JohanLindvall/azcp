@@ -502,6 +502,10 @@ func (a *app) requestOperation(action string) {
 		return
 	}
 	for _, e := range selected {
+		if sharesContainerURL(e) {
+			a.report(errSharedURL)
+			return
+		}
 		if action == "Delete" || action == "Move" {
 			if e.usage != nil && (e.usage.total.incomplete || e.usage.total.excluded > 0) {
 				a.report(errors.New("selection contains unreadable or excluded entries; refresh a complete scan before moving or deleting it"))
