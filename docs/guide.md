@@ -235,7 +235,9 @@ always measured, in one walk, when the filter asks about their sizes, ages or
 contents, so in practice this means a directory with no files, which has no
 age, is never `older:` anything. A plain word matches any name that contains
 it, ignoring case, while a pattern must match the whole name: `log` picks
-`catalog` too, and `log*` does not.
+`catalog` too, and `log*` does not. `name=` matches one name exactly, as
+spelled and with nothing in it taken for a pattern: `name=build.log` picks
+neither `old-build.log` nor `Build.log`, and `name=[draft].md` picks that file.
 
 Removal keeps the file manager's guarantees: every selection is listed in full
 before anything is deleted, local symbolic links are removed and never

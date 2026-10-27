@@ -28,6 +28,7 @@ var filterHelp = []string{
 	"size>50M  files>=100  type:dir",
 	"newer:7d  older:2024-01-01",
 	"has:.mp4 (holds a matching file)",
+	"name=notes.txt  that name exactly",
 	"Any name may match; all else must",
 	`-term excludes  "quote spaces"`,
 }
@@ -123,9 +124,12 @@ func (f *nameFilter) term(s string) (t filterTerm, isName bool, err error) {
 	switch field {
 	case "name":
 		m, err := termMatcher(value)
+		if op == "=" {
+			m, err = exactMatcher(value)
+		}
 		return func(e entry, _ bool) (bool, bool) { return m(e.name), true }, true, err
 	case "has":
-		c, err := f.content(value)
+		c, err := f.content(value, op == "=")
 		f.walks = true
 		return containsTerm(c), false, err
 	case "type":
@@ -216,13 +220,19 @@ func typeTerm(value string) (filterTerm, error) {
 	return func(e entry, _ bool) (bool, bool) { return want(e), true }, nil
 }
 
-func (f *nameFilter) content(pattern string) (contentTerm, error) {
+func (f *nameFilter) content(value string, exact bool) (contentTerm, error) {
+	pattern, matcher := value, termMatcher
+	if exact {
+		// The key only has to differ from every pattern's, and no command-line
+		// argument can hold a NUL.
+		pattern, matcher = "\x00"+value, exactMatcher
+	}
 	for _, c := range f.has {
 		if c.pattern == pattern {
 			return c, nil
 		}
 	}
-	m, err := termMatcher(pattern)
+	m, err := matcher(value)
 	if err != nil {
 		return contentTerm{}, err
 	}
@@ -255,6 +265,16 @@ func containsTerm(c contentTerm) filterTerm {
 		}
 		return false, false
 	}
+}
+
+// exactMatcher matches the one name spelled, with nothing taken for a pattern
+// or a case to ignore: the term for a name a word or a pattern would also
+// match in others, such as `notes.txt` beside `old-notes.txt`, or `[draft].md`.
+func exactMatcher(term string) (func(string) bool, error) {
+	if term == "" {
+		return nil, errors.New("nothing to match")
+	}
+	return func(name string) bool { return name == term }, nil
 }
 
 func termMatcher(term string) (func(string) bool, error) {

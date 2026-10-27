@@ -265,10 +265,12 @@ A filter is a list of terms separated by spaces:
 | `report` | names containing the word, ignoring case |
 | `*.mp4`, `IMG_????.jpg`, `*.{jpg,png}` | names matching the pattern as bash matches it, case-sensitively |
 | `name:TEXT` | the same, for a name that looks like one of the terms below |
+| `name=notes.txt` | exactly that name: case-sensitive, and nothing in it is a pattern |
 | `size>50M`, `size<=1G`, `>50M` | files by length, directories by recursive total |
 | `files>=100` | directories holding at least that many files |
 | `newer:7d`, `older:2024-01-01` | files by modification time, directories by the newest file inside |
 | `has:.mp4`, `has:*.mp4` | directories holding, at any depth, a file whose name matches |
+| `has=notes.txt` | directories holding, at any depth, a file of exactly that name |
 | `type:dir`, `type:file`, `type:link` | entries of that kind |
 
 Any one name term may match; every other term must hold. A leading `-` turns

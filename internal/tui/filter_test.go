@@ -15,24 +15,33 @@ import (
 )
 
 func TestNameFilterTerms(t *testing.T) {
-	names := []string{"main.go", "Main_test.go", "README.md", "notes.txt", "-flag", "a.tar.gz"}
+	names := []string{"main.go", "Main_test.go", "README.md", "notes.txt", "-flag", "a.tar.gz", "old-notes.txt", "[draft].md"}
 	for _, tc := range []struct{ filter, want string }{
-		{"", "main.go Main_test.go README.md notes.txt -flag a.tar.gz"},
+		{"", "main.go Main_test.go README.md notes.txt -flag a.tar.gz old-notes.txt [draft].md"},
 		{"MAIN", "main.go Main_test.go"},
 		{"*.go", "main.go Main_test.go"},
 		{"*.GO", ""},
 		{"*.go -test", "main.go"},
-		{"-*.go", "README.md notes.txt -flag a.tar.gz"},
-		{"*.{md,txt}", "README.md notes.txt"},
-		{"read note", "README.md notes.txt"},
+		{"-*.go", "README.md notes.txt -flag a.tar.gz old-notes.txt [draft].md"},
+		{"*.{md,txt}", "README.md notes.txt old-notes.txt [draft].md"},
+		{"read note", "README.md notes.txt old-notes.txt"},
 		{"*.+(tar|gz)", "a.tar.gz"},
 		{"[a-m]*", "main.go a.tar.gz"},
-		{"-", "-flag"},
+		{"-", "-flag old-notes.txt"},
 		{"*.go -*test*", "main.go"},
 		{"name:-flag", "-flag"},
-		{`"notes.txt" main.go`, "main.go notes.txt"},
+		{"notes.txt", "notes.txt old-notes.txt"},
+		{"name=notes.txt", "notes.txt"},
+		{"NAME=notes.txt", "notes.txt"},
+		{"name=NOTES.TXT", ""},
+		{"name=[draft].md", "[draft].md"},
+		{"name=*.go", ""},
+		{"name=main.go name=README.md", "main.go README.md"},
+		{"*.txt -name=notes.txt", "old-notes.txt"},
+		{"has=notes.txt", "notes.txt"},
+		{`"notes.txt" main.go`, "main.go notes.txt old-notes.txt"},
 		{"has:.go", "main.go Main_test.go"},
-		{"type:file *.md", "README.md"},
+		{"type:file *.md", "README.md [draft].md"},
 	} {
 		f, err := parseFilter(tc.filter)
 		if err != nil {
@@ -49,7 +58,7 @@ func TestNameFilterTerms(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{"src/*.go", "a/b", "**", "*/", ">10Q", "**/*.mp4", "sise>5M", "foo:bar",
-		`"open`, "type:x", "files>x", "older:soon", "has:", "has>1"} {
+		`"open`, "type:x", "files>x", "older:soon", "has:", "has>1", "name=", "has="} {
 		if _, err := parseFilter(bad); err == nil {
 			t.Errorf("%q was accepted as a name pattern", bad)
 		}

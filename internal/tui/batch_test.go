@@ -52,6 +52,11 @@ func TestSelectRewritesSourcesToWhatTheFilterPicks(t *testing.T) {
 		{"size>5", "new"},
 		{"*.txt", "top.txt"},
 		{"type:dir -has:*.mp4", "empty old"},
+		{"has=clip.mp4", "new"},
+		{"has=clip", ""},
+		{"has:clip has=clip.mp4", "new"},
+		{"name=top.txt", "top.txt"},
+		{"name=top", ""},
 		// An empty directory has no age, so a batch does not take it for old.
 		{"older:365d", "old"},
 		{"newer:1d", "new top.txt"},

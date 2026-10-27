@@ -721,6 +721,7 @@ f        Toggle this pane's size / recursive file-count column
 z / Z    Calculate directory totals: marked/cursor / all in this pane
 /        Filter this pane until cleared; the prompt lists the syntax
          report *.mp4   names (any may match; other terms must all hold)
+         name=notes.txt exactly that name; has=NAME a directory holding it
          size>50M files>=100 newer:7d older:2024-01-01 type:dir
          has:.mp4  directories holding a matching file; -term excludes
          Directory sizes, ages and contents are measured when asked for
