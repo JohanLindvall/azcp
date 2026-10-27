@@ -130,8 +130,15 @@ replacement is retained.
 Recursive deletion lists the entire selection before removing anything and
 does not follow local symlinks. Directory deletion removes only that Azure
 prefix and its marker, preserving a distinct blob with the same unsuffixed
-name. Filesystem roots, Azure accounts and Azure storage containers themselves
-cannot be moved or deleted; open them and select their contents instead.
+name. Filesystem roots and Azure accounts cannot be moved or deleted.
+
+Azure containers can be deleted, from an account listing or the usage view,
+but not moved. A container is deleted whole, in one request, with whatever it
+holds at that moment, including blobs written after the confirmation was
+shown; the dialog says so. Its name may be unavailable for re-creation for a
+short while afterward, as the service decides. A credential limited to one
+container, such as a container SAS, may not delete the container itself;
+the error says so and nothing else is removed.
 
 ## Live disk-usage analysis
 

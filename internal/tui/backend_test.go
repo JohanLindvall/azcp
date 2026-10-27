@@ -274,3 +274,24 @@ func TestDryRunDeleteAndMkdirDoNotMutate(t *testing.T) {
 		t.Fatalf("dry-run created directory: %v", err)
 	}
 }
+
+func TestContainersCanBeDeletedButNotMoved(t *testing.T) {
+	dir := &store.Node{Kind: store.KindDir}
+	for _, tc := range []struct {
+		path         string
+		remove, move bool
+	}{
+		{"azure://account.blob.core.windows.net", false, false},
+		{"azure://account.blob.core.windows.net/container", true, false},
+		{"azure://account.blob.core.windows.net/container/prefix", true, true},
+		{"/", false, false},
+	} {
+		e := entry{loc: loc(t, tc.path), node: dir}
+		if got := removable(e) == nil; got != tc.remove {
+			t.Errorf("%s removable = %v", tc.path, got)
+		}
+		if got := movable(e) == nil; got != tc.move {
+			t.Errorf("%s movable = %v", tc.path, got)
+		}
+	}
+}

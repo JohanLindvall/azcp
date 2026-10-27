@@ -507,7 +507,11 @@ func (a *app) requestOperation(action string) {
 				a.report(errors.New("selection contains unreadable or excluded entries; refresh a complete scan before moving or deleting it"))
 				return
 			}
-			if err := removable(e); err != nil {
+			check := removable
+			if action == "Move" {
+				check = movable
+			}
+			if err := check(e); err != nil {
 				a.report(err)
 				return
 			}
@@ -730,7 +734,7 @@ Copy and move use the other pane; e edits the destination in confirmation.
 Copy, move and delete require y in the confirmation dialog.
 Existing destination files are replaced. Enter/Esc cancels confirmation.
 Esc/Ctrl-C cancels active work. Completed changes are not rolled back.
-Azure account/container roots cannot be removed; select their contents.
+Containers can be deleted whole, but not moved; accounts are never removed.
 Ctrl-U clears a path prompt. Relative destinations use the other pane.
 The sort menu reverses order and toggles directories first. Marks stay put.
 Directory sizes and file counts are calculated together; links are skipped.

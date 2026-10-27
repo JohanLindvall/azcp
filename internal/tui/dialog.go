@@ -4,6 +4,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/JohanLindvall/azcp/internal/humanize"
@@ -47,6 +48,9 @@ func (a *app) drawDialog(w, h int) {
 		content = append(content, wrap(fmt.Sprintf("%s %d %s (including contents)?", d.action, len(d.source), humanize.Plural(int64(len(d.source)), "entry", "entries")), inner)...)
 		if d.action == "Delete" {
 			content = append(content, "Deletion is permanent.")
+			if slices.ContainsFunc(d.source, func(e entry) bool { return isContainer(e.loc.url) }) {
+				content = append(content, wrap("Containers are deleted whole, with anything written to them since they were listed.", inner)...)
+			}
 		} else {
 			content = append(content, "To: "+humanize.Elide(safeText(d.target.display()), inner-4),
 				"Existing files will be replaced.")

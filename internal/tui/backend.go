@@ -28,6 +28,7 @@ type blobStore interface {
 	ReadDirEntries(context.Context, *uri.URL) ([]*store.Node, error)
 	RemoveMarker(context.Context, *uri.URL) error
 	RemoveBlob(context.Context, *store.Node) error
+	RemoveContainer(context.Context, *uri.URL) error
 }
 
 type backend struct {
@@ -141,7 +142,7 @@ func (b *backend) transfer(ctx context.Context, selected []entry, target locatio
 			return errors.New("select a file or directory first")
 		}
 		if move {
-			if err := removable(e); err != nil {
+			if err := movable(e); err != nil {
 				return err
 			}
 		}
@@ -224,14 +225,29 @@ func removable(e entry) error {
 	}
 	u := e.loc.url
 	if u.IsRemote() {
-		if u.Key == "" {
-			return errors.New("accounts and Azure containers cannot be moved or deleted; select their contents")
+		if u.Container == "" {
+			return errors.New("an Azure account cannot be moved or deleted; select its containers")
 		}
 	} else if filepath.Dir(u.Path) == filepath.Clean(u.Path) {
 		return errors.New("filesystem roots cannot be moved or deleted")
 	}
 	return nil
 }
+
+// movable is removable, less containers: a move would recreate one
+// container's contents inside another, and leave the source container behind
+// or delete it, neither of which is what moving a container should mean.
+func movable(e entry) error {
+	if err := removable(e); err != nil {
+		return err
+	}
+	if isContainer(e.loc.url) {
+		return errors.New("Azure containers cannot be moved; open one and select its contents")
+	}
+	return nil
+}
+
+func isContainer(u *uri.URL) bool { return u.IsRemote() && u.Container != "" && u.Key == "" }
 
 func (b *backend) inventory(ctx context.Context, selected []entry) ([][]*store.Node, error) {
 	var trees [][]*store.Node
@@ -252,7 +268,9 @@ func (b *backend) inventory(ctx context.Context, selected []entry) ([][]*store.N
 		}
 		tree := []*store.Node{n}
 		seen := map[string]int{nodeKey(n): 0}
-		if n.IsDir() {
+		// A container is deleted in one request, so listing its blobs would
+		// only delay that; the stat has already shown it is there to delete.
+		if n.IsDir() && !isContainer(n.URL) {
 			err = s.WalkAll(ctx, n.URL, func(_ *uri.URL, err error) error { return err }, func(child *store.Node) error {
 				if err := ctx.Err(); err != nil {
 					return err
@@ -329,6 +347,15 @@ func (b *backend) remove(ctx context.Context, trees [][]*store.Node) error {
 		if !tree[0].URL.IsRemote() {
 			if err := removeLocal(ctx, tree); err != nil {
 				return err
+			}
+			continue
+		}
+		if isContainer(tree[0].URL) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := b.remote.RemoveContainer(ctx, tree[0].URL); err != nil {
+				return fmt.Errorf("cannot remove %s: %w", tree[0].URL.Display(), err)
 			}
 			continue
 		}

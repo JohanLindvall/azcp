@@ -85,13 +85,3 @@ func TestNavigationKeepsExactBlobParents(t *testing.T) {
 		}
 	}
 }
-
-func TestAzureRootsCannotBeRemovedButNestedPrefixesCan(t *testing.T) {
-	for _, raw := range []string{"azure://account", "azure://account/container", "azure://account/container/a/b/c"} {
-		l := loc(t, raw)
-		e := entry{loc: l, node: &store.Node{URL: l.url, Kind: store.KindDir}}
-		if err := removable(e); (err == nil) != (l.url.Key != "") {
-			t.Errorf("removable %s: %v", raw, err)
-		}
-	}
-}

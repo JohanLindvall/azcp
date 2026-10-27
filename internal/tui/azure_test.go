@@ -115,6 +115,28 @@ func TestAzuriteCommanderOperations(t *testing.T) {
 	if !foundContainer {
 		t.Fatal("account did not expose the container as a directory")
 	}
+	// A whole container goes in one request, contents and all; it cannot be
+	// moved, and the account above it can be neither.
+	doomed := loc(t, endpoint+"/"+container+"-delete")
+	if err := b.az.MkdirAll(t.Context(), doomed.url, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.az.Upload(t.Context(), filepath.Join(left, "tree", "a[1]%.txt"), doomed.url.Join("deep/blob.txt"), azure.TransferOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	doomedEntry := selected(t, b, doomed.url.String())
+	if err := b.transfer(t.Context(), []entry{doomedEntry}, loc(t, right), true, reporter(t)); err == nil || !strings.Contains(err.Error(), "cannot be moved") {
+		t.Fatalf("moved a container: %v", err)
+	}
+	if err := b.delete(t.Context(), []entry{selected(t, b, endpoint)}); err == nil {
+		t.Fatal("deleted an account")
+	}
+	if err := b.delete(t.Context(), []entry{doomedEntry}); err != nil {
+		t.Fatalf("delete container: %v", err)
+	}
+	if _, err := b.az.Stat(t.Context(), doomed.url, false); !store.IsNotExist(err) {
+		t.Fatalf("deleted container remains: %v", err)
+	}
 	deeper, err := b.list(t.Context(), children[1].loc)
 	if err != nil || len(deeper) != 1 || deeper[0].name != "deep" || !deeper[0].directory() {
 		t.Fatalf("nested prefix: %+v, %v", deeper, err)

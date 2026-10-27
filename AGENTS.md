@@ -563,7 +563,9 @@ flags are rejected. Moves remove sources only after a successful, unskipped,
 uncancelled copy and matching source inventories. Deletion first lists every
 selection completely, never follows local symlinks, and uses anchored local
 roots. Azure files are removed by exact name and ETag (`RemoveBlob`); prefixes
-use `RemoveMarker`, never the file-first fallback in `Remove`. The Azure
+use `RemoveMarker`, never the file-first fallback in `Remove`. Containers may
+be deleted but never moved, and go whole through `RemoveContainer` without a
+blob listing first; accounts are never removed. The Azure
 hierarchy is the storage account, its containers, and nested blob prefixes;
 it is exposed directly as directories, without a separate collection or
 mount configuration.
