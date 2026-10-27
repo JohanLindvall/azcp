@@ -158,6 +158,13 @@ type Options struct {
 	TUIPaths     [2]string
 	VersionCheck bool
 	SelfUpdate   bool
+	// Select is a filter in the file manager's language. It replaces each
+	// source directory with the entries of it that match.
+	Select string
+	// Remove deletes the operands, or what Select picks from them, instead of
+	// copying. Without Confirmed it only lists what it would delete.
+	Remove    bool
+	Confirmed bool
 
 	// cp behaviour
 	Recursive            bool
@@ -490,8 +497,23 @@ func Parse(argv []string) (*Options, error) {
 			}
 		}
 	}
+	if o.Remove {
+		// Nothing is copied, so nothing that shapes a copy may be asked for.
+		for _, f := range res.Flags {
+			switch f.Spec.Long {
+			case "remove", "select", "yes", "dry-run", "verbose", "recursive", "files-from",
+				"retries", "retry-delay", "retry-max-delay", "timeout",
+				"auth", "tenant", "endpoint-suffix", "output", "progress", "no-progress",
+				"log-level", "log-format", "log-file", "no-auto-update", "no-version-check":
+			default:
+				if f.Spec.Short != 'r' && f.Spec.Short != 'R' {
+					return nil, usagef("%s cannot be combined with --remove", f.Name())
+				}
+			}
+		}
+	}
 	if o.FilesFrom != "" {
-		if !o.HasTargetDir && len(operands) == 0 {
+		if !o.HasTargetDir && !o.Remove && len(operands) == 0 {
 			return nil, usagef("missing destination file operand with --files-from")
 		}
 		listed, err := readFilesFrom(o.FilesFrom)
@@ -523,6 +545,12 @@ func (o *Options) apply(f cpflags.Flag) error {
 		// Kept for existing scripts; a copy never installs an update now.
 	case "no-version-check":
 		o.VersionCheck = false
+	case "select":
+		o.Select = f.Value
+	case "remove":
+		o.Remove = true
+	case "yes":
+		o.Confirmed = true
 	case "tui":
 		o.TUI = true
 		if f.HasValue {
@@ -922,6 +950,13 @@ func (o *Options) resolveOperands(operands []string) error {
 		copy(o.TUIPaths[:], operands)
 		return nil
 	}
+	if o.Remove {
+		if len(operands) == 0 {
+			return usagef("missing operand")
+		}
+		o.Sources = operands
+		return nil
+	}
 	if o.HasTargetDir {
 		if len(operands) == 0 {
 			return usagef("missing file operand")
@@ -963,6 +998,15 @@ func (o *Options) validate() error {
 	}
 	if o.HardLink && o.SymbolicLink {
 		return usagef("cannot make both hard and symbolic links")
+	}
+	if o.Confirmed && !o.Remove {
+		return usagef("--yes only confirms --remove")
+	}
+	if o.Confirmed && o.DryRun {
+		return usagef("cannot combine --yes and --dry-run")
+	}
+	if o.Select != "" && o.Benchmark {
+		return usagef("--select cannot be combined with --benchmark")
 	}
 	if o.Delete && !o.Recursive {
 		return usagef("--delete only makes sense with a recursive copy (-r)")

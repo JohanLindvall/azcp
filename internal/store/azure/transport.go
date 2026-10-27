@@ -60,16 +60,18 @@ const minPooledConns = 32
 
 // newHTTPClient builds a client whose connection pool matches how many requests
 // this run can have outstanding at once — transfers and look-ahead listings
-// alike, since both take a connection while they run.
-func newHTTPClient(peakRequests int, bytesPerSec int64) *http.Client {
+// alike, since both take a connection while they run. absolute says which
+// hosts to resolve as absolute names.
+func newHTTPClient(peakRequests int, bytesPerSec int64, absolute func(host string) bool) *http.Client {
 	idle := min(max(peakRequests, minPooledConns), maxPooledConns)
 
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		Proxy:       http.ProxyFromEnvironment,
+		DialContext: dialAbsolute(dialer.DialContext, absolute),
 		// Storage is served over HTTP/1.1 in practice, and a pool of separate
 		// connections moves bulk data better than one multiplexed stream.
 		ForceAttemptHTTP2: false,
@@ -113,6 +115,27 @@ func newHTTPClient(peakRequests int, bytesPerSec int64) *http.Client {
 		rt = &throttledTransport{base: rt, lim: lim}
 	}
 	return &http.Client{Transport: rt}
+}
+
+// dialAbsolute dials a host an argument wrote as an absolute name by that
+// name, final dot included. Only the lookup sees the dot: the request, its
+// Host header and the certificate check all name the host without it.
+func dialAbsolute(dial func(ctx context.Context, network, addr string) (net.Conn, error),
+	absolute func(host string) bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if host, port, err := net.SplitHostPort(addr); err == nil && absolute(host) {
+			addr = net.JoinHostPort(host+".", port)
+		}
+		return dial(ctx, network, addr)
+	}
+}
+
+// hostName is a URL host without its port, as a dialled address names it.
+func hostName(host string) string {
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		return name
+	}
+	return host
 }
 
 // stallTransport abandons a response that stops arriving.

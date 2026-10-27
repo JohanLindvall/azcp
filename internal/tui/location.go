@@ -104,9 +104,16 @@ func operand(u *uri.URL, directory bool) string {
 	if !u.IsRemote() {
 		return u.Path
 	}
-	s := u.ServiceURL()
-	if u.Secure && !u.PathStyle {
-		s = "azure://" + u.Host
+	scheme := "http://"
+	if u.Secure {
+		scheme = "https://"
+	}
+	s := scheme + u.Authority()
+	switch {
+	case u.PathStyle:
+		s += "/" + u.Account
+	case u.Secure:
+		s = "azure://" + u.Authority()
 	}
 	if u.Container != "" {
 		s += "/" + url.PathEscape(u.Container)

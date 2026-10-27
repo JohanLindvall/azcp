@@ -115,6 +115,15 @@ var specs = []cpflags.Spec{
 			"(default: scaled to the machine for network copies, 4 for local)"},
 	{Long: "tui", Arg: cpflags.OptionalArg, Meta: "MODE",
 		Help: "open the file manager (commander), one pane without copying (single), or disk analysis (usage); operands: LEFT and RIGHT"},
+	{Long: "select", Arg: cpflags.RequiredArg, Meta: "FILTER",
+		Help: "act on the entries of each source directory that FILTER selects, " +
+			"in the --tui filter language: names and patterns, size>50M, " +
+			"files>=100, newer:7d, older:2024-01-01, has:PATTERN, type:dir, -TERM"},
+	{Long: "remove", Arg: cpflags.NoArg,
+		Help: "delete the operands, or what --select picks from them, instead of " +
+			"copying; lists what would be deleted unless --yes is given"},
+	{Long: "yes", Arg: cpflags.NoArg,
+		Help: "carry out --remove rather than listing what it would delete"},
 	{Long: "no-auto-update", Arg: cpflags.NoArg,
 		Help: "accepted for compatibility; copies only check for new versions"},
 	{Long: "no-version-check", Arg: cpflags.NoArg,
@@ -231,6 +240,7 @@ var specs = []cpflags.Spec{
 const usageHead = `Usage: azcp [OPTION]... [-T] SOURCE DEST
   or:  azcp [OPTION]... SOURCE... DIRECTORY
   or:  azcp [OPTION]... -t DIRECTORY SOURCE...
+  or:  azcp --remove [--select=FILTER] [-r] [--yes] PATH...
   or:  azcp --tui[=MODE] [OPTION]... [LEFT [RIGHT]]
   or:  azcp --self-update
 

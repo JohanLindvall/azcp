@@ -63,3 +63,6 @@ func quotePlain(s string) string {
 	}
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
+
+// Quote is cp's quoting of a name, for other commands' messages to match.
+func Quote(s string) string { return quote(s) }

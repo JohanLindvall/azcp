@@ -74,6 +74,9 @@ type Store struct {
 
 	clientOnce sync.Once
 	http       *http.Client
+	// absolute holds the hosts an argument wrote as absolute DNS names, which
+	// the dialer resolves with their final dot; see uri.URL.FQDN.
+	absolute sync.Map
 
 	// signIn guards the single interactive escalation a run is allowed, and
 	// tenant the one directory a run follows the service to. authGen counts
@@ -143,7 +146,10 @@ func (s *Store) clientOptions() *azblob.ClientOptions {
 // draws on the same connection pool.
 func (s *Store) httpClient() *http.Client {
 	s.clientOnce.Do(func() {
-		s.http = newHTTPClient(s.cfg.PeakRequests+s.listAhead(), s.cfg.BytesPerSecond)
+		s.http = newHTTPClient(s.cfg.PeakRequests+s.listAhead(), s.cfg.BytesPerSecond, func(host string) bool {
+			_, ok := s.absolute.Load(host)
+			return ok
+		})
 	})
 	return s.http
 }
@@ -199,6 +205,11 @@ func sanitizeURL(u *url.URL) string {
 // use. Credential discovery happens once per process and is shared by every
 // account, except where a URL carries its own SAS token.
 func (s *Store) client(ctx context.Context, u *uri.URL) (*azblob.Client, error) {
+	if u.FQDN {
+		// Every request reaches the account through a client, so noting the
+		// host here comes before any connection to it is dialled.
+		s.absolute.Store(hostName(u.Host), true)
+	}
 	// An old client may finish construction after a sign-in cleared the
 	// cache. Give each credential generation its own key so that late result
 	// cannot put the rejected credential back into circulation.

@@ -14,6 +14,9 @@
 set -euo pipefail
 
 AZCP=${AZCP:-./bin/azcp}
+# Some checks run inside the tree they copy, so a path to the binary is made
+# absolute; a bare command name is left for PATH to find.
+case "$AZCP" in */*) AZCP="$(cd "$(dirname "$AZCP")" && pwd)/$(basename "$AZCP")" ;; esac
 AZURITE_PORT=${AZURITE_PORT:-10000}
 
 export AZURE_STORAGE_ACCOUNT=devstoreaccount1
@@ -175,6 +178,30 @@ mkdir -p "$WORK/across"
 "$AZCP" -r "$ACCOUNT/*/tree/logs" "$WORK/across" >/dev/null
 [ -d "$WORK/across/logs/2024" ] && ok "a wildcard matches across containers" \
                                || bad "a container wildcard matched nothing"
+
+# --- dots and absolute host names -------------------------------------------
+# A local path's dots are directions; a blob name would keep them as names.
+mkdir -p "$WORK/dotted/sub"
+echo top > "$WORK/dotted/top.txt"
+echo low > "$WORK/dotted/sub/low.txt"
+( cd "$WORK/dotted" && "$AZCP" -r . "$AZ/dotted/" >/dev/null )
+"$AZCP" -rT "$AZ/dotted" "$WORK/dotted-back" >/dev/null 2>&1 || true
+check "-r . uploads the directory's contents, without a ./ in their names" \
+  "$(sums "$WORK/dotted-back" 2>/dev/null)" "$(sums "$WORK/dotted")"
+# --parents needs its target to exist, and a prefix exists once it holds a blob.
+"$AZCP" "$WORK/dotted/top.txt" "$AZ/dotted-parents/seed.txt" >/dev/null
+( cd "$WORK" && find dotted -type f | sed 's#^#./#' \
+  | "$AZCP" --parents --files-from=- -t "$AZ/dotted-parents/" >/dev/null )
+"$AZCP" -rT "$AZ/dotted-parents/dotted" "$WORK/dotted-parents-back" >/dev/null 2>&1 || true
+check "--parents names from find . lose their ./" \
+  "$(sums "$WORK/dotted-parents-back" 2>/dev/null)" "$(sums "$WORK/dotted")"
+
+# The final dot of an absolute name is for the resolver alone.
+FQDN_AZ="http://localhost.:${AZURITE_PORT}/devstoreaccount1/${CONTAINER}"
+"$AZCP" "$WORK/dotted/top.txt" "$FQDN_AZ/absolute/top.txt" >/dev/null
+"$AZCP" "$FQDN_AZ/absolute/top.txt" "$AZ/absolute/again.txt" >/dev/null
+"$AZCP" "$AZ/absolute/again.txt" "$WORK/absolute.txt" >/dev/null
+check "an absolute host name uploads, copies and downloads" "$(cat "$WORK/absolute.txt")" "top"
 
 # --- filtering --------------------------------------------------------------
 mkdir -p "$WORK/filtered"
@@ -458,6 +485,25 @@ if "$AZCP" -rT "$AZ/synced/repeated//" "$WORK/repeated-check" >/dev/null 2>&1; t
 else
   ok "--delete removes markers with repeated slashes"
 fi
+
+# --- selection and removal --------------------------------------------------
+mkdir -p "$WORK/batch"/{clips,logs,empty}
+echo clip > "$WORK/batch/clips/a.mp4"
+echo log  > "$WORK/batch/logs/a.log"
+echo top  > "$WORK/batch/top.txt"
+"$AZCP" -rT "$WORK/batch" "$AZ/batch" >/dev/null
+mkdir -p "$WORK/batch-out"
+"$AZCP" -r --select 'type:dir -has:*.mp4' "$AZ/batch/" "$WORK/batch-out" >/dev/null
+check "--select copies only the directories it picks" \
+  "$(cd "$WORK/batch-out" && find . | sort | tr '\n' ' ')" ". ./empty ./logs ./logs/a.log "
+listed=$("$AZCP" --remove -r --select 'clips *.txt' "$AZ/batch/" 2>/dev/null)
+check "--remove lists what it would delete" "$(echo "$listed" | wc -l | tr -d ' ')" "2"
+"$AZCP" -rT "$AZ/batch" "$WORK/batch-intact" >/dev/null
+check "--remove without --yes deletes nothing" "$(sums "$WORK/batch-intact")" "$(sums "$WORK/batch")"
+"$AZCP" --remove -r --yes --select 'clips *.txt' "$AZ/batch/" >/dev/null 2>&1
+"$AZCP" -rT "$AZ/batch" "$WORK/batch-after" >/dev/null
+check "--remove --yes deletes the selection and nothing else" \
+  "$(cd "$WORK/batch-after" && find . | sort | tr '\n' ' ')" ". ./empty ./logs ./logs/a.log "
 
 # --- machine-readable output ------------------------------------------------
 summary=$("$AZCP" --output=json "$SRC/file.txt" "$AZ/json.txt" 2>/dev/null | tail -1)

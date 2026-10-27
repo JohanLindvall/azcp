@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 
+	"golang.org/x/term"
+
 	"github.com/JohanLindvall/azcp/internal/cli"
 	"github.com/JohanLindvall/azcp/internal/engine"
 	"github.com/JohanLindvall/azcp/internal/progress"
@@ -42,7 +44,7 @@ type backend struct {
 
 func newBackend(opt *cli.Options, log *slog.Logger) *backend {
 	az := azure.New(azure.Config{
-		Auth: opt.Auth, Log: log, Interactive: true, TenantID: opt.TenantID,
+		Auth: opt.Auth, Log: log, Interactive: term.IsTerminal(int(os.Stderr.Fd())), TenantID: opt.TenantID,
 		MaxRetries: int32(opt.Retries - 1), TryTimeout: opt.Timeout,
 		CreateContainer: opt.CreateContainer, IncludeMetadata: true,
 		UserAgent:    cli.Program + "/" + cli.VersionString(),

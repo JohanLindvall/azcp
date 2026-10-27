@@ -6,12 +6,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/JohanLindvall/azcp/internal/retryx"
+	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
 // stalledServer answers with headers and a little body, then delivers nothing
@@ -104,5 +107,37 @@ func TestSlowButMovingResponseIsLeftAlone(t *testing.T) {
 	}
 	if len(b) != 1200 {
 		t.Errorf("read %d bytes, want 1200", len(b))
+	}
+}
+
+// A host written with a final dot is looked up as the absolute name it is, so
+// the resolver skips its search domains. Nothing else is dialled differently,
+// and the dot appears nowhere but in the address handed to the dialer.
+func TestAbsoluteHostsAreDialledWithTheirDot(t *testing.T) {
+	s := New(Config{Auth: AuthAnonymous})
+	for _, raw := range []string{"https://acct.blob.core.windows.net./c", "azure://other/c"} {
+		u, err := uri.Parse(raw, uri.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.client(t.Context(), u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	absolute := func(host string) bool {
+		_, ok := s.absolute.Load(host)
+		return ok
+	}
+	var dialled []string
+	dial := dialAbsolute(func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialled = append(dialled, addr)
+		return nil, errors.New("not dialling")
+	}, absolute)
+	for _, addr := range []string{"acct.blob.core.windows.net:443", "other.blob.core.windows.net:443", "[::1]:10000"} {
+		_, _ = dial(t.Context(), "tcp", addr)
+	}
+	want := []string{"acct.blob.core.windows.net.:443", "other.blob.core.windows.net:443", "[::1]:10000"}
+	if !slices.Equal(dialled, want) {
+		t.Errorf("dialled %q, want %q", dialled, want)
 	}
 }

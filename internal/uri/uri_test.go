@@ -197,3 +197,56 @@ func TestLocalPathSeparators(t *testing.T) {
 		t.Errorf("Base = %q", got)
 	}
 }
+
+func TestAbsoluteHostsResolveWithTheirDotAndAreKnownWithout(t *testing.T) {
+	cases := []struct {
+		in, suffix, host, acct, service, shown string
+		fqdn                                   bool
+	}{
+		{"https://foo.blob.core.windows.net./c/k", "", "foo.blob.core.windows.net", "foo",
+			"https://foo.blob.core.windows.net", "azure://foo.blob.core.windows.net./c/k", true},
+		{"azure://foo./c", "", "foo.blob.core.windows.net", "foo",
+			"https://foo.blob.core.windows.net", "azure://foo.blob.core.windows.net./c", true},
+		{"azure://foo/c", "blob.core.windows.net.", "foo.blob.core.windows.net", "foo",
+			"https://foo.blob.core.windows.net", "azure://foo.blob.core.windows.net./c", true},
+		{"https://foo.example.net./c", "example.net", "foo.example.net", "foo",
+			"https://foo.example.net", "azure://foo.example.net./c", true},
+		{"http://localhost.:10000/devstoreaccount1/c", "", "localhost:10000", "devstoreaccount1",
+			"http://localhost:10000/devstoreaccount1", "http://localhost.:10000/devstoreaccount1/c", true},
+		// An address is not a name: the dot is dropped and nothing resolves.
+		{"http://127.0.0.1.:10000/devstoreaccount1/c", "", "127.0.0.1:10000", "devstoreaccount1",
+			"http://127.0.0.1:10000/devstoreaccount1", "http://127.0.0.1:10000/devstoreaccount1/c", false},
+		{"azure://foo/c", "", "foo.blob.core.windows.net", "foo",
+			"https://foo.blob.core.windows.net", "azure://foo.blob.core.windows.net/c", false},
+	}
+	for _, c := range cases {
+		u, err := Parse(c.in, Options{EndpointSuffix: c.suffix})
+		if err != nil {
+			t.Errorf("Parse(%q): %v", c.in, err)
+			continue
+		}
+		if u.Host != c.host || u.Account != c.acct || u.FQDN != c.fqdn {
+			t.Errorf("Parse(%q) = host %q, account %q, fqdn %v", c.in, u.Host, u.Account, u.FQDN)
+		}
+		if got := u.ServiceURL(); got != c.service {
+			t.Errorf("Parse(%q).ServiceURL() = %q, want %q", c.in, got, c.service)
+		}
+		if got := u.String(); got != c.shown {
+			t.Errorf("Parse(%q).String() = %q, want %q", c.in, got, c.shown)
+		}
+		again, err := Parse(u.String(), Options{})
+		if err != nil || again.Host != u.Host || again.FQDN != u.FQDN || again.PathPart() != u.PathPart() {
+			t.Errorf("Parse(%q) does not read its own rendering back: %+v, %v", c.in, again, err)
+		}
+	}
+	a, _ := Parse("azure://foo.blob.core.windows.net./c/k", Options{})
+	b, _ := Parse("azure://foo/c/k", Options{})
+	if !a.SameAccount(b) {
+		t.Error("an absolute host was taken for another account")
+	}
+	for _, bad := range []string{"https://foo.blob.core.windows.net../c", "https://./c"} {
+		if u, err := Parse(bad, Options{}); err == nil && u.FQDN {
+			t.Errorf("Parse(%q) took an empty label for an absolute name", bad)
+		}
+	}
+}

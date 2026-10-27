@@ -46,6 +46,8 @@ func TestEngineOperandsRoundTripExactBlobNamesAndSAS(t *testing.T) {
 		"azure://account/container/a%3Fb%23c%25%5B1%5D?sv=1&sig=SECRET",
 		"http://127.0.0.1:10000/devstoreaccount1/c/a%2F%2Fb%2F?sig=SECRET",
 		"azure://account/c/%2Fleading%2F%2Fslashes",
+		"https://account.blob.core.windows.net./c/k?sig=SECRET",
+		"http://localhost.:10000/devstoreaccount1/c/k",
 	} {
 		for _, dir := range []bool{false, true} {
 			u, err := uri.Parse(raw, uri.Options{})
@@ -53,7 +55,8 @@ func TestEngineOperandsRoundTripExactBlobNamesAndSAS(t *testing.T) {
 				t.Fatal(err)
 			}
 			v, err := uri.Parse(operand(u, dir), uri.Options{})
-			if err != nil || u.Host != v.Host || u.Account != v.Account || u.Container != v.Container || u.Key != v.Key || u.SAS != v.SAS || v.TrailingSlash != dir || u.Secure != v.Secure {
+			if err != nil || u.Host != v.Host || u.Account != v.Account || u.Container != v.Container || u.Key != v.Key || u.SAS != v.SAS || v.TrailingSlash != dir || u.Secure != v.Secure ||
+				u.FQDN != v.FQDN || u.PathStyle != v.PathStyle {
 				t.Fatalf("operand did not round-trip: %s; %v", u.Display(), err)
 			}
 		}

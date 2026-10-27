@@ -288,6 +288,10 @@ Azure account root:
 s 7 r                               newest content first
 ```
 
+The same filter works without the file manager: `--select` picks entries from
+a directory for a copy, and `--remove` deletes them, listing them first unless
+given `--yes` (see [the user guide](guide.md#selecting-and-removing-in-batches)).
+
 Changing the filter keeps the marks on entries that remain visible and drops
 the rest, so nothing out of sight can be copied, moved or deleted. In the
 usage view the same filter applies to the current directory and reads the

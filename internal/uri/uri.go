@@ -45,6 +45,14 @@ type URL struct {
 	Key       string
 	SAS       string // query string, without the leading "?"
 	PathStyle bool   // account appears in the path (storage emulator)
+	// FQDN records that the host was written as an absolute DNS name, with a
+	// final dot. Host leaves the dot out, because the service answers a Host
+	// header that ends in one with 400 before storage sees the request, and
+	// a comparison must find the two spellings the same account. The dot is
+	// for resolving the name alone: an absolute name skips the resolver's
+	// search domains, which inside a Kubernetes pod are each tried, and fail,
+	// before the real one.
+	FQDN bool
 
 	// Local field.
 	Path string
@@ -117,6 +125,7 @@ func Parse(s string, opt Options) (*URL, error) {
 	if host == "" {
 		return nil, fmt.Errorf("%s: missing storage account", s)
 	}
+	host, u.FQDN = absoluteHost(host)
 	u.TrailingSlash = strings.HasSuffix(pathPart, "/")
 	// A literal final slash requests a directory; an encoded slash belongs
 	// to the blob name. Decode only after removing that syntax marker.
@@ -128,6 +137,8 @@ func Parse(s string, opt Options) (*URL, error) {
 	if suffix == "" {
 		suffix = DefaultEndpointSuffix
 	}
+	// A suffix written absolutely makes every bare account name absolute.
+	suffix, absoluteSuffix := strings.CutSuffix(suffix, ".")
 
 	switch {
 	case hostPort.MatchString(host) || isIPLiteral(host):
@@ -151,6 +162,7 @@ func Parse(s string, opt Options) (*URL, error) {
 	default:
 		u.Account = host
 		u.Host = host + "." + suffix
+		u.FQDN = u.FQDN || absoluteSuffix
 	}
 
 	decoded, err := url.PathUnescape(pathPart)
@@ -159,6 +171,21 @@ func Parse(s string, opt Options) (*URL, error) {
 	}
 	u.Container, u.Key = splitFirst(pathPart)
 	return u, nil
+}
+
+// absoluteHost takes the final dot off an absolute DNS name, keeping any port,
+// and reports whether there was one. An address has no use for the dot, and
+// a name with an empty label is left for the resolver to refuse.
+func absoluteHost(host string) (string, bool) {
+	name, port := host, ""
+	if at := hostPort.FindStringIndex(host); at != nil {
+		name, port = host[:at[0]], host[at[0]:]
+	}
+	trimmed, ok := strings.CutSuffix(name, ".")
+	if !ok || trimmed == "" || strings.HasSuffix(trimmed, ".") {
+		return host, false
+	}
+	return trimmed + port, !isIPLiteral(trimmed)
 }
 
 func splitFirst(p string) (first, rest string) {
@@ -277,7 +304,8 @@ func (u *URL) Dir() *URL {
 	return u.WithPathPart(p[:i])
 }
 
-// ServiceURL returns the blob service endpoint for the account.
+// ServiceURL returns the blob service endpoint for the account. It names Host,
+// without the final dot of an absolute name: see FQDN.
 func (u *URL) ServiceURL() string {
 	scheme := "https"
 	if !u.Secure {
@@ -303,12 +331,12 @@ func (u *URL) String() string {
 		} else {
 			b.WriteString("http://")
 		}
-		b.WriteString(u.Host)
+		b.WriteString(u.Authority())
 		b.WriteByte('/')
 		b.WriteString(u.Account)
 	} else {
 		b.WriteString("azure://")
-		b.WriteString(u.Host)
+		b.WriteString(u.Authority())
 	}
 	if u.Container != "" {
 		b.WriteByte('/')
@@ -322,6 +350,18 @@ func (u *URL) String() string {
 		b.WriteString("?<sas>")
 	}
 	return b.String()
+}
+
+// Authority is Host as an argument writes it: with the final dot of an
+// absolute name, ahead of any port.
+func (u *URL) Authority() string {
+	if !u.FQDN {
+		return u.Host
+	}
+	if at := hostPort.FindStringIndex(u.Host); at != nil {
+		return u.Host[:at[0]] + "." + u.Host[at[0]:]
+	}
+	return u.Host + "."
 }
 
 // Display is String with any credential material removed; it is what gets

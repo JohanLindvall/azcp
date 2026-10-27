@@ -20,6 +20,7 @@ import (
 	"github.com/JohanLindvall/azcp/internal/humanize"
 	"github.com/JohanLindvall/azcp/internal/logx"
 	"github.com/JohanLindvall/azcp/internal/progress"
+	"github.com/JohanLindvall/azcp/internal/tui"
 	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
@@ -52,6 +53,8 @@ func run(argv []string) int {
 		return selfUpdateCommand()
 	case opt.TUI:
 		return runTUI(opt)
+	case opt.Remove:
+		return runRemove(opt)
 	}
 
 	mode := opt.Progress
@@ -93,6 +96,22 @@ func run(argv []string) int {
 	defer stop()
 	stopSecondSignal := hardStopOnSecondSignal(prog, opt)
 	defer stopSecondSignal()
+
+	if opt.Select != "" {
+		if err := tui.Select(ctx, opt, logger); err != nil {
+			prog.Stop()
+			logx.Errf("%s: %v\n", cli.Program, err)
+			if isUsage(err) {
+				logx.Errf("Try '%s --help' for more information.\n", cli.Program)
+			}
+			return exitFail
+		}
+		if len(opt.Sources) == 0 {
+			prog.Stop()
+			logx.Errf("%s: --select picked nothing to copy\n", cli.Program)
+			return exitOK
+		}
+	}
 
 	eng, err := engine.New(engine.Config{
 		Options:  opt,

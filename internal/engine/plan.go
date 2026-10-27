@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/JohanLindvall/azcp/internal/cli"
@@ -267,6 +268,16 @@ func (e *Engine) targetFor(ctx context.Context, dest *uri.URL, destIsDir bool, s
 			return nil, fmt.Errorf("with --parents, %s has no path to reproduce",
 				quote(src.URL.Display()))
 		}
+		if dest.IsRemote() && !src.URL.IsRemote() {
+			// A local path's dots are directions, and a blob name would keep
+			// them as names. A blob destination has no directory to carry a
+			// dot's attributes, and nowhere for ".." to climb to.
+			parts = slices.DeleteFunc(parts, func(p string) bool { return p == "." })
+			if slices.Contains(parts, "..") {
+				return nil, fmt.Errorf("with --parents, %s goes through '..', which a blob name cannot reproduce",
+					quote(src.URL.Display()))
+			}
+		}
 		target := dest.Join(parts...)
 		// Recreate the intermediate directories the source path implies.
 		if len(parts) > 1 && !e.opt.DryRun {
@@ -280,6 +291,13 @@ func (e *Engine) targetFor(ctx context.Context, dest *uri.URL, destIsDir bool, s
 		base := src.URL.Base()
 		if base == "" {
 			return nil, fmt.Errorf("cannot determine a name for %s", quote(src.URL.Display()))
+		}
+		if !src.URL.IsRemote() && (base == "." || base == "..") {
+			// SRC/. is the directory's contents, which belong in the target
+			// itself, and cp copies SRC/.. there too rather than into the
+			// target's parent. Joining would clean the second dot into that
+			// parent, and a blob name would keep either one as a name.
+			return dest, nil
 		}
 		return dest.Join(base), nil
 	}

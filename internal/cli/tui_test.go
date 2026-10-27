@@ -78,3 +78,25 @@ func TestTUIJobsFollowEachCopyUnlessGiven(t *testing.T) {
 		t.Fatal("--jobs was second-guessed")
 	}
 }
+
+func TestRemoveTakesOnlyPathsAndNeedsYesToAct(t *testing.T) {
+	o := mustParse(t, "--remove", "-r", "--select", "older:30d", "a", "azure://account/c/")
+	if !o.Remove || o.Confirmed || !o.Recursive || o.Select != "older:30d" || len(o.Sources) != 2 || o.Dest != "" {
+		t.Fatalf("remove: %+v", o)
+	}
+	if o = mustParse(t, "--remove", "--yes", "a"); !o.Confirmed {
+		t.Fatal("--yes did not confirm")
+	}
+	for _, args := range [][]string{
+		{"--remove"}, {"--yes", "a", "b"}, {"--remove", "--yes", "--dry-run", "a"},
+		{"--remove", "-i", "a"}, {"--remove", "-t", "d", "a"}, {"--remove", "--delete", "a"},
+		{"--tui", "--select", "x"},
+	} {
+		if _, err := Parse(args); err == nil {
+			t.Errorf("accepted %v", args)
+		}
+	}
+	if o = mustParse(t, "-r", "--select", "*.mp4", "src", "dst"); o.Remove || o.Dest != "dst" {
+		t.Fatalf("a selected copy changed shape: %+v", o)
+	}
+}

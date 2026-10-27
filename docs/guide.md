@@ -11,6 +11,7 @@ complete command-line interface. The compatibility reference is GNU `cp` 9.4;
 - [Pipes](#pipes)
 - [Signing in](#signing-in)
 - [Choosing what to copy](#choosing-what-to-copy)
+- [Selecting and removing in batches](#selecting-and-removing-in-batches)
 - [Archiving a tree](#archiving-a-tree)
 - [Verifying a copy](#verifying-a-copy)
 - [Compressing on the way](#compressing-on-the-way)
@@ -41,13 +42,25 @@ http://127.0.0.1:10000/devstoreaccount1/… # Azurite and other emulators
 Anything not recognised as a URL is a local path, taken verbatim — a file whose
 name contains a colon or a percent sign is never mangled.
 
+A host may be written as an absolute DNS name, with a final dot —
+`azure://ACCOUNT.blob.core.windows.net./CONTAINER/PATH`, `azure://ACCOUNT./…`, or
+`--endpoint-suffix=blob.core.windows.net.` for every bare account name. The dot
+is used to look the name up and nowhere else, so the resolver goes straight to
+the real name instead of trying each search domain first, as it does inside a
+Kubernetes pod. The service itself never sees it: a request naming the host with
+the dot is refused with HTTP 400 before it reaches storage.
+
 Blob storage has no directories, only names containing slashes. `azcp` presents
 that flat namespace as a tree, so `cp`'s rules keep working: a name with things
 filed under it behaves as a directory, and an empty directory round-trips
 through the zero-byte marker blob every Azure tool uses.
 
 Blob keys retain repeated slashes and dot components when copied between remote
-locations. A literal final slash asserts a directory; `%2F` names a slash that
+locations. A local path's dots are directions rather than names, as they are to
+`cp`: `azcp -r . azure://acct/c/` uploads the directory's contents, and
+`SRC/..` lands in the target too, never above it. Under `--parents` a blob
+destination drops `.` components and refuses a path through `..`, which no blob
+name can reproduce. A literal final slash asserts a directory; `%2F` names a slash that
 belongs to the key. Downloading a tree rejects names that the local filesystem
 would collapse or reinterpret, rather than writing two blobs onto one file or
 escaping the destination tree. An explicit local filename can still receive
@@ -186,6 +199,43 @@ Listed names are sources like any other, URLs and patterns included, and the
 destination must still be supplied as the last command-line operand or with
 `-t`. An omitted destination is an error; a name in the list is never used as
 the destination.
+
+## Selecting and removing in batches
+
+`--select=FILTER` picks entries out of a directory with the
+[file manager's filter](tui.md#filtering-a-pane), and does on the command line
+what marking them in a pane and pressing a key would. Each source operand must
+be a directory; it is replaced by the entries of it that the filter selects,
+and the copy then runs as it would with those named one by one, every other
+option included:
+
+```
+azcp -r --select 'type:dir has:*.mp4' azure://acct/media/ ./clips/
+azcp -r --select 'older:90d -*.keep' ./scratch azure://acct/archive/
+```
+
+`--remove` deletes instead of copying, and by default only lists what it would
+delete, with each entry's size and file count and a total on stderr. Add `--yes`
+to delete. Without `--select` it removes the operands themselves. As with `rm`,
+a directory needs `-r`, and `-v` names each entry as it goes:
+
+```
+azcp --remove -r --select 'older:2024-01-01' azure://acct/logs/       # lists
+azcp --remove -r --select 'older:2024-01-01' --yes azure://acct/logs/ # deletes
+azcp --remove -r --select 'type:dir size>10G' azure://acct/            # whole containers
+```
+
+A filter is weighed exactly as a pane weighs it, with one difference: a
+directory the filter cannot judge is left out rather than kept. Directories are
+always measured, in one walk, when the filter asks about their sizes, ages or
+contents, so in practice this means a directory with no files, which has no
+age, is never `older:` anything. Removal keeps the file manager's guarantees:
+every selection is listed in full before anything is deleted, local symbolic
+links are removed and never followed, a blob is deleted only if it is still the
+version that was listed, and a container goes in one request. Operands are
+taken literally, without wildcard expansion: the filter is the pattern.
+`--remove` accepts only options that make sense without a copy, and
+`--output=json` writes one `would-remove` or `removed` event per entry.
 
 ## Archiving a tree
 
@@ -613,6 +663,9 @@ Added by `azcp`:
 | `--exclude=PATTERN` | skip matching entries; repeatable |
 | `--include=PATTERN` | copy only matching entries; repeatable |
 | `--files-from=FILE` | read further sources from FILE, one per line; `-` is standard input |
+| `--select=FILTER` | act on the entries of each source directory the filter picks (see [batches](#selecting-and-removing-in-batches)) |
+| `--remove` | delete the operands or the selection; lists only, unless `--yes` |
+| `--yes` | carry out `--remove` |
 | `--put-md5` | record a checksum on each uploaded blob |
 | `--check-md5=WHEN` | `off`, `warn`, `fail` (default), `require` |
 | `--bwlimit=RATE` | cap throughput, in bytes per second |

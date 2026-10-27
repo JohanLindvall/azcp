@@ -496,6 +496,14 @@ The SDK's default of ten idle connections per host means a run with sixty-four
 jobs re-establishes a connection for most requests. It costs nothing against a
 local emulator, which is exactly why it went unnoticed.
 
+**The final dot of an absolute host is for the resolver alone.** `uri.Parse`
+takes it off `Host` into `URL.FQDN`, `Store.client` notes the host, and
+`dialAbsolute` puts the dot back on the dialled address and nowhere else. The
+service answers a `Host` header ending in a dot with an HTML 400 from its front
+end, a server-side copy hands the source URL to the service to fetch, and
+`SameAccount` has to see both spellings as one account. `String()` keeps the
+dot, so messages and the TUI's engine operands round-trip it.
+
 **Attributes ride in blob metadata.** `store/posixmeta.go` defines the keys and
 the encoding; `engine/attrs.go` writes them on upload and restores them on
 download. Reading metadata back during a scan costs a larger listing response,
@@ -623,6 +631,14 @@ sees a tree, and an empty directory is the zero-byte `name/` marker blob.
 Keys retain significant repeated slashes. Pruning a directory uses
 `RemoveMarker`, because trying its unsuffixed name first can delete a distinct
 blob and cannot identify markers whose directory key already ends in a slash.
+
+**A local operand's dots are directions, not names.** `uri.URL.Join` cleans a
+local path but keeps a blob key's `.` and `..`, since those can be real names.
+So `targetFor` sends an operand ending in `.` or `..` to the target itself, as
+GNU cp does, before any name is made: joining once gave `azcp -r .` blobs named
+`./a.txt`, and sent `SRC/..` into the target's parent on a local disk. Under
+`--parents` a blob destination drops `.` and refuses `..`.
+`TestDotsInALocalOperandNeverBecomeBlobNames` pins both.
 
 **`store.Store` is the naming half only.** Bulk data is dispatched concretely
 by scheme pair in `engine/copy.go`, because each pairing has its own fast
