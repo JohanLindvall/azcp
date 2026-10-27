@@ -12,6 +12,7 @@ complete command-line interface. The compatibility reference is GNU `cp` 9.4;
 - [Signing in](#signing-in)
 - [Choosing what to copy](#choosing-what-to-copy)
 - [Selecting and removing in batches](#selecting-and-removing-in-batches)
+- [Listing](#listing)
 - [Archiving a tree](#archiving-a-tree)
 - [Verifying a copy](#verifying-a-copy)
 - [Compressing on the way](#compressing-on-the-way)
@@ -257,6 +258,21 @@ Operands are taken literally, without wildcard expansion: the filter is the
 pattern. `--rm` accepts only options that make sense without a copy, and
 `--output=json` writes one `would-remove` or `removed` event per entry, an
 `error` event for each failure, and a closing `summary`.
+
+## Listing
+
+`--ls` lists each operand's entries with their type, size and modification
+time, the way a pane shows them; an account lists its containers, and no
+operand means the current directory. `--totals` also measures every directory
+in one walk, giving its size, its file count and the time of the newest file
+inside it, since a directory's or container's own time says nothing about its
+contents, and ends each listing with a total. `--select` narrows the listing
+with the same filter, and `--output=json` writes one `entry` object per row.
+
+```
+azcp --ls azure://acct/                                   # containers
+azcp --ls --totals --select 'has:*.mp4' azure://acct/     # and what they hold
+```
 
 ## Archiving a tree
 
@@ -687,6 +703,7 @@ Added by `azcp`:
 | `--select=FILTER` | act on the entries of each source directory the filter picks (see [batches](#selecting-and-removing-in-batches)) |
 | `--rm` | delete the operands or the selection; lists only, unless `--yes` |
 | `--yes` | carry out `--rm` |
+| `--ls` | list the operands' entries; `--totals` adds directory sizes, file counts and newest files |
 | `--whole-containers` | with `--rm --select`, delete a container chosen for its contents in one request |
 | `--put-md5` | record a checksum on each uploaded blob |
 | `--check-md5=WHEN` | `off`, `warn`, `fail` (default), `require` |

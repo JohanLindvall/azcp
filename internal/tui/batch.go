@@ -189,6 +189,11 @@ func (b *backend) measureFor(ctx context.Context, f nameFilter, base location, e
 	if !f.walks {
 		return nil
 	}
+	return b.measure(ctx, base, entries, f.has)
+}
+
+// measure gives every directory among entries its totals, answering terms.
+func (b *backend) measure(ctx context.Context, base location, entries []entry, terms []contentTerm) error {
 	var dirs []int
 	for i, e := range entries {
 		if e.node.IsDir() {
@@ -204,7 +209,7 @@ func (b *backend) measureFor(ctx context.Context, f nameFilter, base location, e
 	}
 	quiet := progress.New(progress.Config{Mode: progress.ModeNever})
 	defer quiet.Stop()
-	trees, err := b.directorySizes(ctx, base, selected, true, f.has, quiet)
+	trees, err := b.directorySizes(ctx, base, selected, true, terms, quiet)
 	if err != nil {
 		return err
 	}

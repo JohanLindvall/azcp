@@ -64,3 +64,32 @@ func runRemove(opt *cli.Options) int {
 	}
 	return exitOK
 }
+
+// runList prints what --ls names. It changes nothing, so it checks for no
+// update either, as no informational invocation does.
+func runList(opt *cli.Options) int {
+	logger, closer, err := logx.Init(logx.Config{Level: opt.LogLevel, Format: opt.LogFormat,
+		File: opt.LogFile, Color: colorSupported()})
+	if err != nil {
+		logx.Errf("%s: %v\n", cli.Program, err)
+		return exitFail
+	}
+	defer closer.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
+	failed, err := tui.List(ctx, opt, logger)
+	switch {
+	case ctx.Err() != nil:
+		logx.Errf("%s: interrupted\n", cli.Program)
+		return exitFail
+	case err != nil:
+		logx.Errf("%s: %v\n", cli.Program, err)
+		if isUsage(err) {
+			logx.Errf("Try '%s --help' for more information.\n", cli.Program)
+		}
+		return exitFail
+	case failed > 0:
+		return exitFail
+	}
+	return exitOK
+}

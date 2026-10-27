@@ -168,6 +168,10 @@ type Options struct {
 	// WholeContainers lets a container that Select picks for its contents go
 	// in one request, with whatever is written to it after it was listed.
 	WholeContainers bool
+	// List lists the operands, or what Select picks from them, instead of
+	// copying; Totals adds each directory's size, file count and newest file.
+	List   bool
+	Totals bool
 
 	// cp behaviour
 	Recursive            bool
@@ -500,6 +504,21 @@ func Parse(argv []string) (*Options, error) {
 			}
 		}
 	}
+	if o.List && o.Remove {
+		return nil, usagef("cannot combine --ls and --rm")
+	}
+	if o.List {
+		// Nothing is copied or changed; only what says where and how to look.
+		for _, f := range res.Flags {
+			switch f.Spec.Long {
+			case "ls", "totals", "select", "files-from", "retries", "timeout", "auth", "tenant",
+				"endpoint-suffix", "output", "no-progress", "log-level", "log-format", "log-file",
+				"no-auto-update", "no-version-check":
+			default:
+				return nil, usagef("%s cannot be combined with --ls", f.Name())
+			}
+		}
+	}
 	if o.Remove {
 		// Nothing is copied, so nothing that shapes a copy may be asked for.
 		// The retry delays pace whole-file restarts and a removal makes none;
@@ -559,6 +578,10 @@ func (o *Options) apply(f cpflags.Flag) error {
 		o.Select = f.Value
 	case "rm":
 		o.Remove = true
+	case "ls":
+		o.List = true
+	case "totals":
+		o.Totals = true
 	case "whole-containers":
 		o.WholeContainers = true
 	case "yes":
@@ -962,6 +985,13 @@ func (o *Options) resolveOperands(operands []string) error {
 		copy(o.TUIPaths[:], operands)
 		return nil
 	}
+	if o.List {
+		if len(operands) == 0 {
+			operands = []string{"."}
+		}
+		o.Sources = operands
+		return nil
+	}
 	if o.Remove {
 		if len(operands) == 0 {
 			return usagef("missing operand")
@@ -1013,6 +1043,9 @@ func (o *Options) validate() error {
 	}
 	if o.Confirmed && !o.Remove {
 		return usagef("--yes only confirms --rm")
+	}
+	if o.Totals && !o.List {
+		return usagef("--totals only applies to --ls")
 	}
 	if o.WholeContainers && (!o.Remove || o.Select == "") {
 		return usagef("--whole-containers only applies to --rm --select")

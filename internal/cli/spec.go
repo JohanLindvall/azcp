@@ -129,6 +129,11 @@ var specs = []cpflags.Spec{
 	{Long: "whole-containers", Arg: cpflags.NoArg,
 		Help: "with --rm --select, delete a container picked for its contents in one " +
 			"request rather than blob by blob, taking anything written to it since it was listed"},
+	{Long: "ls", Arg: cpflags.NoArg,
+		Help: "list the operands' entries, or what --select picks from them, with " +
+			"type, size and modification time; an account lists its containers"},
+	{Long: "totals", Arg: cpflags.NoArg,
+		Help: "with --ls, also walk each directory for its size, file count and newest file"},
 	{Long: "no-auto-update", Arg: cpflags.NoArg,
 		Help: "accepted for compatibility; copies only check for new versions"},
 	{Long: "no-version-check", Arg: cpflags.NoArg,
@@ -246,6 +251,7 @@ const usageHead = `Usage: azcp [OPTION]... [-T] SOURCE DEST
   or:  azcp [OPTION]... SOURCE... DIRECTORY
   or:  azcp [OPTION]... -t DIRECTORY SOURCE...
   or:  azcp --rm [--select=FILTER] [-r] [--yes] PATH...
+  or:  azcp --ls [--select=FILTER] [--totals] [PATH...]
   or:  azcp --tui[=MODE] [OPTION]... [LEFT [RIGHT]]
   or:  azcp --self-update
 

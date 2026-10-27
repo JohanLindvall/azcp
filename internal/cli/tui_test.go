@@ -139,3 +139,20 @@ func TestNoExtensionBeginsACpOption(t *testing.T) {
 		t.Fatalf("--remove is not cp's --remove-destination: %+v", o)
 	}
 }
+
+func TestListTakesPathsAndLooksOnly(t *testing.T) {
+	if o := mustParse(t, "--ls"); !o.List || len(o.Sources) != 1 || o.Sources[0] != "." {
+		t.Fatalf("--ls without operands: %+v", o)
+	}
+	if o := mustParse(t, "--ls", "--totals", "--select", "type:dir", "a", "azure://account/"); !o.Totals || len(o.Sources) != 2 {
+		t.Fatalf("--ls --totals: %+v", o)
+	}
+	for _, args := range [][]string{
+		{"--totals", "a", "b"}, {"--ls", "--rm", "a"}, {"--ls", "-r", "a"},
+		{"--ls", "--yes", "a"}, {"--ls", "--delete", "a"},
+	} {
+		if _, err := Parse(args); err == nil {
+			t.Errorf("accepted %q", args)
+		}
+	}
+}

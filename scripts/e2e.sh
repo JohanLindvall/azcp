@@ -540,6 +540,14 @@ fi
   && bad "--whole-containers left the matching container" \
   || ok "--whole-containers removes a container chosen for its contents in one request"
 
+listing=$("$AZCP" --ls --totals --select "${CONTAINER}" "$ACCOUNT/" 2>/dev/null)
+printf '%s' "$listing" | grep -q "^d .* ${CONTAINER}/\$" \
+  && ok "--ls lists an account's containers" \
+  || bad "--ls did not list the container: $listing"
+printf '%s' "$listing" | grep -q "^total " \
+  && ok "--ls --totals measures what it lists" \
+  || bad "--ls --totals gave no total: $listing"
+
 # --- machine-readable output ------------------------------------------------
 summary=$("$AZCP" --output=json "$SRC/file.txt" "$AZ/json.txt" 2>/dev/null | tail -1)
 if printf '%s' "$summary" | grep -q '"event":"summary"'; then

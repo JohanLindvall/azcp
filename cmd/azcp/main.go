@@ -55,6 +55,8 @@ func run(argv []string) int {
 		return runTUI(opt)
 	case opt.Remove:
 		return runRemove(opt)
+	case opt.List:
+		return runList(opt)
 	}
 
 	mode := opt.Progress

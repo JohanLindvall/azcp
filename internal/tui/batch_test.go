@@ -306,3 +306,23 @@ func TestRemoveInJSONReportsFailuresAndASummary(t *testing.T) {
 		t.Fatalf("events: %v", events)
 	}
 }
+
+func TestListShowsEntriesAndTheirTotals(t *testing.T) {
+	root := batchTree(t)
+	o := cli.Defaults()
+	o.List, o.Totals, o.Sources = true, true, []string{root}
+	lines := output(t)
+	if failed, err := List(t.Context(), o, slog.New(slog.DiscardHandler)); err != nil || failed != 0 {
+		t.Fatalf("list: %d, %v", failed, err)
+	}
+	got := strings.Join(lines(), "\n")
+	for _, want := range []string{"NEWEST", "new/", "old/", "top.txt", "total 16 B in 3 files"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("listing lacks %q:\n%s", want, got)
+		}
+	}
+	o.Sources = []string{filepath.Join(root, "missing")}
+	if failed, err := List(t.Context(), o, slog.New(slog.DiscardHandler)); err != nil || failed != 1 {
+		t.Fatalf("a missing operand: %d, %v", failed, err)
+	}
+}
