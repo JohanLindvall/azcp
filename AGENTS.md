@@ -585,9 +585,11 @@ mount configuration.
 measuring walk and then lists each selection in full, and `rejudge` weighs the
 filter again on that inventory — exactly what `remove` takes, under its inode,
 parent and ETag checks — so nothing written after the measurement goes
-unjudged. An identity meant to outlast a swap comes from an open handle
-(`dirIdentity`): on Windows a stat by path decides which file it describes only
-when `os.SameFile` compares it, by the path as it then stands. A container is deleted whole without a listing, so at an account the
+unjudged. On Windows a stat by path decides which file it describes only when
+`os.SameFile` first compares it, by the path as it then stands, so an inventory
+settles each local node's identity as it is listed (`fixIdentity`) and takes
+the parent's from an open handle (`dirIdentity`); otherwise a lookalike swapped
+in before the removal passes for what was listed. A container is deleted whole without a listing, so at an account the
 filter may not weigh contents. Operands that another one contains are taken
 with it (`covered`) rather than failing on what it already removed, and an
 operand ending in `.` or `..` is refused, as rm refuses it.

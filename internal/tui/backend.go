@@ -314,6 +314,9 @@ func (b *backend) inventoryOne(ctx context.Context, e entry) (inventoried, error
 	if n.Kind != e.node.Kind {
 		return inventoried{}, errSelectionChanged
 	}
+	if err := fixIdentity(n); err != nil {
+		return inventoried{}, err
+	}
 	tree := inventoried{nodes: []*store.Node{n}}
 	if !n.URL.IsRemote() {
 		if tree.parent, err = dirIdentity(filepath.Dir(n.URL.Path)); err != nil {
@@ -326,6 +329,9 @@ func (b *backend) inventoryOne(ctx context.Context, e entry) (inventoried, error
 	if n.IsDir() && !isContainer(n.URL) {
 		err = s.WalkAll(ctx, n.URL, func(_ *uri.URL, err error) error { return err }, func(child *store.Node) error {
 			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := fixIdentity(child); err != nil {
 				return err
 			}
 			key := nodeKey(child)
@@ -347,6 +353,23 @@ func (b *backend) inventoryOne(ctx context.Context, e entry) (inventoried, error
 		}
 	}
 	return tree, nil
+}
+
+// errNoIdentity says a listed file could not be told apart from whatever
+// might later take its name.
+var errNoIdentity = errors.New("file identity unavailable")
+
+// fixIdentity settles which file a local node's stat describes as it is
+// listed. On Windows a stat by path keeps only the path, and os.SameFile looks
+// the file up on its first comparison and keeps the answer, so a removal
+// comparing later would ask the path as it then stands and take a lookalike
+// swapped in for the file listed. Comparing the stat with itself makes that
+// first lookup now; elsewhere a stat holds its device and inode already.
+func fixIdentity(n *store.Node) error {
+	if n.URL.IsRemote() || os.SameFile(n.Info, n.Info) {
+		return nil
+	}
+	return &fs.PathError{Op: "identify", Path: n.URL.Path, Err: errNoIdentity}
 }
 
 // dirIdentity stats dir through an open handle, as the removal does. On

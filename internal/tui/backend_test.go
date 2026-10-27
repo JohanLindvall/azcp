@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/JohanLindvall/azcp/internal/cli"
 	"github.com/JohanLindvall/azcp/internal/progress"
@@ -253,6 +254,39 @@ func TestDeleteRefusesASwappedParentHoldingAHardLink(t *testing.T) {
 		t.Fatalf("removed through a directory that was not the one listed: %v", err)
 	}
 	read(t, filepath.Join(root, "dir", "file"), "selected")
+}
+
+func TestDeleteRefusesALookalikeSwappedIn(t *testing.T) {
+	b := testBackend(t)
+	root := t.TempDir()
+	stamp := time.Now().Add(-time.Hour).Truncate(time.Second)
+	lookalike := func(path string) {
+		t.Helper()
+		write(t, path, "listed")
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct{ selected, swapped string }{
+		{"top", "top"},
+		{"tree", filepath.Join("tree", "child")},
+	} {
+		lookalike(filepath.Join(root, tc.swapped))
+		trees, err := b.inventory(t.Context(), []entry{selected(t, b, filepath.Join(root, tc.selected))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Alike in name, contents, size, time and mode: only which file it is
+		// tells the two apart.
+		if err := os.Rename(filepath.Join(root, tc.swapped), filepath.Join(root, tc.swapped+".listed")); err != nil {
+			t.Fatal(err)
+		}
+		lookalike(filepath.Join(root, tc.swapped))
+		if err := b.remove(t.Context(), trees); !errors.Is(err, errChanged) {
+			t.Errorf("%s: removed a lookalike of what was listed: %v", tc.swapped, err)
+		}
+		read(t, filepath.Join(root, tc.swapped), "listed")
+	}
 }
 
 func TestTheSlashEntryAtAContainerRootIsNotTheContainer(t *testing.T) {
