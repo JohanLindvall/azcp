@@ -64,3 +64,17 @@ func TestTUIRejectsCopyPoliciesThatCouldLoseMoveSources(t *testing.T) {
 		t.Fatalf("transfer options lost: %+v", o)
 	}
 }
+
+func TestTUIJobsFollowEachCopyUnlessGiven(t *testing.T) {
+	o := mustParse(t, "--tui")
+	if o.JobsFor(false) != defaultJobs(false) || o.JobsFor(true) != defaultJobs(true) {
+		t.Fatalf("defaults: local %d, network %d", o.JobsFor(false), o.JobsFor(true))
+	}
+	if defaultJobs(false) > 4 {
+		t.Fatalf("a local copy defaults to %d jobs", defaultJobs(false))
+	}
+	o = mustParse(t, "--tui", "--jobs=12")
+	if o.JobsFor(false) != 12 || o.JobsFor(true) != 12 {
+		t.Fatal("--jobs was second-guessed")
+	}
+}

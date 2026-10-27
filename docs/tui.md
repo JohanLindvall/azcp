@@ -306,7 +306,9 @@ deletes as the two-pane view does, and shows modified times at any width of
 `--tui` accepts authentication and connection settings, `--jobs`,
 `--part-size`, `--part-concurrency`, retry settings, `--bwlimit`, `--timeout`,
 `--create-container`, `--put-md5`, `--check-md5`, `--resume`, log settings and
-`--dry-run`. Dry runs permit exploration and confirmation dialogs but do not
+`--dry-run`. Without `--jobs`, each copy or move chooses its own concurrency
+as the command line does: up to 4 files at once when both panes are local,
+more when Azure is either end. Dry runs permit exploration and confirmation dialogs but do not
 copy, move, create or delete files.
 
 Copy-policy flags such as `-i`, `-n`, `-u`, `--exclude`, `--compress`,

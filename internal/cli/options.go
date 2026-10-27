@@ -404,6 +404,16 @@ func defaultJobs(network bool) int {
 	return min(32, max(8, 2*runtime.NumCPU()))
 }
 
+// JobsFor is --jobs if it was given, and otherwise the default for a copy
+// that does or does not cross the network. The file manager learns which kind
+// each copy is only when it starts one, long after the options were parsed.
+func (o *Options) JobsFor(network bool) int {
+	if o.jobsSet {
+		return o.Jobs
+	}
+	return defaultJobs(network)
+}
+
 // TouchesNetwork reports whether either side of the copy is a remote URL.
 func (o *Options) TouchesNetwork() bool {
 	return uri.IsRemoteArg(o.Dest) || slices.ContainsFunc(o.Sources, uri.IsRemoteArg)

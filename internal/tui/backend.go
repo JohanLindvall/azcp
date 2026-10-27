@@ -154,6 +154,7 @@ func (b *backend) transfer(ctx context.Context, selected []entry, target locatio
 	if len(o.Sources) == 0 {
 		return errors.New("nothing selected")
 	}
+	o.Jobs = o.JobsFor(u.IsRemote() || slices.ContainsFunc(selected, func(e entry) bool { return e.loc.url.IsRemote() }))
 	var before [][]*store.Node
 	if move {
 		before, err = b.inventory(ctx, selected)
