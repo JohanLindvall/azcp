@@ -8,6 +8,34 @@ import (
 	"testing"
 )
 
+func TestTextPatternsKeepSlashesAndDoNotNormalizeValues(t *testing.T) {
+	for _, tc := range []struct {
+		pattern, value string
+		want           bool
+	}{
+		{"image/*", "image/png", true},
+		{"image/*", "image/svg+xml", true},
+		{"image/*", "IMAGE/png", false},
+		{"image/*", "other/image/png", false},
+		{"@(image|video)/*", "video/mp4", true},
+		{"*", "a/b/c", true},
+		{"*", "", true},
+		{"**", "a/b/c", true},
+		{"a/?", "a//", true},
+		{"a//b", "a/b", false},
+		{"a/./b", "a/b", false},
+		{`a/\*b`, "a/*b", true},
+	} {
+		p, err := CompileText(tc.pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := p.Match(tc.value); got != tc.want {
+			t.Errorf("%q matches %q = %v, want %v", tc.pattern, tc.value, got, tc.want)
+		}
+	}
+}
+
 func TestMatch(t *testing.T) {
 	cases := []struct {
 		pat, path string

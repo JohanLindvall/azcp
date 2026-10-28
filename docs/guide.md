@@ -213,7 +213,24 @@ option included:
 ```
 azcp -r --select 'type:dir has:*.mp4' azure://acct/media/ ./clips/
 azcp -r --select 'older:90d -*.keep' ./scratch azure://acct/archive/
+azcp --select 'content-type:image/* metadata.owner=alice' azure://acct/media/ ./images/
 ```
+
+Blob properties and custom metadata work in `--select` for copying, listing
+and removal, and in the TUI's **/** filter. For example:
+
+```
+azcp --ls --select 'content-type:image/*' azure://acct/media/
+azcp --rm --select 'metadata.retention=expired' azure://acct/archive/
+```
+
+Use `:` for a substring (ignoring case) or a whole-value glob, and `=` for an
+exact, case-sensitive value. `metadata.owner:*` tests whether a key exists;
+`metadata.owner=` matches a present but empty value. Field names and metadata
+keys ignore case. These terms apply to individual blobs in the listed directory,
+not to containers or prefixes based on their contents. Properties come from the
+listing, without a request per blob or a need for `--copy-metadata`.
+See the [filter reference](tui.md#filtering-a-pane) for all supported fields.
 
 `--rm` deletes instead of copying, and by default only lists what it would
 delete, with each entry's size and file count and a total on stderr. Add `--yes`

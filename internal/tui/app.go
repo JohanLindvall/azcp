@@ -287,7 +287,7 @@ func (a *app) reload() {
 				break
 			}
 			if usage[i] != nil {
-				result[i].usage, result[i].err = a.backend.scanUsage(ctx, usage[i].base, usage[i].oneFS, progress)
+				result[i].usage, result[i].err = a.backend.scanUsage(ctx, usage[i].base, usage[i].oneFS, progress, usage[i].blobFields...)
 			} else {
 				result[i].entries, result[i].err = a.backend.list(ctx, loc)
 			}
@@ -723,6 +723,7 @@ z / Z    Calculate directory totals: marked/cursor / all in this pane
          report *.mp4   names (any may match; other terms must all hold)
          name=notes.txt exactly that name; has=NAME a directory holding it
          size>50M files>=100 newer:7d older:2024-01-01 type:dir
+         content-type:image/* metadata.owner=alice (individual blobs)
          has:.mp4  directories holding a matching file; -term excludes
          Directory sizes, ages and contents are measured when asked for
 u        Scan a cached disk-usage view / return to two panes

@@ -42,6 +42,7 @@ type usageNode struct {
 	excluded  bool
 	marker    bool
 	total     usageTotals
+	blob      *blobFilterValues
 }
 
 type usageLink struct {
@@ -57,6 +58,7 @@ type usageTree struct {
 	scanned    time.Time
 	issues     []string
 	issueCount int
+	blobFields []string
 }
 
 func (n *usageNode) relative() string {
@@ -298,7 +300,7 @@ func (b *backend) usageAfterDelete(ctx context.Context, old *usageTree, selected
 	return tree, nil
 }
 
-func (b *backend) scanUsage(ctx context.Context, base location, oneFS bool, p *progress.Reporter) (*usageTree, error) {
+func (b *backend) scanUsage(ctx context.Context, base location, oneFS bool, p *progress.Reporter, blobFields ...string) (*usageTree, error) {
 	u := *base.url
 	u.TrailingSlash = u.IsRemote()
 	root, err := b.store(&u).Stat(ctx, &u, false)
@@ -308,7 +310,7 @@ func (b *backend) scanUsage(ctx context.Context, base location, oneFS bool, p *p
 	if !root.IsDir() {
 		return nil, errors.New("usage scans require a directory; symbolic links are not followed")
 	}
-	t := &usageTree{base: base, oneFS: oneFS}
+	t := &usageTree{base: base, oneFS: oneFS, blobFields: slices.Clone(blobFields)}
 	links := make(map[local.FileID]*usageLink)
 	var progressBytes int64
 	p.SetScanning(true)
@@ -322,6 +324,7 @@ func (b *backend) scanUsage(ctx context.Context, base location, oneFS bool, p *p
 		}
 		var disk local.Usage
 		if n.URL.IsRemote() {
+			x.blob = cacheBlobValues(n, blobFields)
 			x.allocated, x.diskKnown = x.length, true
 		} else {
 			var err error

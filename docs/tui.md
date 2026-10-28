@@ -272,6 +272,9 @@ A filter is a list of terms separated by spaces:
 | `has:.mp4`, `has:*.mp4` | directories holding, at any depth, a file whose name matches |
 | `has=notes.txt` | directories holding, at any depth, a file of exactly that name |
 | `type:dir`, `type:file`, `type:link` | entries of that kind |
+| `content-type:image/*`, `content-encoding=gzip` | blobs with matching HTTP properties |
+| `metadata.owner=alice`, `metadata.project:archive*` | blobs with matching custom metadata |
+| `metadata.owner:*`, `metadata.owner=` | blobs with that metadata key present, or with its value empty |
 
 Any one name term may match; every other term must hold. A leading `-` turns
 any term into an exclusion: `*.go -*_test.go` shows Go sources without their
@@ -279,7 +282,22 @@ tests, and `-has:*.tmp` hides directories holding temporary files. Quote a
 term to include spaces: `"holiday photos"`. Sizes take `K`, `M`, `G` and `T`
 (powers of 1024). Times are a date, an RFC 3339 timestamp, or an age such as
 `7d` or `36h` before now, as with `--newer-than`. Patterns match one name,
-never a path; the parent entry is always shown.
+never a path; the parent entry is always shown. Use `\"` for a literal double
+quote within a term, for example `etag=\"0x123\"`.
+
+Blob fields are `content-type`, `content-encoding`, `content-language`,
+`content-disposition`, `cache-control`, `access-tier`, `etag`, and
+`metadata.KEY` for a custom metadata key. Field names and metadata keys ignore
+case. With `:`, plain text matches a substring ignoring case, while a pattern
+matches the whole value case-sensitively; `/` is an ordinary character in a
+blob value. With `=`, the value must match exactly, including case, and pattern
+characters are literal. A missing field never matches; `-metadata.owner:*`
+therefore selects entries without that key. Like size and type terms, all blob
+conditions must hold: `content-type:image/* metadata.owner=alice` requires both.
+
+These fields describe individual blobs. Prefixes, containers and local files
+have no blob properties; types are not inferred from local filename extensions.
+The normal pane uses properties from its listing, without a request per blob.
 
 Sizes, file counts, ages and contents of directories come from walking them,
 so applying a filter that asks about them measures the directories on show in
@@ -302,7 +320,9 @@ given `--yes` (see [the user guide](guide.md#selecting-and-removing-in-batches))
 Changing the filter keeps the marks on entries that remain visible and drops
 the rest, so nothing out of sight can be copied, moved or deleted. In the
 usage view the same filter applies to the current directory and reads the
-cached scan, so it never walks again.
+cached scan. Blob fields are retained only when requested by a filter: asking
+for an uncached field rescans the tree once, then later filters reuse the
+cached values. Cancelling that scan keeps the previous filter and results.
 
 ## Single-pane mode
 

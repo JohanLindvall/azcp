@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/JohanLindvall/azcp/internal/humanize"
@@ -69,10 +70,25 @@ func (a *app) toggleUsage() {
 }
 
 func (a *app) scanUsagePane(i int, base location, current string, oneFS bool) {
+	a.scanUsageFiltered(i, base, current, oneFS, a.panes[i].filter)
+}
+
+func (a *app) scanUsageFiltered(i int, base location, current string, oneFS bool, filter nameFilter) {
+	fields := slices.Clone(filter.blobFields)
+	if tree := a.panes[i].usage; tree != nil {
+		for _, field := range tree.blobFields {
+			if !slices.Contains(fields, field) {
+				fields = append(fields, field)
+			}
+		}
+	}
 	a.start("Scanning directory usage", func(ctx context.Context, progress *progress.Reporter) (any, error) {
-		return a.backend.scanUsage(ctx, base, oneFS, progress)
+		return a.backend.scanUsage(ctx, base, oneFS, progress, fields...)
 	}, func(r jobResult) {
 		if r.err == nil {
+			// Publish the new filter with its data, so cancelling a rescan
+			// leaves the previous filter and visible entries in agreement.
+			a.panes[i].filter = filter
 			a.setUsage(i, r.value.(*usageTree), current)
 		} else if !errors.Is(r.err, context.Canceled) && a.panes[i].usage != nil {
 			loc := a.panes[i].loc

@@ -119,7 +119,8 @@ var specs = []cpflags.Spec{
 		Help: "act on the entries of each source directory that FILTER selects, " +
 			"in the --tui filter language: words found in names (any case), " +
 			"patterns matching whole names, name=EXACT, size>50M, files>=100, newer:7d, " +
-			"older:2024-01-01, has:PATTERN, type:dir, -TERM"},
+			"older:2024-01-01, has:PATTERN, type:dir, content-type:image/*, " +
+			"metadata.KEY=VALUE, -TERM"},
 	// Not --remove: getopt takes that as cp's --remove-destination, abbreviated.
 	{Long: "rm", Arg: cpflags.NoArg,
 		Help: "delete the operands, or what --select picks from them, instead of " +

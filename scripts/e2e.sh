@@ -505,6 +505,27 @@ check "--rm without --yes deletes nothing" "$(sums "$WORK/batch-intact")" "$(sum
 check "--rm --yes deletes the selection and nothing else" \
   "$(cd "$WORK/batch-after" && find . | sort | tr '\n' ' ')" ". ./empty ./logs ./logs/a.log "
 
+# Properties come from storage, independently of the filename extension.
+"$AZCP" --content-type image/png --metadata owner=alice "$SRC/file.txt" "$AZ/filter/a.bin" >/dev/null
+"$AZCP" --content-type text/plain --metadata owner=alice "$SRC/file.txt" "$AZ/filter/b.png" >/dev/null
+"$AZCP" --content-type image/jpeg --metadata owner=bob "$SRC/file.txt" "$AZ/filter/c.bin" >/dev/null
+listing=$("$AZCP" --ls --output=json --select 'content-type:image/* metadata.OWNER=alice' "$AZ/filter/" 2>/dev/null)
+if [[ "$listing" == *'"name":"a.bin"'* && "$listing" != *'"name":"b.png"'* && "$listing" != *'"name":"c.bin"'* ]]; then
+  ok "--ls selects blob properties and custom metadata together"
+else
+  bad "--ls blob property selection: $listing"
+fi
+mkdir -p "$WORK/filter-copy"
+"$AZCP" --select 'content-type:image/* metadata.owner=alice' "$AZ/filter/" "$WORK/filter-copy/" >/dev/null
+check "--select copies only blobs matching their stored metadata" \
+  "$(cd "$WORK/filter-copy" && find . -type f | sort | tr '\n' ' ')" "./a.bin "
+listed=$("$AZCP" --rm --select 'content-type:image/* metadata.owner=alice' "$AZ/filter/" 2>/dev/null)
+check "metadata-filtered removal previews one blob" "$(echo "$listed" | wc -l | tr -d ' ')" "1"
+"$AZCP" --rm --yes --select 'content-type:image/* metadata.owner=alice' "$AZ/filter/" >/dev/null 2>&1
+"$AZCP" -rT "$AZ/filter/" "$WORK/filter-after" >/dev/null
+check "metadata-filtered removal keeps nonmatching blobs" \
+  "$(cd "$WORK/filter-after" && find . -type f | sort | tr '\n' ' ')" "./b.png ./c.bin "
+
 # A container root lists blob names beginning with "/" as a directory called
 # "/", and its only URL is the container's: a selection must refuse it rather
 # than delete the container.

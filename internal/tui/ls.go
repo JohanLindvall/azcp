@@ -99,18 +99,19 @@ func (b *backend) listOne(ctx context.Context, f *nameFilter, raw string) (liste
 	}
 	if !n.IsDir() {
 		// As ls lists a file named on the command line: under its own name.
-		return listed{shown, []target{{entry{name: shown, loc: base, node: n}, shown}}}, nil
+		e := entry{name: n.Name(), loc: base, node: n}
+		if f != nil && !f.selects(e) {
+			return listed{shown: shown}, nil
+		}
+		e.name = shown
+		return listed{shown, []target{{e, shown}}}, nil
 	}
 	entries, err := b.list(ctx, base)
 	if err != nil {
 		return listed{}, &phrased{fmt.Sprintf("cannot open directory %s: %s", engine.Quote(shown), reason(err)), err}
 	}
-	var terms []contentTerm
-	if f != nil {
-		terms = f.has
-	}
 	if b.opt.Totals || f != nil && f.walks {
-		if err := b.measure(ctx, base, entries, terms); err != nil {
+		if err := b.measure(ctx, base, entries, f); err != nil {
 			return listed{}, &phrased{fmt.Sprintf("cannot measure %s: %s", engine.Quote(shown), reason(err)), err}
 		}
 	}

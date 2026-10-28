@@ -3,6 +3,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 
 	"github.com/JohanLindvall/azcp/internal/store"
+	"github.com/JohanLindvall/azcp/internal/uri"
 )
 
 func TestNameFilterTerms(t *testing.T) {
@@ -35,6 +37,7 @@ func TestNameFilterTerms(t *testing.T) {
 		{"NAME=notes.txt", "notes.txt"},
 		{"name=NOTES.TXT", ""},
 		{"name=[draft].md", "[draft].md"},
+		{`\[draft\].md`, "[draft].md"},
 		{"name=*.go", ""},
 		{"name=main.go name=README.md", "main.go README.md"},
 		{"*.txt -name=notes.txt", "old-notes.txt"},
@@ -179,6 +182,29 @@ func TestFilterBySizeAndContentsMeasuresWhatItNeeds(t *testing.T) {
 	}
 	if !p.entries[3].newest().Equal(recent) {
 		t.Fatalf("other's newest file is %v, want %v", p.entries[3].newest(), recent)
+	}
+}
+
+func TestPaneMeasurementDoesNotWalkHiddenDirectories(t *testing.T) {
+	a, _, left, _ := testApp(t)
+	write(t, filepath.Join(left, "keep", "file"), "data")
+	write(t, filepath.Join(left, "excluded", "file"), "unrelated")
+	a.reload()
+	finishJobs(t, a)
+	local := a.backend.local
+	var walked []string
+	a.backend.local = &sizeWalkStore{Store: local, scan: func(ctx context.Context, u *uri.URL, onError func(*uri.URL, error) error, fn func(*store.Node) error) error {
+		walked = append(walked, u.Path)
+		return local.WalkAll(ctx, u, onError, fn)
+	}}
+	a.applyFilter("name=keep size>0")
+	finishJobs(t, a)
+	if len(walked) != 1 || walked[0] != filepath.ToSlash(filepath.Join(left, "keep")) {
+		t.Fatalf("walked %v, want only the visible directory", walked)
+	}
+	p := &a.panes[0]
+	if len(p.entries) != 2 || p.entries[1].name != "keep" || p.entries[1].dirSize.bytes != 4 {
+		t.Fatalf("filtered entries: %v", entryNames(p.entries))
 	}
 }
 

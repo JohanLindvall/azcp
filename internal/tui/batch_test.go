@@ -5,6 +5,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -329,5 +330,104 @@ func TestListShowsEntriesAndTheirTotals(t *testing.T) {
 	o.Sources = []string{filepath.Join(root, "missing")}
 	if failed, err := List(t.Context(), o, slog.New(slog.DiscardHandler)); err != nil || failed != 1 {
 		t.Fatalf("a missing operand: %d, %v", failed, err)
+	}
+}
+
+func TestBatchMeasurementsDoNotWalkExcludedLocalTrees(t *testing.T) {
+	for _, listing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("listing=%v", listing), func(t *testing.T) {
+			b := testBackend(t)
+			root := t.TempDir()
+			write(t, filepath.Join(root, "keep", "file"), "data")
+			write(t, filepath.Join(root, "excluded", "deep", "file"), "unrelated")
+			local := b.local
+			var walked []string
+			b.local = &sizeWalkStore{Store: local, scan: func(ctx context.Context, u *uri.URL, onError func(*uri.URL, error) error, fn func(*store.Node) error) error {
+				walked = append(walked, u.Path)
+				return local.WalkAll(ctx, u, onError, func(n *store.Node) error {
+					if strings.Contains(n.URL.Path, "/excluded/") {
+						return fmt.Errorf("an excluded tree was read")
+					}
+					return fn(n)
+				})
+			}}
+			f, err := parseSelect("name=keep size>0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var targets []target
+			if listing {
+				b.opt.Totals = true
+				rows, listErr := b.listOne(t.Context(), &f, root)
+				targets, err = rows.targets, listErr
+			} else {
+				targets, err = b.selectEach(t.Context(), f, []string{root})
+			}
+			if err != nil || len(targets) != 1 || targets[0].name != "keep" || targets[0].dirSize.bytes != 4 {
+				t.Fatalf("filtered measurement: %v, %v", targets, err)
+			}
+			if len(walked) != 1 || walked[0] != filepath.ToSlash(filepath.Join(root, "keep")) {
+				t.Fatalf("walked %v, want only the selected directory", walked)
+			}
+		})
+	}
+}
+
+func BenchmarkFilteredDirectoryMeasurement(b *testing.B) {
+	root := b.TempDir()
+	for _, dir := range []string{"keep", "excluded"} {
+		if err := os.Mkdir(filepath.Join(root, dir), 0o755); err != nil {
+			b.Fatal(err)
+		}
+	}
+	for i := range 5000 {
+		if err := os.WriteFile(filepath.Join(root, "excluded", fmt.Sprintf("file-%05d", i)), []byte("data"), 0o600); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "keep", "file"), []byte("data"), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	backend := testBackend(b)
+	f, err := parseSelect("name=keep size>0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		picked, err := backend.selectEach(b.Context(), f, []string{root})
+		if err != nil || len(picked) != 1 {
+			b.Fatalf("select: %v, %v", picked, err)
+		}
+	}
+}
+
+func TestListFiltersExplicitFileOperandsByTheirName(t *testing.T) {
+	b := testBackend(t)
+	root := batchTree(t)
+	for _, tc := range []struct {
+		filter string
+		want   int
+	}{
+		{"name=top.txt", 1},
+		{"name=missing", 0},
+		{"-name=top.txt", 0},
+		{"size>1", 0},
+		{"size=1", 1},
+		{"has=top.txt", 1},
+		{"type:dir", 0},
+	} {
+		f, err := parseSelect(tc.filter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(root, "top.txt")
+		rows, err := b.listOne(t.Context(), &f, path)
+		if err != nil || len(rows.targets) != tc.want {
+			t.Errorf("%q: got %d entries, %v; want %d", tc.filter, len(rows.targets), err, tc.want)
+		}
+		if len(rows.targets) > 0 && rows.targets[0].shown != path {
+			t.Errorf("explicit operand lost its displayed path: %q", rows.targets[0].shown)
+		}
 	}
 }

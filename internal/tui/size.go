@@ -238,6 +238,20 @@ func (a *app) measure(all bool, want func(entry) bool) {
 		selected[i] = p.entries[row]
 	}
 	base, terms := p.loc, p.listFilter.has
+	walkAll := all
+	if !base.url.IsRemote() {
+		dirs := 0
+		for _, entries := range [][]entry{p.entries[1:], p.hidden} {
+			for _, e := range entries {
+				if e.node.IsDir() {
+					dirs++
+				}
+			}
+		}
+		// Measuring a filtered pane or filling missing cached totals must
+		// not walk the local directories that already have an answer.
+		walkAll = all && len(indices) == dirs
+	}
 	if p.loc.sizes == nil {
 		p.loc.sizes = &sizeTree{gen: a.sizeGen}
 	}
@@ -245,7 +259,7 @@ func (a *app) measure(all bool, want func(entry) bool) {
 		p.loc.sizes.children = map[string]*sizeTree{}
 	}
 	a.start("Calculating directory totals", func(ctx context.Context, progress *progress.Reporter) (any, error) {
-		return a.backend.directorySizes(ctx, base, selected, all, terms, progress)
+		return a.backend.directorySizes(ctx, base, selected, walkAll, terms, progress)
 	}, func(r jobResult) {
 		for _, row := range indices {
 			p.entries[row].sizePending = false

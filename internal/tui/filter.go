@@ -29,11 +29,12 @@ var filterHelp = []string{
 	"newer:7d  older:2024-01-01",
 	"has:.mp4 (holds a matching file)",
 	"name=notes.txt  that name exactly",
+	"content-type:image/*  metadata.owner=alice",
 	"Any name may match; all else must",
 	`-term excludes  "quote spaces"`,
 }
 
-var filterFields = []string{"name", "has", "size", "files", "newer", "older", "type"}
+var filterFields = append([]string{"name", "has", "size", "files", "newer", "older", "type", "metadata.KEY"}, blobFilterFields...)
 
 // nameFilter shows an entry when it matches any name term, or there are none,
 // meets every condition, and matches no excluded term. An entry a term cannot
@@ -44,6 +45,7 @@ type nameFilter struct {
 	names, must, excluded []filterTerm
 	has                   []contentTerm
 	walks                 bool // something asked depends on a directory's contents
+	blobFields            []string
 }
 
 func parseFilter(text string) (nameFilter, error) {
@@ -73,13 +75,20 @@ func parseFilter(text string) (nameFilter, error) {
 	return f, nil
 }
 
-// splitTerms splits at spaces outside double quotes.
+// splitTerms splits at spaces outside double quotes. A backslash before a
+// double quote keeps that quote in the value; other glob escapes stay intact.
 func splitTerms(s string) ([]string, error) {
 	var terms []string
 	var b strings.Builder
 	quoted, started := false, false
-	for _, r := range s {
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
 		switch {
+		case r == '\\' && i+1 < len(runes) && runes[i+1] == '"':
+			b.WriteRune('"')
+			started = true
+			i++
 		case r == '"':
 			quoted, started = !quoted, true
 		case !quoted && unicode.IsSpace(r):
@@ -111,6 +120,10 @@ func (f *nameFilter) term(s string) (t filterTerm, isName bool, err error) {
 	}
 	if field == "" {
 		field = "size" // >50M is short for size>50M
+	}
+	if isBlobField(field) {
+		t, err := f.blobTerm(field, op, value)
+		return t, false, err
 	}
 	if !slices.Contains(filterFields, field) {
 		return nil, false, fmt.Errorf("unknown field %q; use %s", field, strings.Join(filterFields, ", "))
@@ -175,7 +188,8 @@ var comparisons = map[string]func(n, limit int64) bool{
 // is not one is a name and gives back no field or operator.
 func splitField(s string) (field, op, value string) {
 	i := 0
-	for i < len(s) && (s[i] >= 'a' && s[i] <= 'z' || s[i] >= 'A' && s[i] <= 'Z') {
+	for i < len(s) && (s[i] >= 'a' && s[i] <= 'z' || s[i] >= 'A' && s[i] <= 'Z' ||
+		s[i] >= '0' && s[i] <= '9' || s[i] == '-' || s[i] == '_' || s[i] == '.') {
 		i++
 	}
 	for _, o := range []string{">=", "<=", ":", "=", "<", ">"} {
@@ -184,7 +198,7 @@ func splitField(s string) (field, op, value string) {
 			if field == "" && o == ":" {
 				return "", "", s
 			}
-			if o == ":" {
+			if o == ":" && !isBlobField(field) {
 				// size:>50M reads as size>50M.
 				for _, inner := range []string{">=", "<=", "=", "<", ">"} {
 					if rest, ok := strings.CutPrefix(value, inner); ok {
@@ -281,7 +295,7 @@ func termMatcher(term string) (func(string) bool, error) {
 	if term == "" {
 		return nil, errors.New("nothing to match")
 	}
-	if !glob.HasMeta(term) && !strings.Contains(term, "/") {
+	if !glob.HasMeta(term) && !strings.ContainsAny(term, `/\`) {
 		term = strings.ToLower(term)
 		return func(name string) bool { return strings.Contains(strings.ToLower(name), term) }, nil
 	}
@@ -382,6 +396,12 @@ func (a *app) applyFilter(text string) {
 	a.modal = nil
 	p := &a.panes[a.active]
 	if p.usage != nil {
+		if p.usage.base.url.IsRemote() && slices.ContainsFunc(f.blobFields, func(field string) bool {
+			return !slices.Contains(p.usage.blobFields, field)
+		}) {
+			a.scanUsageFiltered(a.active, p.usage.base, p.usageDir.relative(), p.usage.oneFS, f)
+			return
+		}
 		p.filter = f
 		p.usageEntries(nil)
 		a.status = "Filter applied; selection marks cleared"

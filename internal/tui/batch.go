@@ -189,14 +189,19 @@ func (b *backend) measureFor(ctx context.Context, f nameFilter, base location, e
 	if !f.walks {
 		return nil
 	}
-	return b.measure(ctx, base, entries, f.has)
+	return b.measure(ctx, base, entries, &f)
 }
 
 // measure gives every directory among entries its totals, answering terms.
-func (b *backend) measure(ctx context.Context, base location, entries []entry, terms []contentTerm) error {
+func (b *backend) measure(ctx context.Context, base location, entries []entry, f *nameFilter) error {
 	var dirs []int
+	all := true
 	for i, e := range entries {
 		if e.node.IsDir() {
+			if f != nil && !f.match(e, false) {
+				all = false
+				continue
+			}
 			dirs = append(dirs, i)
 		}
 	}
@@ -209,7 +214,13 @@ func (b *backend) measure(ctx context.Context, base location, entries []entry, t
 	}
 	quiet := progress.New(progress.Config{Mode: progress.ModeNever})
 	defer quiet.Stop()
-	trees, err := b.directorySizes(ctx, base, selected, true, terms, quiet)
+	var terms []contentTerm
+	if f != nil {
+		terms = f.has
+	}
+	// A local walk can avoid excluded subtrees entirely. Azure still uses
+	// one flat listing rather than paying a request for every prefix.
+	trees, err := b.directorySizes(ctx, base, selected, all || base.url.IsRemote(), terms, quiet)
 	if err != nil {
 		return err
 	}
@@ -367,7 +378,7 @@ func throughDot(raw string) bool {
 // removal will take. The selection was made on an earlier walk, and anything
 // written or changed since then went unjudged.
 func (r *removal) rejudge(targets []target, trees []inventoried) ([]target, []inventoried) {
-	if r.filter == nil || !r.filter.walks {
+	if r.filter == nil || !r.filter.walks && len(r.filter.blobFields) == 0 {
 		return targets, trees
 	}
 	kept := 0

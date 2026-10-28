@@ -285,4 +285,39 @@ func TestAzuriteCommanderOperations(t *testing.T) {
 	if updated.root.total != fresh.root.total || len(updated.root.children) != len(fresh.root.children) {
 		t.Fatalf("cached cleanup differs from storage: updated=%+v fresh=%+v err=%v", updated.root.total, fresh.root.total, err)
 	}
+	t.Run("blob property filters", func(t *testing.T) {
+		base := location{url: remote.url.Join("filter")}
+		for _, item := range []struct{ name, contentType, owner string }{
+			{"a.bin", "image/png", "alice"}, {"b.png", "text/plain", "alice"}, {"c.bin", "image/jpeg", "bob"},
+		} {
+			if err := b.az.Upload(t.Context(), sibling, base.url.Join(item.name), azure.TransferOptions{
+				ContentType: item.contentType, ContentLanguage: "en-GB", ContentDisposition: `attachment; filename="photo.png"`,
+				CacheControl: "private", Metadata: map[string]string{"Owner": item.owner, "empty": ""},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f, err := parseFilter(`content-type:image/* metadata.OWNER=alice metadata.empty= content-language:en cache-control=private content-disposition:"filename=\"photo.png\"" etag:*`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries, err := b.list(t.Context(), base)
+		if err != nil || len(entries) != 3 {
+			t.Fatalf("list: %v, %v", entries, err)
+		}
+		for _, e := range entries {
+			if got := f.selects(e); got != (e.name == "a.bin") {
+				t.Errorf("listing filter: %s = %v", e.name, got)
+			}
+		}
+		tree, err := b.scanUsage(t.Context(), base, false, reporter(t), f.blobFields...)
+		if err != nil || tree.root.total.files != 3 || tree.root.total.incomplete {
+			t.Fatalf("usage scan: %v, %v", tree, err)
+		}
+		for _, n := range tree.root.children {
+			if got := f.selects(entry{name: n.name, usage: n}); got != (n.name == "a.bin") {
+				t.Errorf("usage filter: %s = %v", n.name, got)
+			}
+		}
+	})
 }

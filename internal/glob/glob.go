@@ -106,6 +106,20 @@ func Compile(pattern string) (*Pattern, error) {
 	return p, nil
 }
 
+// CompileText matches a whole value rather than a pathname. Slashes are
+// ordinary characters, so MIME types and metadata values can use the same
+// wildcard language as filenames. Callers expand braces before compiling.
+func CompileText(pattern string) (Segment, error) {
+	if !segHasMeta(pattern) {
+		return Segment{Kind: SegLiteral, Text: unescape(pattern)}, nil
+	}
+	seq, err := parseSequence(pattern)
+	if err != nil {
+		return Segment{}, fmt.Errorf("bad pattern %q: %w", pattern, err)
+	}
+	return Segment{Kind: SegMatch, Text: pattern, seq: seq}, nil
+}
+
 // MustCompile is Compile for patterns known good at build time.
 func MustCompile(pattern string) *Pattern {
 	p, err := Compile(pattern)
