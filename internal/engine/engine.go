@@ -216,6 +216,9 @@ type task struct {
 	src     *store.Node
 	dst     *uri.URL
 	display string
+	// followLinks is the dereference policy at this source's position;
+	// preserving hard links applies it to the first destination too.
+	followLinks bool
 	// backup, when set, is the path the existing destination is moved to first.
 	backup string
 	// removeFirst deletes the destination before writing, for --force and

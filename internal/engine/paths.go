@@ -152,8 +152,8 @@ func (e *Engine) prepareLocalTask(t *task) error {
 	if di.Mode().IsRegular() {
 		if id, links, ok := local.IDOf(t.dst.Path, di); ok {
 			t.destID = &id
-			if e.opt.Preserve.Links && links > 1 && !t.removeFirst && t.backup == "" &&
-				!e.opt.HardLink && !e.opt.SymbolicLink && !t.src.IsSymlink() {
+			if e.opt.Preserve.Links && !e.opt.AttributesOnly && links > 1 && !t.removeFirst && t.backup == "" &&
+				!t.src.IsSymlink() {
 				// Preserving the source's link graph also means separating
 				// destination names that the source does not link together.
 				separateLinks = true

@@ -25,6 +25,14 @@ import (
 // transfer moves one file. It is called on a worker goroutine and may be called
 // again for the same task if the first attempt failed transiently.
 func (e *Engine) transfer(ctx context.Context, t *task, pt *progress.Task) (retErr error) {
+	defer func() {
+		// A failed backup or unlink can return before copyLocal consumes the
+		// scanner's claim. Later aliases must still learn that it failed.
+		if t.linkClaim != nil {
+			e.settleLink(t.linkClaim, t.dst.Path, retErr == nil)
+			t.linkClaim, t.hardLink = nil, nil
+		}
+	}()
 	if t.noop {
 		return nil
 	}
@@ -274,6 +282,18 @@ func (e *Engine) copyRemote(ctx context.Context, t *task, pt *progress.Task) err
 func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (retErr error) {
 	srcPath, dstPath := t.src.URL.Path, t.dst.Path
 
+	// Preservation and links between destinations retained by -u take
+	// precedence over the operation that creates the first name, even -s.
+	if e.opt.Preserve.Links || t.hardLink != nil {
+		linked, c, err := e.awaitHardLink(ctx, t)
+		if linked || err != nil {
+			return err
+		}
+		if c != nil {
+			defer func() { e.settleLink(c, t.dst.Path, retErr == nil) }()
+		}
+	}
+
 	switch {
 	case e.opt.SymbolicLink:
 		err := e.replace(t, func() error {
@@ -308,19 +328,6 @@ func (e *Engine) copyLocal(ctx context.Context, t *task, pt *progress.Task) (ret
 			}
 		}
 		return linkError(t, "hard", e.replace(t, func() error { return os.Link(linkPath, dstPath) }))
-	}
-
-	// Files that were hard-linked in the source stay linked in the copy. The
-	// first task for an identity claims it and copies; the rest wait for that
-	// copy and link to it.
-	if e.opt.Preserve.Links || t.hardLink != nil {
-		linked, c, err := e.awaitHardLink(ctx, t)
-		if linked || err != nil {
-			return err
-		}
-		if c != nil {
-			defer func() { e.settleLink(c, t.dst.Path, retErr == nil) }()
-		}
 	}
 
 	switch {
@@ -440,7 +447,19 @@ func (e *Engine) awaitHardLink(ctx context.Context, t *task) (linked bool, claim
 	}
 	// The first destination already has its final attributes. Reapplying the
 	// source's here would change a newer file deliberately retained by -u.
-	if err := e.replaceEntry(t, func() error { return os.Link(fut.path, t.dst.Path) }); err != nil {
+	if err := e.replaceEntry(t, true, func() error {
+		path := fut.path
+		if t.followLinks {
+			// A regular file may have been copied through a destination
+			// symlink. Follow it under the same -L/-H/-P policy as the source.
+			var err error
+			path, err = filepath.EvalSymlinks(path)
+			if err != nil {
+				return err
+			}
+		}
+		return os.Link(path, t.dst.Path)
+	}); err != nil {
 		e.log.Warn("cannot preserve hard link, copying instead",
 			"source", t.src.URL.Display(), "first_copy", fut.path, "error", err)
 		return false, nil, nil
@@ -467,20 +486,21 @@ func (e *Engine) settleLink(c *linkClaim, path string, ok bool) {
 // replace performs an operation that cannot overwrite in place, removing an
 // existing destination first the way cp does for links.
 func (e *Engine) replace(t *task, fn func() error) error {
-	if err := e.replaceEntry(t, fn); err != nil {
+	removeExisting := e.opt.Force || !e.opt.AttributesOnly &&
+		(t.src.IsSymlink() || !e.opt.SymbolicLink && (!e.opt.HardLink || e.opt.Interactive))
+	if err := e.replaceEntry(t, removeExisting, fn); err != nil {
 		return err
 	}
 	e.applyAttrs(t)
 	return nil
 }
 
-func (e *Engine) replaceEntry(t *task, fn func() error) error {
+func (e *Engine) replaceEntry(t *task, removeExisting bool, fn func() error) error {
 	err := fn()
 	if err == nil {
 		return nil
 	}
-	if !errors.Is(err, os.ErrExist) || e.opt.NoClobber ||
-		((e.opt.AttributesOnly || (e.opt.HardLink && !t.src.IsSymlink() && !e.opt.Interactive) || e.opt.SymbolicLink) && !e.opt.Force) {
+	if !errors.Is(err, os.ErrExist) || e.opt.NoClobber || !removeExisting {
 		return err
 	}
 	if rmErr := os.Remove(t.dst.Path); rmErr != nil {

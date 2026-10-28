@@ -332,7 +332,7 @@ func TestDecompressionChecksFinalDestination(t *testing.T) {
 	e := newEngine(t, "--decompress", "-n", "src", "dst")
 	src := &store.Node{URL: mustURL(t, "azure://acct/c/file.txt.gz"), Kind: store.KindFile, ContentEncoding: "gzip"}
 	out := make(chan *task, 1)
-	if err := e.emit(context.Background(), src, mustURL(t, filepath.Join(d, "file.txt.gz")), out, "file"); err != nil {
+	if err := e.emit(context.Background(), src, mustURL(t, filepath.Join(d, "file.txt.gz")), out, "file", false); err != nil {
 		t.Fatal(err)
 	}
 	if len(out) != 0 {
@@ -460,7 +460,7 @@ func TestPartialDestinationQueuedOnlyOnce(t *testing.T) {
 	dst := mustURL(t, filepath.Join(d, "file"))
 	out := make(chan *task, 2)
 	for range 2 {
-		if err := e.emit(context.Background(), src, dst, out, "file"); err != nil {
+		if err := e.emit(context.Background(), src, dst, out, "file", false); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -9,7 +9,7 @@ import (
 )
 
 func (e *Engine) hardLinkID(src *store.Node, dst *uri.URL) (local.FileID, bool) {
-	if e.opt.HardLink || e.opt.SymbolicLink || src.URL.IsRemote() || dst.IsRemote() {
+	if src.URL.IsRemote() || dst.IsRemote() {
 		return local.FileID{}, false
 	}
 	info, err := sourceAttrs(src)
@@ -23,7 +23,7 @@ func (e *Engine) hardLinkID(src *store.Node, dst *uri.URL) (local.FileID, bool) 
 // Claims belong to operand order, not worker scheduling: -u may retain the
 // first destination and later names must link to that same file.
 func (e *Engine) planHardLink(t *task) {
-	if !e.opt.Preserve.Links || t.hardLink != nil {
+	if !e.opt.Preserve.Links || e.opt.HardLink || t.hardLink != nil {
 		return
 	}
 	id, ok := e.hardLinkID(t.src, t.dst)
@@ -41,7 +41,7 @@ func (e *Engine) planHardLink(t *task) {
 }
 
 func (e *Engine) priorHardLink(src *store.Node, dst *uri.URL) *linkFuture {
-	if !e.opt.Preserve.Links {
+	if !e.opt.Preserve.Links || e.opt.HardLink {
 		return nil
 	}
 	id, ok := e.hardLinkID(src, dst)

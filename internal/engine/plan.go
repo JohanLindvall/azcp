@@ -392,7 +392,7 @@ func (e *Engine) plan(ctx context.Context, src *store.Node, dst *uri.URL,
 		// cp reads a fifo it is given by name, which is what lets a pipe —
 		// /dev/stdin, or <(…) — be copied. Under -r it would recreate one
 		// instead, and that is not done here.
-		return e.emit(ctx, src, dst, out, display)
+		return e.emit(ctx, src, dst, out, display, e.derefAt(top))
 
 	case src.Kind == store.KindOther:
 		e.prog.Saw(1)
@@ -402,7 +402,7 @@ func (e *Engine) plan(ctx context.Context, src *store.Node, dst *uri.URL,
 		return nil
 
 	default:
-		return e.emit(ctx, src, dst, out, display)
+		return e.emit(ctx, src, dst, out, display, e.derefAt(top))
 	}
 }
 
@@ -607,7 +607,7 @@ func (e *Engine) planRemoteTree(ctx context.Context, src *store.Node, dst *uri.U
 			return nil
 		}
 		empty.file(target)
-		return e.emit(ctx, n, target, out, display+"/"+rel)
+		return e.emit(ctx, n, target, out, display+"/"+rel, false)
 	})
 	if err != nil {
 		return err
@@ -716,12 +716,12 @@ func (e *Engine) planSymlink(ctx context.Context, src *store.Node, dst *uri.URL,
 		e.markSkipped()
 		return nil
 	}
-	return e.emit(ctx, src, dst, out, display)
+	return e.emit(ctx, src, dst, out, display, false)
 }
 
 // emit applies the overwrite rules and, if the file is to be copied, queues it.
 func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
-	out chan<- *task, display string) error {
+	out chan<- *task, display string, followLinks bool) error {
 
 	dst = e.fileDestination(src, dst)
 	e.prog.Saw(1)
@@ -767,17 +767,21 @@ func (e *Engine) emit(ctx context.Context, src *store.Node, dst *uri.URL,
 		e.fail("%v", err)
 		return nil
 	}
-	t := &task{src: src, dst: dst, display: display,
+	t := &task{src: src, dst: dst, display: display, followLinks: followLinks,
 		backup: decision.backup, hardLink: decision.link, removeFirst: e.opt.RemoveDestination,
 		stream: src.IsPipe() || e.streamDest}
 	if err := e.prepareLocalTask(t); err != nil {
 		e.fail("%v", err)
 		return nil
 	}
-	dst = t.dst
 	if err := e.awaitLocalAccess(ctx, t); err != nil {
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		e.fail("%v", err)
+		return nil
 	}
+	dst = t.dst
 	e.planHardLink(t)
 	if e.scheduled != nil || t.destID != nil || t.sourceID != nil {
 		t.done = make(chan struct{})

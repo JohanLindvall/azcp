@@ -36,6 +36,16 @@ FLAGS = [
     ["--attributes-only"],
     ["--attributes-only", "-P"],
     ["--attributes-only", "-fP"],
+    ["--attributes-only", "--preserve=links"],
+    ["--attributes-only", "--preserve=all"],
+    ["--attributes-only", "--preserve=links", "-u"],
+    ["--attributes-only", "-u"],
+    ["-l", "--preserve=all"],
+    ["-lu"],
+    ["-s"],
+    ["-s", "--preserve=all"],
+    ["-sP"],
+    ["-su"],
     ["-b"],
     ["--backup=numbered"],
     ["--no-preserve=mode"],
@@ -77,6 +87,8 @@ CASES = [
     "parents_dot",
     "parents_link",
     "parents_innerlink",
+    "linked_dest_symlink",
+    "explicit_link_graph",
 ]
 
 OLD, ORIGINAL, NEW = 1600000000, 1700000000, 1900000000
@@ -173,9 +185,26 @@ def setup(root, case):
             (root / "dst").mkdir()
             (root / "dst/src").symlink_to("../real")
         args = ["--parents", "./src/a", "dst"]
+    elif case == "linked_dest_symlink":
+        (root / "dst").mkdir()
+        (root / "other").write_text("old target")
+        (root / "dst/a").symlink_to("../other")
+        args = ["src/a", "src/alias", "dst"]
+    elif case == "explicit_link_graph":
+        args = ["--preserve=links", "src/a", "src/alias", "."]
 
+    if case in ("existingtree", "backup_tree"):
+        # cp and azcp need not enumerate a directory's entries in the same
+        # order. Make these recursive fixtures order-independent; the
+        # update_linked_* cases test retained aliases with explicit operands.
+        (root / "dst/alias").write_text((root / "dst/a").read_text())
+        for name in ("a", "alias"):
+            (root / "dst" / name).chmod(0o640)
     for path in root.rglob("*"):
         os.utime(path, (ORIGINAL, ORIGINAL), follow_symlinks=False)
+    if case in ("existingtree", "backup_tree"):
+        for name in ("a", "alias"):
+            os.utime(root / "dst" / name, (OLD, OLD))
     if case.startswith("update_link_"):
         when = OLD if case.endswith("old") else NEW
         os.utime(root / "other", (when, when))

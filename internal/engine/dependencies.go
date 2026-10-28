@@ -60,18 +60,34 @@ func (e *Engine) refreshLocalSource(ctx context.Context, src *store.Node) (*stor
 }
 
 func (e *Engine) awaitLocalAccess(ctx context.Context, t *task) error {
-	if t.destID == nil {
-		return nil
-	}
-	if _, err := e.awaitDestination(ctx, *t.destID); err != nil {
-		return err
-	}
-	for _, reader := range e.localReads[*t.destID] {
-		if err := awaitTask(ctx, reader); err != nil {
+	for t.destID != nil {
+		id := *t.destID
+		waited, err := e.awaitDestination(ctx, id)
+		if err != nil {
 			return err
 		}
+		for _, reader := range e.localReads[id] {
+			if err := awaitTask(ctx, reader); err != nil {
+				return err
+			}
+			waited = true
+		}
+		delete(e.localReads, id)
+		if !waited {
+			return nil
+		}
+		// An earlier writer can unlink an alias and change both the file
+		// identity and whether preserving links must separate this name.
+		t.destID, t.noop, t.followDangling = nil, false, false
+		t.removeFirst = e.opt.RemoveDestination
+		t.stream = t.src.IsPipe() || e.streamDest
+		if err := e.prepareLocalTask(t); err != nil {
+			return err
+		}
+		if t.destID == nil || *t.destID == id {
+			return nil
+		}
 	}
-	delete(e.localReads, *t.destID)
 	return nil
 }
 
