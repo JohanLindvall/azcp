@@ -37,7 +37,7 @@ func TestUpdateOlderUsesThePreservedTimestamp(t *testing.T) {
 
 	preserved := func(mtime time.Time) *store.Node {
 		return &store.Node{URL: blobURL, Size: 1, ModTime: uploaded,
-			Metadata: map[string]string{store.MetaMTime: mtime.UTC().Format(time.RFC3339Nano)}}
+			Metadata: (store.PosixMeta{MTime: mtime}).Encode()}
 	}
 	file := &store.Node{URL: fileURL, Size: 1, ModTime: original}
 

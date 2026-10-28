@@ -293,15 +293,16 @@ func TestAzuriteCommanderOperations(t *testing.T) {
 			if err := b.az.Upload(t.Context(), sibling, base.url.Join(item.name), azure.TransferOptions{
 				ContentType: item.contentType, ContentLanguage: "en-GB", ContentDisposition: `attachment; filename="photo.png"`,
 				CacheControl: "private", Metadata: map[string]string{"Owner": item.owner, "empty": ""},
+				Tags: map[string]string{"Owner": item.owner, "empty": ""},
 			}); err != nil {
 				t.Fatal(err)
 			}
 		}
-		f, err := parseFilter(`content-type:image/* metadata.OWNER=alice metadata.empty= content-language:en cache-control=private content-disposition:"filename=\"photo.png\"" etag:*`)
+		f, err := parseFilter(`tags.Owner=alice tags.empty= content-type:image/* metadata.OWNER=alice metadata.empty= content-language:en cache-control=private content-disposition:"filename=\"photo.png\"" etag:*`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		entries, err := b.list(t.Context(), base)
+		entries, err := b.list(withBlobFields(t.Context(), f.blobFields), base)
 		if err != nil || len(entries) != 3 {
 			t.Fatalf("list: %v, %v", entries, err)
 		}

@@ -144,6 +144,7 @@ func (p *phrased) Unwrap() error { return p.err }
 // an unmeasured directory on show, a batch acts on what it picks without
 // anyone looking first.
 func (b *backend) selectEach(ctx context.Context, f nameFilter, dirs []string) ([]target, error) {
+	ctx = withBlobFields(ctx, f.blobFields)
 	var picked []target
 	for _, raw := range dirs {
 		if raw == "" {
@@ -285,6 +286,9 @@ func (r *removal) run(ctx context.Context) error {
 	targets, err := r.targets(ctx)
 	if err != nil {
 		return err
+	}
+	if r.filter != nil {
+		ctx = withBlobFields(ctx, r.filter.blobFields)
 	}
 	kept := targets[:0]
 	for _, t := range targets {

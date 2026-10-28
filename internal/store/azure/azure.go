@@ -59,6 +59,8 @@ type Config struct {
 	// IncludeMetadata asks listings to return each blob's metadata. It costs
 	// a larger response, so it is only worth it when something will read it.
 	IncludeMetadata bool
+	// IncludeTags also reads index tags. Reading tags requires separate permissions.
+	IncludeTags bool
 	// PeakRequests is how many requests this run can have outstanding at once.
 	// It sizes the connection pool; see transport.go for why that matters.
 	PeakRequests int
@@ -363,7 +365,15 @@ func (s *Store) stat(ctx context.Context, u *uri.URL) (*store.Node, error) {
 		}
 		props, err := bc.GetProperties(ctx, nil)
 		if err == nil {
-			return blobNode(u, &props), nil
+			n := blobNode(u, &props)
+			if s.includeTags(ctx) && !n.IsDir() {
+				tags, err := bc.GetTags(ctx, &blob.GetTagsOptions{BlobAccessConditions: sourceConditions(n)})
+				if err != nil {
+					return nil, err
+				}
+				n.Tags = flattenTags(tags.BlobTagSet)
+			}
+			return n, nil
 		}
 		if !isNotFound(err) {
 			return nil, err
@@ -479,7 +489,7 @@ func (s *Store) readDirEntries(ctx context.Context, u *uri.URL) ([]*store.Node, 
 	var out []*store.Node
 	pager := cc.NewListBlobsHierarchyPager("/", &container.ListBlobsHierarchyOptions{
 		Prefix:  &prefix,
-		Include: container.ListBlobsInclude{Metadata: s.cfg.IncludeMetadata},
+		Include: container.ListBlobsInclude{Metadata: s.cfg.IncludeMetadata, Tags: s.includeTags(ctx)},
 	})
 	for pager.More() {
 		page, err := pager.NextPage(ctx)
@@ -765,7 +775,11 @@ func itemNode(base *uri.URL, b *container.BlobItem) *store.Node {
 		p.md5 = bp.ContentMD5
 		p.accessTier = string(deref(bp.AccessTier))
 	}
-	return fileNode(u, *b.Name, p)
+	n := fileNode(u, *b.Name, p)
+	if b.BlobTags != nil {
+		n.Tags = flattenTags(b.BlobTags.BlobTagSet)
+	}
+	return n
 }
 
 // flatten turns the SDK's map of pointers into a plain one; a nil value and an

@@ -332,7 +332,7 @@ func names(nodes []*store.Node) []string {
 // at different mistakes.
 func TestStatTellsBlobsPrefixesAndNothingApart(t *testing.T) {
 	f := newFakeBlobs()
-	f.put("c", "a/b.txt", []byte("hello"), map[string]string{"azcp_mode": "0644"})
+	f.put("c", "a/b.txt", []byte("hello"), map[string]string{"permissions": "33188"})
 	f.put("c", "a/deep/c.txt", nil, nil)
 	s, at := fakeStore(t, f, false)
 	ctx := context.Background()

@@ -1,6 +1,6 @@
 # Moving from AzCopy
 
-[Documentation](README.md) · [Comparison](comparison.md) · [User guide](guide.md)
+[Documentation](README.md) · [Comparison](comparison.md) · [Functionality gaps](azcopy-gaps.md) · [User guide](guide.md)
 
 AzCopy is verb-first (`azcopy copy SRC DST --recursive`); `azcp` is `cp`
 (`azcp -r SRC DST`). The tables below are a starting point for translating
@@ -26,9 +26,10 @@ See Microsoft's [sync documentation](https://learn.microsoft.com/en-us/azure/sto
 | `azcopy copy SRC DST --recursive` | `azcp -r SRC DST` |
 | `azcopy make URL` | `azcp --create-container …` (made when first written to) |
 | `azcopy bench URL` | `azcp --benchmark URL` |
-| `azcopy jobs resume ID` | `azcp --resume …` — re-run the same command |
+| `azcopy jobs resume ID` | `azcp --resume …` — re-run and rescan; per-file recovery, no job ID |
 | `azcopy login` | nothing: credentials are found, and a sign-in is remembered |
-| `azcopy list`, `azcopy remove` | no equivalent; `azcp` copies |
+| `azcopy list URL` | `azcp --ls URL` |
+| `azcopy remove URL` | `azcp --rm URL` previews; add `--yes` to delete, `-r` for directories |
 
 ## Flags
 
@@ -58,19 +59,22 @@ See Microsoft's [sync documentation](https://learn.microsoft.com/en-us/azure/sto
 | `--put-md5` | `--put-md5` | |
 | `--check-length` | *(always)* | a download is sized to the blob |
 | `--metadata 'a=b;c=d'` | `--metadata a=b,c=d` | |
+| `--blob-tags 'a=b&c=d'` | `--blob-tags a=b,c=d` | different separators; keys and values are case-sensitive |
+| `--s2s-preserve-blob-tags` | `--copy-tags` | opt-in on both sides |
 | `--content-type`, `--content-encoding`, `--content-language`, `--content-disposition`, `--cache-control` | same names | |
 | `--block-blob-tier=Cool` | `--access-tier=Cool` | |
 | `--decompress` | `--decompress` | also handles zstd |
-| `--preserve-posix-properties`, `--preserve-permissions`, `--preserve-owner` | `--preserve=mode,ownership,timestamps`, or `-a` | |
-| `--preserve-symlinks` | `-a` | included in what `-a` keeps |
+| `--preserve-posix-properties` | `--preserve=mode,ownership,timestamps`, or `-a` | AzCopy-compatible file attributes; see [archive limits](guide.md#archiving-a-tree) |
+| `--preserve-permissions`, `--preserve-owner` | *(partial)* | local POSIX ownership/mode preservation does not replace Azure Files or ADLS ACL support |
+| `--preserve-symlinks` | `-a` | `is_symlink=true`, target in blob body; same representation |
 | `--follow-symlinks` | `-L` | |
 | `--from-to=LocalBlob` | *(inferred)* | from the arguments |
 | `--output-type=json` | `--output=json` | |
 | `--log-level=WARNING` | `--log-level=warn` | `error`, `warn`, `info`, `debug` |
 | `AZCOPY_LOG_LOCATION` | `--log-file` | |
 | `--list-of-files list.txt` | `--files-from list.txt` | or `--files-from -` to read it from a pipe |
-| `AZCOPY_BUFFER_GB` | *(not needed)* | data is streamed, not buffered whole |
-| `AZCOPY_JOB_PLAN_LOCATION` | *(not needed)* | `--resume` asks the service what arrived |
+| `AZCOPY_BUFFER_GB` | *(no explicit buffer budget)* | tune jobs, part size and part concurrency |
+| `AZCOPY_JOB_PLAN_LOCATION` | *(no job plans)* | uploads use staged blocks; downloads use local sidecars |
 
 ## URLs and credentials
 
@@ -113,7 +117,8 @@ azcp --part-size=32MiB --put-md5 --bwlimit=50000000 ./big.iso azure://acct/c/big
 
 ## What has no counterpart
 
-Azure Files, ADLS Gen2, S3 and GCS: `azcp` does blobs and local files. Page and
-append blobs: block blobs only. And `azcopy jobs`, which is a durable record of
-every transfer ever run — `--resume` finishes an interrupted copy, but it does
-not give you an audit trail afterwards.
+Native Azure Files and ADLS Gen2 APIs, S3/GCS ingestion, page/append blob
+creation, durable job plans and hash-based sync remain outside azcp's current
+feature set. Blob API access to an HNS account is not equivalent to native
+ADLS support. See the [functionality gap analysis](azcopy-gaps.md) for the
+complete comparison and the limits of partial equivalents.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"os"
 	"runtime"
 	"slices"
@@ -20,6 +21,7 @@ import (
 	"github.com/JohanLindvall/azcp/internal/humanize"
 	"github.com/JohanLindvall/azcp/internal/progress"
 	"github.com/JohanLindvall/azcp/internal/retryx"
+	"github.com/JohanLindvall/azcp/internal/store"
 	"github.com/JohanLindvall/azcp/internal/store/azure"
 	"github.com/JohanLindvall/azcp/internal/store/local"
 	"github.com/JohanLindvall/azcp/internal/uri"
@@ -258,6 +260,8 @@ type Options struct {
 	CacheControl       string
 	Metadata           map[string]string
 	CopyMetadata       bool
+	BlobTags           map[string]string
+	CopyTags           bool
 	Decompress         bool
 	// Compress stores each local source compressed, in the format and at the
 	// level asked for. The zero value is off.
@@ -498,7 +502,7 @@ func Parse(argv []string) (*Options, error) {
 				"retries", "retry-delay", "retry-max-delay", "bwlimit", "timeout",
 				"auth", "tenant", "endpoint-suffix", "create-container",
 				"log-level", "log-format", "log-file", "put-md5", "check-md5",
-				"resume", "dry-run", "no-auto-update", "no-version-check":
+				"resume", "dry-run", "copy-tags", "no-auto-update", "no-version-check":
 			default:
 				return nil, usagef("%s cannot be combined with --tui", f.Name())
 			}
@@ -810,6 +814,31 @@ func (o *Options) apply(f cpflags.Flag) error {
 		return parseMetadata(f.Value, o.Metadata)
 	case "copy-metadata":
 		o.CopyMetadata = true
+	case "blob-tags":
+		if o.BlobTags == nil || f.Value == "" {
+			o.BlobTags = make(map[string]string)
+		}
+		if f.Value != "" {
+			for _, pair := range strings.Split(f.Value, ",") {
+				k, v, ok := strings.Cut(pair, "=")
+				if !ok {
+					return fmt.Errorf("invalid blob index tag %q: use KEY=VALUE", pair)
+				}
+				var err error
+				k, err = url.PathUnescape(k)
+				if err != nil {
+					return fmt.Errorf("invalid blob index tag key: %w", err)
+				}
+				v, err = url.PathUnescape(v)
+				if err != nil {
+					return fmt.Errorf("invalid blob index tag value: %w", err)
+				}
+				o.BlobTags[k] = v
+			}
+		}
+		return store.ValidateBlobTags(o.BlobTags)
+	case "copy-tags":
+		o.CopyTags = true
 	case "decompress":
 		o.Decompress = true
 	case "compress":

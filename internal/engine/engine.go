@@ -177,6 +177,7 @@ func New(cfg Config) (*Engine, error) {
 		// filters see a preserved mtime, and lets a blob-to-blob copy carry
 		// metadata on the routes the service does not copy it for.
 		IncludeMetadata: e.preservesToBlob() || o.Decompress || o.CopyMetadata,
+		IncludeTags:     o.CopyTags,
 	})
 	if cfg.Azure != nil {
 		e.az = cfg.Azure

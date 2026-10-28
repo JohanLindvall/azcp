@@ -228,3 +228,25 @@ func TestHelpListsEveryVisibleOption(t *testing.T) {
 		}
 	}
 }
+
+func TestBlobTagOptions(t *testing.T) {
+	o := mustParse(t, "--blob-tags=Project=alpha,project=beta,empty=,equation=x=y", "--blob-tags=Project=gamma,a%3Db=a+b", "--copy-tags", "s", "d")
+	if !o.CopyTags || len(o.BlobTags) != 5 || o.BlobTags["Project"] != "gamma" || o.BlobTags["project"] != "beta" || o.BlobTags["a=b"] != "a+b" {
+		t.Fatalf("tags: %v", o.BlobTags)
+	}
+	o = mustParse(t, "--blob-tags=a=b", "--blob-tags=", "s", "d")
+	if o.BlobTags == nil || len(o.BlobTags) != 0 {
+		t.Fatal("explicit clearing was lost")
+	}
+	if o := mustParse(t, "s", "d"); o.BlobTags != nil || o.CopyTags {
+		t.Fatal("tag I/O must be opt-in")
+	}
+	for _, bad := range []string{"=value", "novalue", "a=b,", "a=💡", "a=b&c=d", "a=%zz", strings.Repeat("a", 129) + "=v", "a=" + strings.Repeat("v", 257), "a=1,b=2,c=3,d=4,e=5,f=6,g=7,h=8,i=9,j=10,k=11"} {
+		if _, err := Parse([]string{"--blob-tags", bad, "s", "d"}); err == nil {
+			t.Errorf("accepted invalid tags %q", bad)
+		}
+	}
+	if _, err := Parse([]string{"--tui", "--copy-tags"}); err != nil {
+		t.Fatal(err)
+	}
+}

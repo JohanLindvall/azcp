@@ -82,6 +82,9 @@ type listed struct {
 }
 
 func (b *backend) listOne(ctx context.Context, f *nameFilter, raw string) (listed, error) {
+	if f != nil {
+		ctx = withBlobFields(ctx, f.blobFields)
+	}
 	if raw == "" {
 		return listed{}, errors.New("cannot access '': No such file or directory")
 	}

@@ -3,6 +3,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/JohanLindvall/azcp/internal/glob"
 	"github.com/JohanLindvall/azcp/internal/store"
+	"github.com/JohanLindvall/azcp/internal/store/azure"
 )
 
 var blobFilterFields = []string{
@@ -18,12 +20,12 @@ var blobFilterFields = []string{
 }
 
 func isBlobField(field string) bool {
-	return slices.Contains(blobFilterFields, field) || strings.HasPrefix(field, "metadata.")
+	return slices.Contains(blobFilterFields, field) || strings.HasPrefix(field, "metadata.") || strings.HasPrefix(field, "tags.")
 }
 
 func (f *nameFilter) blobTerm(field, op, value string) (filterTerm, error) {
-	if field == "metadata." {
-		return nil, errors.New("write metadata.KEY:VALUE or metadata.KEY=VALUE")
+	if field == "metadata." || field == "tags." {
+		return nil, fmt.Errorf("write %sKEY:VALUE or %sKEY=VALUE", field, field)
 	}
 	if op != ":" && op != "=" {
 		return nil, fmt.Errorf("write %s:VALUE or %s=VALUE", field, field)
@@ -81,6 +83,10 @@ func blobValue(n *store.Node, field string) (string, bool) {
 	if n == nil || n.IsDir() || n.URL == nil || !n.URL.IsRemote() {
 		return "", false
 	}
+	if key, ok := strings.CutPrefix(field, "tags."); ok {
+		value, present := n.Tags[key]
+		return value, present
+	}
 	if key, ok := strings.CutPrefix(field, "metadata."); ok {
 		if value, present := n.Metadata[key]; present {
 			return value, true
@@ -110,6 +116,17 @@ func blobValue(n *store.Node, field string) (string, bool) {
 		value = n.ETag
 	}
 	return value, value != ""
+}
+
+func needsTags(fields []string) bool {
+	return slices.ContainsFunc(fields, func(field string) bool { return strings.HasPrefix(field, "tags.") })
+}
+
+func withBlobFields(ctx context.Context, fields []string) context.Context {
+	if needsTags(fields) {
+		return azure.WithTags(ctx)
+	}
+	return ctx
 }
 
 // Usage caches retain only fields a filter requested, without a metadata map

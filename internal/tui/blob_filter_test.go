@@ -22,6 +22,7 @@ func TestBlobFilterTerms(t *testing.T) {
 		URL: loc(t, "azure://account/c/a.bin").url, Kind: store.KindFile,
 		ContentType: "image/png", ContentEncoding: "gzip", ContentLanguage: "en-GB",
 		ContentDisposition: `attachment; filename="photo.png"`, CacheControl: "private, max-age=60",
+		Tags:       map[string]string{"Project": "Alpha", "project": "beta", "empty": "", "a/b:c=d +": "value"},
 		AccessTier: "Cool", ETag: `"0x123"`,
 		Metadata: map[string]string{"Owner": "Alice", "empty": "", "path": "a/b/c", "batch_2": "nightly",
 			"literal": "a*?[x]", "comparison": ">=10"},
@@ -31,6 +32,18 @@ func TestBlobFilterTerms(t *testing.T) {
 		want   bool
 	}{
 		{"content-type:image/*", true},
+		{"tags.Project=Alpha", true},
+		{"TAGS.Project=Alpha", true},
+		{"tags.Project=alpha", false},
+		{"tags.project=beta", true},
+		{"tags.PROJECT:*", false},
+		{"tags.Project:ALP", true},
+		{"tags.Project:A*", true},
+		{"tags.empty=", true},
+		{"tags.empty:*", true},
+		{"tags.missing=", false},
+		{"-tags.Project=Alpha", false},
+		{`"tags[a/b:c=d +]"=value`, true},
 		{"CONTENT-TYPE:PNG", true},
 		{"content-type=image/png", true},
 		{"content-type=IMAGE/PNG", false},
@@ -83,7 +96,7 @@ func TestBlobFilterTerms(t *testing.T) {
 			}
 		})
 	}
-	for _, bad := range []string{"metadata.:x", "metadata.=x", "content-type:", "metadata.owner:",
+	for _, bad := range []string{"tags.:x", "tags[]=x", "tags[broken", "tags.Project>x", "tags.Project:", "metadata.:x", "metadata.=x", "content-type:", "metadata.owner:",
 		"content-type>image/png", "metadata.owner<=Alice", `content-type:"image/png`} {
 		if _, err := parseFilter(bad); err == nil {
 			t.Errorf("accepted %q", bad)
@@ -175,7 +188,7 @@ func blobFilterFixture(t *testing.T) (location, *filterBlobs) {
 		{"a.bin", "image/png", "alice"}, {"b.bin", "image/jpeg", "bob"}, {"c.png", "text/plain", "alice"},
 	} {
 		s.nodes = append(s.nodes, &store.Node{URL: base.url.Join(v.name), Kind: store.KindFile, Size: int64(5 - i),
-			ContentType: v.contentType, Metadata: map[string]string{"owner": v.owner}, ETag: "listed"})
+			ContentType: v.contentType, Metadata: map[string]string{"owner": v.owner}, Tags: map[string]string{"Owner": v.owner}, ETag: "listed"})
 	}
 	return base, s
 }
@@ -330,7 +343,7 @@ func TestLocalUsageBlobFilterDoesNotRescan(t *testing.T) {
 }
 
 func TestRemovalRechecksBlobPropertiesAndUsesFreshETags(t *testing.T) {
-	for _, filter := range []string{"content-type:image/*", "metadata.owner=alice"} {
+	for _, filter := range []string{"content-type:image/*", "metadata.owner=alice", "tags.Owner=alice"} {
 		t.Run(filter, func(t *testing.T) {
 			base, remote := blobFilterFixture(t)
 			remote.fresh = func(n *store.Node) {
@@ -338,6 +351,7 @@ func TestRemovalRechecksBlobPropertiesAndUsesFreshETags(t *testing.T) {
 				if n.URL.Key == "a.bin" {
 					n.ContentType = "text/plain"
 					n.Metadata = map[string]string{"owner": "bob"}
+					n.Tags = map[string]string{"Owner": "bob"}
 				}
 			}
 			b := testBackend(t)
@@ -353,5 +367,43 @@ func TestRemovalRechecksBlobPropertiesAndUsesFreshETags(t *testing.T) {
 				t.Fatalf("unnecessary requests: stats=%d lists=%d walks=%d", remote.stats, remote.lists, len(remote.walks))
 			}
 		})
+	}
+}
+
+func TestPaneTagFiltersReloadAndUsageCachesTheirValues(t *testing.T) {
+	a, _, _, _ := testApp(t)
+	base, remote := blobFilterFixture(t)
+	a.backend.remote = remote
+	entries, err := a.backend.list(t.Context(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.setEntries(0, base, entries)
+	a.applyFilter("tags.Owner=alice")
+	finishJobs(t, a)
+	if names := strings.Join(entryNames(a.panes[0].entries), " "); names != ".. a.bin c.png" {
+		t.Fatal(names)
+	}
+	a.reload()
+	finishJobs(t, a)
+	if names := strings.Join(entryNames(a.panes[0].entries), " "); names != ".. a.bin c.png" {
+		t.Fatal(names)
+	}
+	a.toggleUsage()
+	finishJobs(t, a)
+	a.applyFilter("tags.Owner=bob")
+	finishJobs(t, a)
+	if names := strings.Join(entryNames(a.panes[0].entries), " "); names != ".. b.bin" {
+		t.Fatal(names)
+	}
+}
+
+func TestMoveInventoryDetectsTagChangesWithoutAnETagChange(t *testing.T) {
+	base, _ := blobFilterFixture(t)
+	a := &store.Node{URL: base.url.Join("blob"), Kind: store.KindFile, ETag: "same", Tags: map[string]string{"Owner": "alice"}}
+	b := *a
+	b.Tags = map[string]string{"Owner": "bob"}
+	if sameNode(a, &b) {
+		t.Fatal("tag-only change went unnoticed")
 	}
 }

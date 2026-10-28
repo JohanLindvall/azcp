@@ -130,13 +130,13 @@ func TestItemNodeReadsWhatTheListingCarries(t *testing.T) {
 			ContentLength: &zero, ContentType: to.Ptr("text/plain"),
 			ContentEncoding: to.Ptr("gzip"), ETag: to.Ptr(azcore.ETag(`"abc"`)),
 		},
-		Metadata: map[string]*string{"azcp_mode": to.Ptr("0644"), "gone": nil},
+		Metadata: map[string]*string{"permissions": to.Ptr("33188"), "gone": nil},
 	})
 	if !empty.IsRegular() || empty.Name() != "file" || empty.ContentType != "text/plain" ||
 		empty.ContentEncoding != "gzip" || empty.ETag != `"abc"` {
 		t.Errorf("file node = %+v", empty)
 	}
-	if len(empty.Metadata) != 1 || empty.Metadata["azcp_mode"] != "0644" {
+	if len(empty.Metadata) != 1 || empty.Metadata["permissions"] != "33188" {
 		t.Errorf("metadata = %v; a nil value should be dropped", empty.Metadata)
 	}
 

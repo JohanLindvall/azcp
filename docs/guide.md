@@ -216,19 +216,21 @@ azcp -r --select 'older:90d -*.keep' ./scratch azure://acct/archive/
 azcp --select 'content-type:image/* metadata.owner=alice' azure://acct/media/ ./images/
 ```
 
-Blob properties and custom metadata work in `--select` for copying, listing
+Blob properties, custom metadata and index tags work in `--select` for copying, listing
 and removal, and in the TUI's **/** filter. For example:
 
 ```
 azcp --ls --select 'content-type:image/*' azure://acct/media/
 azcp --rm --select 'metadata.retention=expired' azure://acct/archive/
+azcp --ls --select 'tags.Project=alpha' azure://acct/media/
 ```
 
 Use `:` for a substring (ignoring case) or a whole-value glob, and `=` for an
 exact, case-sensitive value. `metadata.owner:*` tests whether a key exists;
 `metadata.owner=` matches a present but empty value. Field names and metadata
-keys ignore case. These terms apply to individual blobs in the listed directory,
-not to containers or prefixes based on their contents. Properties come from the
+keys ignore case; index tag keys are case-sensitive. `tags.Project:*` tests for
+a tag, and `tags.Project=` matches an empty value. These terms apply to
+individual blobs in the listed directory, not to containers or prefixes based on their contents. Properties come from the
 listing, without a request per blob or a need for `--copy-metadata`.
 See the [filter reference](tui.md#filtering-a-pane) for all supported fields.
 
@@ -312,18 +314,76 @@ directory would litter the container.
 Reading each blob's metadata back makes every listing response larger, so it is
 opt-in: `--preserve` and `--decompress` imply it, and `--copy-metadata` asks
 for it by name. That flag is what makes a plain `-r` download turn a recorded
-symbolic link back into one (without it, the link arrives as the empty blob
-that records it), and what lets a blob-to-blob copy carry metadata on every
+symbolic link back into one (without it, a listing-based copy downloads the
+link target text as a regular file), and what lets a blob-to-blob copy carry metadata on every
 route — without it, metadata survives only where the service copies it itself,
 which covers whole-blob copies but not blobs large enough to be staged in
 blocks.
 
-Recorded symbolic-link targets can contain Unicode, whitespace and control
-bytes. Ordinary ASCII targets retain the `azcp_symlink` metadata field;
-targets that cannot safely fit in an HTTP header use `azcp_symlink_base64`.
-Older versions that do not recognize the latter field cannot restore those
-links. Invalid mode and owner metadata is ignored rather than passed to the
-operating system after integer truncation.
+File attributes use **AzCopy's standard POSIX format**: `permissions` holds the
+full Unix mode in decimal, `posix_owner` and `posix_group` hold numeric IDs,
+and `modtime` and `posix_atime` hold Unix nanoseconds. `linux_statx_mask`
+identifies the attributes actually preserved. Downloads also understand
+AzCopy's AMLFS owner/group, octal permissions and formatted modification time.
+This covers file modes, ownership and timestamps; it does not restore device
+nodes, sockets, hard-link identity or directory attributes from blob metadata.
+
+Symbolic links use `is_symlink=true` with the target's exact bytes in the blob
+body, as AzCopy does with `--preserve-symlinks`. Unicode, whitespace and control
+bytes survive without header encoding. Downloads check the body before
+replacing the destination. Invalid attributes are ignored.
+
+**Format change:** the former `azcp_mode`, `azcp_uid`, `azcp_gid`,
+`azcp_mtime`, `azcp_atime`, `azcp_symlink` and `azcp_symlink_base64` fields
+are no longer written or interpreted. Existing archives in that format need
+an older azcp to restore them before re-uploading with this version. Ordinary
+custom metadata remains supported. See the [AzCopy format definitions](https://github.com/Azure/azure-storage-azcopy/blob/v10.34.1/common/unixStatAdapter.go)
+and [symlink writer](https://github.com/Azure/azure-storage-azcopy/blob/v10.34.1/ste/sender-blobSymlinks.go).
+
+## Blob index tags
+
+Index tags are key/value labels that Azure indexes separately from ordinary
+metadata. Azure can search that index and use tags in lifecycle rules.
+`content-type` is a blob property, not a tag. See [Microsoft's explanation](https://learn.microsoft.com/en-us/azure/storage/blobs/storage-manage-find-blobs).
+
+```
+azcp --blob-tags 'Project=alpha,Retention=archive' report.pdf azure://acct/docs/
+azcp --copy-tags azure://acct/docs/report.pdf azure://acct/backup/
+azcp --copy-tags --blob-tags 'Retention=keep' azure://acct/docs/report.pdf azure://acct/backup/
+azcp --ls --select 'tags.Project=alpha' azure://acct/docs/
+azcp --tui --copy-tags azure://acct/docs/ azure://acct/backup/
+```
+
+`--blob-tags` replaces the destination tag set. Repeat the option or separate
+pairs with commas; later occurrences of a key win. Percent escapes are accepted
+in keys and values (`a%3Db=value` sets the key `a=b`); a literal `+` stays `+`.
+Keys and values are case-sensitive. Azure allows ten tags, keys of 1–128
+characters and values of 0–256 characters, using letters, digits, spaces and
+`+ - . / : = _`. Invalid input is rejected before transfer.
+[Azure's tag limits](https://learn.microsoft.com/en-us/rest/api/storageservices/set-blob-tags).
+
+`--copy-tags` preserves source tags during blob-to-blob copies on every route,
+including staged and streamed copies. `--blob-tags` overrides matching source
+keys when combined with it. An explicitly empty `--blob-tags=` clears the set,
+including with `--copy-tags`. A local destination cannot accept `--blob-tags`.
+With `--attributes-only`, tags change without
+copying blob data; omit both tag options to leave existing tags alone.
+Downloads do not store tags on local files. `-a` and `--copy-metadata` do not
+imply `--copy-tags`.
+
+Tag reads are opt-in. Directory selection obtains tags in the listing;
+reading an individual blob's tags needs one additional request. Applying a
+tag filter in the TUI reloads that pane; usage scans retain only the fields
+requested by the filter. These filters evaluate the listing locally, rather
+than submitting a server-side Find Blobs by Tags query. They select immediate
+entries, just like other `--select` terms.
+[Listing tags](https://learn.microsoft.com/en-us/rest/api/storageservices/list-blobs).
+
+Reading or writing tags needs tag permissions in addition to ordinary blob
+access (the `t` permission for a SAS). A failure is reported rather than
+silently dropping the tags. Small sets accompany the write; larger encoded
+sets require a separate tag update pinned to the newly written blob's ETag.
+[Tag authorization](https://learn.microsoft.com/en-us/rest/api/storageservices/get-blob-tags).
 
 ## Verifying a copy
 
@@ -582,14 +642,14 @@ Content-header overrides also apply to the asynchronous route. When an override
 differs from the source, it costs one properties update after the copy finishes;
 unchanged properties and the source checksum are retained. A plain asynchronous
 copy needs no additional update. `--attributes-only` updates an existing blob's
-properties and metadata without copying its contents, including blob-to-blob
+properties, metadata and index tags without copying its contents, including blob-to-blob
 invocations.
 
 All copy routes retain a source MD5 when present. A copy streamed through this
 host checks the source checksum before committing the upload, according to
 `--check-md5`. Checksum and content-header updates after an upload or copy are
 conditional on the destination version observed by that operation. Metadata
-and content-header changes made by `--attributes-only` use the same safeguard.
+content-header and tag changes made by `--attributes-only` use the same safeguard.
 
 Each network request gets up to `--retries` attempts in total, including the
 first attempt, with jittered backoff and support for `Retry-After`. Whole-file
@@ -734,6 +794,7 @@ Added by `azcp`:
 | `--decompress` | expand gzip, deflate or zstd blobs on download |
 | `--metadata=K=V` | store metadata on uploaded blobs |
 | `--copy-metadata` | read blob metadata while scanning (see [Archiving a tree](#archiving-a-tree)) |
+| `--blob-tags`, `--copy-tags` | set or preserve [blob index tags](#blob-index-tags) |
 | `--content-encoding`, `--content-disposition`, `--content-language`, `--cache-control` | blob headers |
 | `--output=FORMAT` | `text` or `json` |
 | `--benchmark[=NxSIZE]` | measure throughput and clean up |

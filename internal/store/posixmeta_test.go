@@ -4,7 +4,6 @@ package store
 
 import (
 	"io/fs"
-	"strings"
 	"testing"
 	"time"
 )
@@ -32,52 +31,35 @@ func TestPosixMetaRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSymlinkMetadataKeepsNonHeaderTargets(t *testing.T) {
-	for _, target := range []string{"../雪", "a\nb", " a ", "\xfftarget"} {
-		m := (PosixMeta{SymlinkDest: target}).Encode()
-		for _, value := range m {
-			if strings.ContainsFunc(value, func(r rune) bool { return r < 0x20 || r >= 0x7f }) {
-				t.Fatalf("non-header metadata: %q", value)
-			}
-		}
-		if got := DecodePosixMeta(m).SymlinkDest; got != target {
-			t.Fatalf("%q became %q", target, got)
-		}
-	}
-}
-
 func TestPosixMetadataRejectsValuesThatWouldTruncate(t *testing.T) {
 	for _, value := range []string{"-1", "4294967295", "4294967296"} {
 		if got := DecodePosixMeta(map[string]string{MetaUID: value, MetaGID: "1"}); got.HasOwner {
 			t.Fatalf("invalid owner %s accepted", value)
 		}
 	}
-	if DecodePosixMeta(map[string]string{MetaMode: "010000"}).HasMode {
+	if DecodePosixMeta(map[string]string{MetaMode: "65536"}).HasMode {
 		t.Fatal("invalid mode accepted")
 	}
-	if DecodePosixMeta(map[string]string{MetaSymlinkBase64: "bad encoding"}).IsSymlink() {
-		t.Fatal("invalid encoded link accepted")
-	}
+
 }
 
 func TestPosixMetaStoresTraditionalBits(t *testing.T) {
-	// The stored value should be what stat would show, not Go's internal
-	// FileMode representation, so a human reading the metadata recognises it.
+	// AzCopy stores the full Unix st_mode as a decimal integer.
 	m := PosixMeta{Mode: 0o644, HasMode: true}.Encode()
-	if got := m[MetaMode]; got != "0644" {
-		t.Errorf("mode encoded as %q, want %q", got, "0644")
+	if got := m[MetaMode]; got != "33188" {
+		t.Errorf("mode encoded as %q, want %q", got, "33188")
 	}
 	m = PosixMeta{Mode: 0o755 | fs.ModeSetuid, HasMode: true}.Encode()
-	if got := m[MetaMode]; got != "04755" {
-		t.Errorf("setuid mode encoded as %q, want %q", got, "04755")
+	if got := m[MetaMode]; got != "35309" {
+		t.Errorf("setuid mode encoded as %q, want %q", got, "35309")
 	}
 }
 
 func TestPosixMetaSymlink(t *testing.T) {
-	m := PosixMeta{SymlinkDest: "../target.txt"}.Encode()
+	m := PosixMeta{Symlink: true}.Encode()
 	got := DecodePosixMeta(m)
-	if !got.IsSymlink() || got.SymlinkDest != "../target.txt" {
-		t.Errorf("symlink = %q", got.SymlinkDest)
+	if !got.IsSymlink() {
+		t.Errorf("symlink marker = %v", m)
 	}
 	if DecodePosixMeta(nil).IsSymlink() {
 		t.Error("absent metadata reported as a symlink")
@@ -97,8 +79,47 @@ func TestPosixMetaIgnoresRubbish(t *testing.T) {
 
 // Azure is case-insensitive about metadata names.
 func TestPosixMetaCaseInsensitive(t *testing.T) {
-	got := DecodePosixMeta(map[string]string{"AZCP_MODE": "0640"})
+	got := DecodePosixMeta(map[string]string{"PERMISSIONS": "33184"})
 	if !got.HasMode || got.Mode.Perm() != 0o640 {
 		t.Errorf("uppercase key not read: %+v", got)
+	}
+}
+
+func TestAzCopyPOSIXFixtures(t *testing.T) {
+	for _, metadata := range []map[string]string{
+		{"permissions": "33256", "posix_owner": "1000", "posix_group": "2000", "modtime": "1709296496789012345", "posix_atime": "1709292896789012345", "linux_statx_mask": "2047"},
+		{"permissions": "0750", "owner": "1000", "group": "2000", "modtime": "2024-03-01 12:34:56 +0000", "posix_atime": "1709292896789012345"},
+	} {
+		p := DecodePosixMeta(metadata)
+		if !p.HasMode || p.Mode.Perm() != 0750 || !p.HasOwner || p.UID != 1000 || p.GID != 2000 || p.MTime.Unix() != 1709296496 || p.ATime.UnixNano() != 1709292896789012345 {
+			t.Fatalf("AzCopy metadata decoded incorrectly: %+v", p)
+		}
+	}
+	p := DecodePosixMeta(map[string]string{"permissions": "33188", "posix_owner": "1000", "posix_group": "2000", "modtime": "123456789", "linux_statx_mask": "0"})
+	if p.HasMode || p.HasOwner || !p.MTime.IsZero() {
+		t.Fatalf("statx mask ignored: %+v", p)
+	}
+	for _, value := range []string{"false", "../target", "1"} {
+		if DecodePosixMeta(map[string]string{"is_symlink": value}).IsSymlink() {
+			t.Fatalf("invalid symlink marker %q", value)
+		}
+	}
+}
+
+func TestRetiredMetadataIsNotInterpreted(t *testing.T) {
+	p := DecodePosixMeta(map[string]string{
+		"azcp_mode": "0755", "azcp_uid": "1000", "azcp_gid": "1000",
+		"azcp_mtime": "2024-01-01T00:00:00Z", "azcp_atime": "2024-01-01T00:00:00Z",
+		"azcp_symlink": "../target", "azcp_symlink_base64": "Li4vdGFyZ2V0",
+	})
+	if p.HasMode || p.HasOwner || !p.MTime.IsZero() || !p.ATime.IsZero() || p.IsSymlink() {
+		t.Fatalf("legacy metadata interpreted: %+v", p)
+	}
+}
+
+func TestPartialPOSIXPreservationAdvertisesOnlyKnownFields(t *testing.T) {
+	m := (PosixMeta{MTime: time.Unix(123, 456)}).Encode()
+	if m["linux_statx_mask"] != "64" || m["modtime"] != "123000000456" || len(m) != 2 {
+		t.Fatalf("partial preservation: %v", m)
 	}
 }

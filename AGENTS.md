@@ -509,11 +509,27 @@ the encoding; `engine/attrs.go` writes them on upload and restores them on
 download. Reading metadata back during a scan costs a larger listing response,
 so it is opt-in: `--preserve` and `--decompress` imply it, `--copy-metadata`
 asks for it by name, and without any of them a recorded symlink downloads as
-the empty blob that records it and a staged blob-to-blob copy carries no
+the target-text blob that records it and a staged blob-to-blob copy carries no
 metadata. The order in `restoreAttrs` is not arbitrary: a successful chown
 clears the setuid and setgid bits, so ownership has to be applied before the
 mode or those bits are silently lost. The local path in `local.ApplyAttrs`
 already had this right; the blob path did not, and a test caught it.
+
+**Archive metadata follows AzCopy.** File permissions are decimal Unix modes,
+owner/group IDs use `posix_owner`/`posix_group`, and times are signed Unix
+nanoseconds. `linux_statx_mask` marks which fields are present. Decode AMLFS
+metadata too, but never interpret the retired `azcp_*` attribute keys.
+`is_symlink=true` identifies a blob whose body contains the exact link target;
+validate that body before replacing a destination. User metadata is independent.
+
+**Index tags are opt-in and case-sensitive.** `--copy-tags` and tag filters
+request tags in listings; single-blob stats need Get Blob Tags. Do not make
+ordinary browsing require tag permissions or fetch tags per blob after a
+listing. Every write route carries the requested tags, including compressed
+uploads and copy fallbacks. Large sets need Set Tags after commit, pinned with
+`BlobModifiedAccessConditions` (the SDK ignores IfMatch in SetTagsOptions'
+ordinary AccessConditions). Tags are separate from metadata and do not change
+the blob ETag; move inventories compare the requested tags too.
 
 **Transparent decompression must stay off.** `transport.go` sets
 `DisableCompression`. Left on, Go advertises gzip and silently expands any

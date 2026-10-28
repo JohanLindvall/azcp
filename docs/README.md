@@ -17,7 +17,7 @@ commands.
 | Preserve attributes or compress files | [Archiving](guide.md#archiving-a-tree) · [Compression](guide.md#compressing-on-the-way) |
 | Use azcp in a script | [JSON output](guide.md#machine-readable-output) · [Logging](guide.md#logging) |
 | Tune or measure transfers | [Concurrency](guide.md#transfers) · [Benchmark](guide.md#measuring-the-link) |
-| Compare azcp with AzCopy | [Tradeoffs and measurements](comparison.md) · [Migration guide](azcopy.md) |
+| Compare azcp with AzCopy | [Tradeoffs and measurements](comparison.md) · [Migration guide](azcopy.md) · [Functionality gaps](azcopy-gaps.md) |
 | Check compatibility or find an option | [Differences from cp](guide.md#differences-from-cp) · [Options](guide.md#options) |
 | Report a problem or contribute | [Contributing](../CONTRIBUTING.md) · [Security](../SECURITY.md) |
 

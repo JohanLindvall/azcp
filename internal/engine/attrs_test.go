@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,10 +37,20 @@ func TestDownloadedSymlinkPreservesItsOwnAttributes(t *testing.T) {
 		t.Fatal(err)
 	}
 	when := time.Unix(946684800, 0)
-	e := newEngine(t, "-a", "azure://acct/c/link", link)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(len(target)))
+		w.Header().Set("ETag", `"link"`)
+		if r.Header.Get("If-Match") != `"link"` {
+			t.Error("link download lost ETag condition")
+		}
+		_, _ = w.Write([]byte(target))
+	}))
+	defer srv.Close()
+	src := srv.URL + "/devstoreaccount1/c/link"
+	e := newEngine(t, "-a", "--auth=anonymous", "--retries=1", src, link)
 	task := &task{src: &store.Node{
-		URL: mustURL(t, "azure://acct/c/link"), Kind: store.KindFile,
-		Metadata: (store.PosixMeta{SymlinkDest: target, MTime: when, ATime: when,
+		URL: mustURL(t, src), Kind: store.KindFile, Size: int64(len(target)), ETag: `"link"`,
+		Metadata: (store.PosixMeta{Symlink: true, MTime: when, ATime: when,
 			Mode: 0o777, HasMode: true}).Encode(),
 	}, dst: mustURL(t, link)}
 	if err := e.transfer(context.Background(), task, nil); err != nil {
@@ -77,7 +89,7 @@ func TestPreservedTimestampFallsBackToTheService(t *testing.T) {
 		{"no metadata at all", nil, lastWritten},
 		{"metadata, but none of ours", map[string]string{"colour": "blue"}, lastWritten},
 		{"ours, alongside somebody else's", map[string]string{
-			store.MetaMTime: preserved.Format(time.RFC3339Nano),
+			store.MetaMTime: (store.PosixMeta{MTime: preserved}).Encode()[store.MetaMTime],
 			"colour":        "blue",
 		}, preserved},
 	} {

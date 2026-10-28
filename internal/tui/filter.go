@@ -3,6 +3,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"github.com/JohanLindvall/azcp/internal/cli"
 	"github.com/JohanLindvall/azcp/internal/glob"
 	"github.com/JohanLindvall/azcp/internal/humanize"
+	"github.com/JohanLindvall/azcp/internal/progress"
 	"github.com/JohanLindvall/azcp/internal/store"
 )
 
@@ -30,11 +32,12 @@ var filterHelp = []string{
 	"has:.mp4 (holds a matching file)",
 	"name=notes.txt  that name exactly",
 	"content-type:image/*  metadata.owner=alice",
+	"tags.Project=alpha  (key is case-sensitive)",
 	"Any name may match; all else must",
 	`-term excludes  "quote spaces"`,
 }
 
-var filterFields = append([]string{"name", "has", "size", "files", "newer", "older", "type", "metadata.KEY"}, blobFilterFields...)
+var filterFields = append([]string{"name", "has", "size", "files", "newer", "older", "type", "metadata.KEY", "tags.KEY"}, blobFilterFields...)
 
 // nameFilter shows an entry when it matches any name term, or there are none,
 // meets every condition, and matches no excluded term. An entry a term cannot
@@ -187,6 +190,18 @@ var comparisons = map[string]func(n, limit int64) bool{
 // splitField finds FIELD OP VALUE, with OP one of : = < <= > >=. A term that
 // is not one is a name and gives back no field or operator.
 func splitField(s string) (field, op, value string) {
+	// Brackets allow Azure's punctuation and spaces in a tag key, including
+	// ':' and '=' which otherwise separate the field from its value.
+	if len(s) >= 5 && strings.EqualFold(s[:5], "tags[") {
+		if end := strings.IndexByte(s, ']'); end >= 5 {
+			for _, o := range []string{">=", "<=", ":", "=", "<", ">"} {
+				if strings.HasPrefix(s[end+1:], o) {
+					return "tags." + s[5:end], o, s[end+1+len(o):]
+				}
+			}
+		}
+		return "tags.", ":", ""
+	}
 	i := 0
 	for i < len(s) && (s[i] >= 'a' && s[i] <= 'z' || s[i] >= 'A' && s[i] <= 'Z' ||
 		s[i] >= '0' && s[i] <= '9' || s[i] == '-' || s[i] == '_' || s[i] == '.') {
@@ -195,6 +210,9 @@ func splitField(s string) (field, op, value string) {
 	for _, o := range []string{">=", "<=", ":", "=", "<", ">"} {
 		if strings.HasPrefix(s[i:], o) {
 			field, op, value = strings.ToLower(s[:i]), o, s[i+len(o):]
+			if strings.HasPrefix(field, "tags.") {
+				field = "tags." + s[len("tags."):i]
+			}
 			if field == "" && o == ":" {
 				return "", "", s
 			}
@@ -405,6 +423,21 @@ func (a *app) applyFilter(text string) {
 		p.filter = f
 		p.usageEntries(nil)
 		a.status = "Filter applied; selection marks cleared"
+		return
+	}
+	if p.loc.url.IsRemote() && needsTags(f.blobFields) {
+		i, loc := a.active, p.loc
+		a.start("Reading blob index tags", func(ctx context.Context, _ *progress.Reporter) (any, error) {
+			return a.backend.list(withBlobFields(ctx, f.blobFields), loc)
+		}, func(r jobResult) {
+			if r.err == nil {
+				a.panes[i].listFilter = f
+				a.setEntries(i, loc, r.value.([]entry))
+				if slices.ContainsFunc(a.panes[i].entries, f.unmeasured) {
+					a.measure(true, f.unmeasured)
+				}
+			}
+		})
 		return
 	}
 	p.listFilter = f

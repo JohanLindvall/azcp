@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,6 +52,7 @@ func newBackend(opt *cli.Options, log *slog.Logger) *backend {
 		Auth: opt.Auth, Log: log, Interactive: term.IsTerminal(int(os.Stderr.Fd())), TenantID: opt.TenantID,
 		MaxRetries: int32(opt.Retries - 1), TryTimeout: opt.Timeout,
 		CreateContainer: opt.CreateContainer, IncludeMetadata: true,
+		IncludeTags:  opt.CopyTags,
 		UserAgent:    cli.Program + "/" + cli.VersionString(),
 		PeakRequests: opt.PeakRequests(), BytesPerSecond: opt.BandwidthLimit,
 	})
@@ -447,7 +449,7 @@ func nodeKey(n *store.Node) string {
 
 func sameNode(a, b *store.Node) bool {
 	if nodeKey(a) != nodeKey(b) || a.Size != b.Size || !a.ModTime.Equal(b.ModTime) ||
-		a.ETag != b.ETag || a.LinkTarget != b.LinkTarget || a.Mode != b.Mode {
+		a.ETag != b.ETag || a.LinkTarget != b.LinkTarget || a.Mode != b.Mode || !maps.Equal(a.Tags, b.Tags) {
 		return false
 	}
 	return a.Info == nil || b.Info != nil && os.SameFile(a.Info, b.Info)

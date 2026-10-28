@@ -5,6 +5,9 @@ package azure
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 
@@ -25,7 +28,22 @@ func (s *Store) RemoveBlob(ctx context.Context, n *store.Node) error {
 		if err != nil {
 			return err
 		}
-		_, err = bc.Delete(ctx, &blob.DeleteOptions{AccessConditions: sourceConditions(n)})
+		conditions := sourceConditions(n)
+		if len(n.Tags) > 0 {
+			// Tag edits leave the ETag unchanged. Pin the values we read too,
+			// so changing a selected tag cannot race a filtered deletion.
+			if err := store.ValidateBlobTags(n.Tags); err != nil {
+				return err
+			}
+			terms := make([]string, 0, len(n.Tags))
+			for k, v := range n.Tags {
+				terms = append(terms, fmt.Sprintf(`"%s" = '%s'`, k, v))
+			}
+			slices.Sort(terms)
+			predicate := strings.Join(terms, " AND ")
+			conditions.ModifiedAccessConditions.IfTags = &predicate
+		}
+		_, err = bc.Delete(ctx, &blob.DeleteOptions{AccessConditions: conditions})
 		if isNotFound(err) {
 			err = notExist(n.URL, err)
 		}

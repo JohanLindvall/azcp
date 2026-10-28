@@ -3,6 +3,7 @@
 package engine
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -35,6 +36,24 @@ func (e *Engine) transfer(ctx context.Context, t *task, pt *progress.Task) (retE
 	}()
 	if t.noop {
 		return nil
+	}
+	// Validate a recorded link's body before any backup, unlink or replacement.
+	recordedLink := t.src.URL.IsRemote() && !t.dst.IsRemote() && store.DecodePosixMeta(t.src.Metadata).IsSymlink()
+	var target bytes.Buffer
+	if recordedLink {
+		if t.src.Size <= 0 || t.src.Size > 64<<10 {
+			return fmt.Errorf("invalid symbolic link target length: %d", t.src.Size)
+		}
+		opts := e.transferOptions()
+		if pt != nil {
+			opts.Progress = pt.Set
+		}
+		if err := e.az.DownloadTo(ctx, t.src, &target, opts); err != nil {
+			return err
+		}
+		if strings.ContainsRune(target.String(), 0) {
+			return errors.New("symbolic link target contains a NUL byte")
+		}
 	}
 	if t.backup != "" {
 		backup := t.backup
@@ -70,18 +89,12 @@ func (e *Engine) transfer(ctx context.Context, t *task, pt *progress.Task) (retE
 		t.removeFirst = false
 	}
 
-	// A blob that records a symbolic link has no content to fetch; what it
-	// says is where the link should point.
-	if t.src.URL.IsRemote() && !t.dst.IsRemote() {
-		if p := store.DecodePosixMeta(t.src.Metadata); p.IsSymlink() {
-			if err := e.replace(t, func() error {
-				return os.Symlink(p.SymlinkDest, t.dst.Path)
-			}); err != nil {
-				return err
-			}
-			e.restoreAttrs(t)
-			return nil
+	if recordedLink {
+		if err := e.replace(t, func() error { return os.Symlink(target.String(), t.dst.Path) }); err != nil {
+			return err
 		}
+		e.restoreAttrs(t)
+		return nil
 	}
 
 	srcRemote, dstRemote := t.src.URL.IsRemote(), t.dst.IsRemote()
@@ -112,6 +125,7 @@ func (e *Engine) transferOptions() azure.TransferOptions {
 		ContentDisposition: e.opt.ContentDisposition,
 		ContentLanguage:    e.opt.ContentLanguage,
 		CacheControl:       e.opt.CacheControl,
+		Tags:               e.opt.BlobTags,
 	}
 }
 
@@ -131,10 +145,10 @@ func (e *Engine) upload(ctx context.Context, t *task, pt *progress.Task) error {
 		return e.az.PutAttrs(ctx, t.dst, opts)
 	}
 
-	// A symbolic link has no content beyond where it points, so it is stored
-	// as an empty blob whose metadata says what it is.
 	if t.src.IsSymlink() {
-		return e.az.PutMarker(ctx, t.dst, opts)
+		return e.az.UploadEncoded(ctx, func() io.ReadCloser {
+			return io.NopCloser(strings.NewReader(t.src.LinkTarget))
+		}, int64(len(t.src.LinkTarget)), t.dst, opts)
 	}
 	compress := e.compresses(t.src)
 	if compress {
@@ -270,6 +284,14 @@ func (e *Engine) copyRemote(ctx context.Context, t *task, pt *progress.Task) err
 		maps.Copy(merged, t.src.Metadata)
 		maps.Copy(merged, e.opt.Metadata)
 		opts.Metadata = merged
+	}
+	if e.opt.CopyTags && !(e.opt.BlobTags != nil && len(e.opt.BlobTags) == 0) {
+		opts.Tags = make(map[string]string, len(t.src.Tags)+len(e.opt.BlobTags))
+		maps.Copy(opts.Tags, t.src.Tags)
+		maps.Copy(opts.Tags, e.opt.BlobTags)
+	}
+	if err := store.ValidateBlobTags(opts.Tags); err != nil {
+		return err
 	}
 	if e.opt.AttributesOnly {
 		return e.az.PutAttrs(ctx, t.dst, opts)
@@ -662,6 +684,12 @@ func (e *Engine) checkUnsupported(dest *uri.URL) error {
 		// reach this process, so there is nothing here to pace.
 		e.log.Warn("--bwlimit does not apply to a server-side blob-to-blob copy: " +
 			"the data never passes through this host")
+	}
+	if e.opt.BlobTags != nil && !dest.IsRemote() {
+		return errors.New("--blob-tags requires a blob destination")
+	}
+	if e.opt.CopyTags && (!dest.IsRemote() || !srcRemote) {
+		e.log.Warn("--copy-tags only applies to blob-to-blob copies")
 	}
 	if e.opt.Compress.On() && srcRemote {
 		return errors.New("--compress applies to local sources only; " +

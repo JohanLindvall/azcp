@@ -48,9 +48,7 @@ func (e *Engine) uploadMetadata(src *store.Node) map[string]string {
 		p.ATime = local.AccessTimeOf(info)
 	}
 	if src.IsSymlink() {
-		p.SymlinkDest = src.LinkTarget
-		// A link's own mode is meaningless; what matters is where it points.
-		p.HasMode = false
+		p.Symlink = true
 	}
 	maps.Copy(m, p.Encode())
 	if len(m) == 0 {

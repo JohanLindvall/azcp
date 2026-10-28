@@ -227,6 +227,10 @@ var specs = []cpflags.Spec{
 		Help: "read each blob's metadata while scanning, so a recorded " +
 			"symlink downloads as a symlink and a blob-to-blob copy keeps " +
 			"metadata on every route; implied by --preserve and --decompress"},
+	{Long: "blob-tags", Arg: cpflags.RequiredArg, Meta: "K=V",
+		Help: "set blob index tags; repeatable or comma-separated, case-sensitive; an empty argument clears all tags"},
+	{Long: "copy-tags", Arg: cpflags.NoArg,
+		Help: "preserve index tags in blob-to-blob copies; --blob-tags overrides matching keys"},
 	{Long: "compress", Arg: cpflags.OptionalArg, Meta: "FORMAT[:LEVEL]",
 		Help: "store each file compressed, with the content encoding set and " +
 			"the extension appended: gzip (default), deflate or zstd, at " +

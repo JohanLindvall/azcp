@@ -278,6 +278,7 @@ func (a *app) reload() {
 		err     error
 	}
 	usage := [2]*usageTree{a.panes[0].usage, a.panes[1].usage}
+	filters := [2]nameFilter{a.panes[0].listFilter, a.panes[1].listFilter}
 	current := [2]string{a.panes[0].usagePath(), a.panes[1].usagePath()}
 	single := a.single
 	a.start("Refreshing panes", func(ctx context.Context, progress *progress.Reporter) (any, error) {
@@ -289,7 +290,7 @@ func (a *app) reload() {
 			if usage[i] != nil {
 				result[i].usage, result[i].err = a.backend.scanUsage(ctx, usage[i].base, usage[i].oneFS, progress, usage[i].blobFields...)
 			} else {
-				result[i].entries, result[i].err = a.backend.list(ctx, loc)
+				result[i].entries, result[i].err = a.backend.list(withBlobFields(ctx, filters[i].blobFields), loc)
 			}
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
@@ -324,8 +325,9 @@ func (a *app) navigate(loc location) {
 		a.scanUsagePane(i, loc, "", p.usage.oneFS)
 		return
 	}
+	filter := a.panes[i].listFilter
 	a.start("Reading "+loc.display(), func(ctx context.Context, _ *progress.Reporter) (any, error) {
-		return a.backend.list(ctx, loc)
+		return a.backend.list(withBlobFields(ctx, filter.blobFields), loc)
 	}, func(r jobResult) {
 		if r.err == nil {
 			a.setEntries(i, loc, r.value.([]entry))

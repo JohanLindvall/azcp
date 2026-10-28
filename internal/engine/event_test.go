@@ -71,7 +71,7 @@ func TestFileEventCarriesWhatDecidesACopy(t *testing.T) {
 	// A blob that carries its file's own mtime is compared on that by -u, so
 	// that is the time the event gives.
 	original := written.Add(-48 * time.Hour)
-	blob.Metadata = map[string]string{store.MetaMTime: original.UTC().Format(time.RFC3339Nano)}
+	blob.Metadata = (store.PosixMeta{MTime: original}).Encode()
 	if got := fileEvent("would-copy", blob, dst)["modified"]; got != original.UTC().Format(time.RFC3339Nano) {
 		t.Errorf("with a preserved mtime, modified = %v, want %s", got, original.UTC().Format(time.RFC3339Nano))
 	}

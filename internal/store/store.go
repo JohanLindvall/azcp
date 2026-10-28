@@ -68,6 +68,8 @@ type Node struct {
 	// when --preserve was used, which is how a filesystem tree survives a
 	// round trip through a store that has no notion of one.
 	Metadata map[string]string
+	// Tags are Azure's case-sensitive blob index tags, separate from metadata.
+	Tags map[string]string
 
 	// Sys carries the platform-specific stat result for local files, used for
 	// ownership, timestamps and hard-link detection.

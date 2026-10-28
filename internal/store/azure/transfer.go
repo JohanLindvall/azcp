@@ -60,6 +60,8 @@ type TransferOptions struct {
 	// Metadata is stored on the blob. The engine merges the user's --metadata
 	// with the POSIX attributes when --preserve asks for them.
 	Metadata map[string]string
+	// A nil Tags leaves an attributes-only destination unchanged; an empty map clears it.
+	Tags map[string]string
 	// AccessTier sets the blob tier on write.
 	AccessTier string
 	// NoClobber makes the write fail if the destination blob already exists,
@@ -231,16 +233,17 @@ func (s *Store) upload(ctx context.Context, srcPath string, dst *uri.URL, o Tran
 		if err != nil {
 			return fmt.Errorf("cannot checksum %s: %w", srcPath, err)
 		}
-		_, err = c.UploadFile(ctx, dst.Container, dst.Key, f, &blockblob.UploadFileOptions{
+		uploaded, err := c.UploadFile(ctx, dst.Container, dst.Key, f, &blockblob.UploadFileOptions{
 			BlockSize:        blockSize,
 			Concurrency:      uint16(o.concurrency()),
 			Progress:         o.Progress,
 			HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, md5),
 			Metadata:         o.metadata(),
+			Tags:             o.tagHeader(),
 			AccessConditions: o.accessConditions(),
 			AccessTier:       o.tier(),
 		})
-		return err
+		return s.finishTags(ctx, dst, o, uploaded.ETag, err)
 	}
 	return s.uploadBlocks(ctx, f, size, sum, dst, o)
 }
@@ -317,8 +320,9 @@ func (s *Store) uploadBlocks(ctx context.Context, f io.ReaderAt, size int64,
 	if err != nil {
 		return fmt.Errorf("cannot checksum the source: %w", err)
 	}
-	_, err = bb.CommitBlockList(ctx, ids, &blockblob.CommitBlockListOptions{
+	uploaded, err := bb.CommitBlockList(ctx, ids, &blockblob.CommitBlockListOptions{
 		Metadata:         o.metadata(),
+		Tags:             o.tagHeader(),
 		HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, md5),
 		AccessConditions: o.accessConditions(),
 		Tier:             o.tier(),
@@ -326,7 +330,7 @@ func (s *Store) uploadBlocks(ctx context.Context, f io.ReaderAt, size int64,
 	if err != nil {
 		return fmt.Errorf("committing %d blocks: %w", count, err)
 	}
-	return nil
+	return s.finishTags(ctx, dst, o, uploaded.ETag, nil)
 }
 
 // UploadAt writes size bytes read from src to a blob, staging blocks in
@@ -359,14 +363,15 @@ func (s *Store) PutAttrs(ctx context.Context, dst *uri.URL, o TransferOptions) e
 			// A file created since the properties request must keep its data.
 			create := o
 			create.NoClobber = true
-			_, err = bb.Upload(ctx, streaming.NopCloser(strings.NewReader("")),
+			uploaded, err := bb.Upload(ctx, streaming.NopCloser(strings.NewReader("")),
 				&blockblob.UploadOptions{
 					Metadata:         o.metadata(),
+					Tags:             o.tagHeader(),
 					HTTPHeaders:      o.httpHeaders(dst.Key),
 					AccessConditions: create.accessConditions(),
 					Tier:             o.tier(),
 				})
-			return err
+			return s.finishTags(ctx, dst, o, uploaded.ETag, err)
 		}
 		if err != nil {
 			return err
@@ -391,7 +396,7 @@ func (s *Store) PutAttrs(ctx context.Context, dst *uri.URL, o TransferOptions) e
 				}
 				return current
 			}
-			_, err := bc.SetHTTPHeaders(ctx, blob.HTTPHeaders{
+			updated, err := bc.SetHTTPHeaders(ctx, blob.HTTPHeaders{
 				BlobContentType:        keep(o.ContentType, props.ContentType),
 				BlobContentEncoding:    keep(o.ContentEncoding, props.ContentEncoding),
 				BlobContentDisposition: keep(o.ContentDisposition, props.ContentDisposition),
@@ -402,6 +407,15 @@ func (s *Store) PutAttrs(ctx context.Context, dst *uri.URL, o TransferOptions) e
 			if err != nil {
 				return err
 			}
+			conditions.ModifiedAccessConditions.IfMatch = updated.ETag
+		}
+		if o.Tags != nil {
+			_, err := bc.SetTags(ctx, o.Tags, &blob.SetTagsOptions{
+				BlobModifiedAccessConditions: &blob.BlobModifiedAccessConditions{IfMatch: conditions.ModifiedAccessConditions.IfMatch},
+			})
+			if err != nil {
+				return err
+			}
 		}
 		if t := o.tier(); t != nil {
 			if _, err := bc.SetTier(ctx, *t, nil); err != nil {
@@ -409,23 +423,6 @@ func (s *Store) PutAttrs(ctx context.Context, dst *uri.URL, o TransferOptions) e
 			}
 		}
 		return nil
-	})
-}
-
-// PutMarker writes a zero-length blob carrying only metadata. It is how a
-// symbolic link, which has no content beyond its target, is represented.
-func (s *Store) PutMarker(ctx context.Context, dst *uri.URL, o TransferOptions) error {
-	return s.withSignIn(ctx, func() error {
-		bb, err := s.blockBlobClient(ctx, dst)
-		if err != nil {
-			return err
-		}
-		_, err = bb.Upload(ctx, streaming.NopCloser(strings.NewReader("")),
-			&blockblob.UploadOptions{
-				Metadata:         o.metadata(),
-				AccessConditions: o.accessConditions(),
-			})
-		return err
 	})
 }
 
@@ -576,11 +573,12 @@ func (s *Store) copy(ctx context.Context, src *store.Node, dst *uri.URL, o Trans
 
 func stopCopyFallback(err error) bool {
 	var response *azcore.ResponseError
+	var committed *afterWriteError
 	// A failed source/destination condition is an identity conflict, not an
 	// unsupported route. In particular, retrying through a streamed upload
 	// after a conditional header update failed would overwrite the newer blob
 	// that the condition was meant to protect.
-	return isCancellation(err) || errors.Is(err, errCopyReplaced) ||
+	return isCancellation(err) || errors.Is(err, errCopyReplaced) || errors.As(err, &committed) ||
 		(errors.As(err, &response) && response.StatusCode == http.StatusPreconditionFailed)
 }
 
@@ -653,6 +651,7 @@ func (s *Store) asyncCopy(ctx context.Context, src *store.Node, dst *uri.URL, o 
 		// nil means the service copies the source's own metadata, which is
 		// what a copy with nothing overridden should do.
 		Metadata:         o.metadata(),
+		BlobTags:         o.tagHeader(),
 		AccessConditions: o.accessConditions(),
 		Tier:             o.tier(),
 	})
@@ -671,6 +670,9 @@ func (s *Store) asyncCopy(ctx context.Context, src *store.Node, dst *uri.URL, o 
 			return err
 		}
 	}
+	if err := s.finishTags(ctx, dst, o, etag, nil); err != nil {
+		return err
+	}
 	if headers := o.asyncCopyHeaders(src); headers != nil {
 		// Copy Blob has no content-header overrides. Apply them after the
 		// copy completes, pinning the update to the version just produced.
@@ -679,7 +681,7 @@ func (s *Store) asyncCopy(ctx context.Context, src *store.Node, dst *uri.URL, o 
 				IfMatch: etag,
 			}},
 		})
-		return err
+		return afterWrite(err)
 	}
 	return nil
 }
@@ -854,10 +856,11 @@ func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 	}
 
 	if src.Size <= maxSyncCopyBytes {
-		_, err := bb.UploadBlobFromURL(ctx, srcURL, &blockblob.UploadBlobFromURLOptions{
+		uploaded, err := bb.UploadBlobFromURL(ctx, srcURL, &blockblob.UploadBlobFromURLOptions{
 			SourceModifiedAccessConditions: sourceCopyConditions(src),
 			CopySourceAuthorization:        auth,
 			Metadata:                       o.metadata(),
+			Tags:                           o.tagHeader(),
 			AccessConditions:               o.accessConditions(),
 			Tier:                           o.tier(),
 			HTTPHeaders:                    o.httpHeadersWithMD5(dst.Key, src.MD5),
@@ -868,7 +871,7 @@ func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 		if o.Progress != nil {
 			o.Progress(src.Size)
 		}
-		return nil
+		return s.finishTags(ctx, dst, o, uploaded.ETag, nil)
 	}
 
 	// Too large for one request: stage it block by block, still without the
@@ -899,8 +902,9 @@ func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 	if err != nil {
 		return err
 	}
-	_, err = bb.CommitBlockList(ctx, ids, &blockblob.CommitBlockListOptions{
+	uploaded, err := bb.CommitBlockList(ctx, ids, &blockblob.CommitBlockListOptions{
 		Metadata:         o.metadata(),
+		Tags:             o.tagHeader(),
 		AccessConditions: o.accessConditions(),
 		Tier:             o.tier(),
 		HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, src.MD5),
@@ -908,7 +912,7 @@ func (s *Store) serverCopy(ctx context.Context, src *store.Node, srcURL string,
 	if err != nil {
 		return fmt.Errorf("commit block list: %w", err)
 	}
-	return nil
+	return s.finishTags(ctx, dst, o, uploaded.ETag, nil)
 }
 
 // streamCopy pulls the source down and pushes it back up, used when the service
@@ -936,15 +940,16 @@ func (s *Store) streamCopy(ctx context.Context, src *store.Node, dst *uri.URL, o
 	if err != nil {
 		return err
 	}
-	_, err = c.UploadStream(ctx, dst.Container, dst.Key, counted, &blockblob.UploadStreamOptions{
+	uploaded, err := c.UploadStream(ctx, dst.Container, dst.Key, counted, &blockblob.UploadStreamOptions{
 		BlockSize:        o.blockSize(src.Size),
 		Concurrency:      o.concurrency(),
 		Metadata:         o.metadata(),
+		Tags:             o.tagHeader(),
 		HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, src.MD5),
 		AccessConditions: o.accessConditions(),
 		AccessTier:       o.tier(),
 	})
-	return err
+	return s.finishTags(ctx, dst, o, uploaded.ETag, err)
 }
 
 // EOF is permission for UploadStream to commit. A clean HTTP EOF can still

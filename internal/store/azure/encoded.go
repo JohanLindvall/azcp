@@ -70,14 +70,15 @@ func (s *Store) uploadEncoded(ctx context.Context, r io.Reader, sourceSize int64
 			if o.PutMD5 {
 				digest = sum.Sum(nil)
 			}
-			_, err := bb.Upload(ctx, streaming.NopCloser(bytes.NewReader(head)),
+			uploaded, err := bb.Upload(ctx, streaming.NopCloser(bytes.NewReader(head)),
 				&blockblob.UploadOptions{
 					HTTPHeaders:      o.httpHeadersWithMD5(dst.Key, digest),
 					Metadata:         o.metadata(),
+					Tags:             o.tagHeader(),
 					AccessConditions: o.accessConditions(),
 					Tier:             o.tier(),
 				})
-			return err
+			return s.finishTags(ctx, dst, o, uploaded.ETag, err)
 		}
 		// Longer than a block: what was gathered goes first, the rest after.
 		r = io.MultiReader(bytes.NewReader(head), r)
@@ -93,9 +94,11 @@ func (s *Store) uploadEncoded(ctx context.Context, r io.Reader, sourceSize int64
 		Concurrency:      o.concurrency(),
 		HTTPHeaders:      o.httpHeaders(dst.Key),
 		Metadata:         o.metadata(),
+		Tags:             o.tagHeader(),
 		AccessConditions: o.accessConditions(),
 		AccessTier:       o.tier(),
 	})
+	err = s.finishTags(ctx, dst, o, uploaded.ETag, err)
 	if err != nil || !o.PutMD5 {
 		return err
 	}

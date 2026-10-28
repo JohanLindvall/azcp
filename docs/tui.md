@@ -275,6 +275,7 @@ A filter is a list of terms separated by spaces:
 | `content-type:image/*`, `content-encoding=gzip` | blobs with matching HTTP properties |
 | `metadata.owner=alice`, `metadata.project:archive*` | blobs with matching custom metadata |
 | `metadata.owner:*`, `metadata.owner=` | blobs with that metadata key present, or with its value empty |
+| `tags.Project=alpha`, `tags.Project:*`, `tags.Project=` | index tag value, presence or empty value; keys are case-sensitive |
 
 Any one name term may match; every other term must hold. A leading `-` turns
 any term into an exclusion: `*.go -*_test.go` shows Go sources without their
@@ -287,8 +288,10 @@ quote within a term, for example `etag=\"0x123\"`.
 
 Blob fields are `content-type`, `content-encoding`, `content-language`,
 `content-disposition`, `cache-control`, `access-tier`, `etag`, and
-`metadata.KEY` for a custom metadata key. Field names and metadata keys ignore
-case. With `:`, plain text matches a substring ignoring case, while a pattern
+`metadata.KEY` for custom metadata and `tags.KEY` for index tags. Field names
+and metadata keys ignore case; tag keys keep their case. For tag keys with
+spaces or punctuation, use brackets: `"tags[Project Name]"=alpha` or
+`tags[a:b=c]=value`. With `:`, plain text matches a substring ignoring case, while a pattern
 matches the whole value case-sensitively; `/` is an ordinary character in a
 blob value. With `=`, the value must match exactly, including case, and pattern
 characters are literal. A missing field never matches; `-metadata.owner:*`
@@ -298,6 +301,9 @@ conditions must hold: `content-type:image/* metadata.owner=alice` requires both.
 These fields describe individual blobs. Prefixes, containers and local files
 have no blob properties; types are not inferred from local filename extensions.
 The normal pane uses properties from its listing, without a request per blob.
+A tag filter reloads the pane with tags included, so ordinary browsing does not
+require tag permissions. Start with `--tui --copy-tags` to also preserve tags
+during blob-to-blob copies and moves. See [index tags](guide.md#blob-index-tags).
 
 Sizes, file counts, ages and contents of directories come from walking them,
 so applying a filter that asks about them measures the directories on show in

@@ -301,6 +301,7 @@ func (b *backend) usageAfterDelete(ctx context.Context, old *usageTree, selected
 }
 
 func (b *backend) scanUsage(ctx context.Context, base location, oneFS bool, p *progress.Reporter, blobFields ...string) (*usageTree, error) {
+	ctx = withBlobFields(ctx, blobFields)
 	u := *base.url
 	u.TrailingSlash = u.IsRemote()
 	root, err := b.store(&u).Stat(ctx, &u, false)

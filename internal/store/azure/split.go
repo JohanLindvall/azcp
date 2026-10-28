@@ -116,7 +116,7 @@ type pageFunc func([]*container.BlobItem) []*store.Node
 func (s *Store) listUnder(ctx context.Context, cc *container.Client, prefix string,
 	nodes pageFunc, emit func([]*store.Node) error) error {
 
-	pager := s.flatPager(cc, prefix)
+	pager := s.flatPager(ctx, cc, prefix)
 	started := time.Now()
 	var last string
 	for page := 1; ; page++ {
@@ -150,10 +150,10 @@ func (s *Store) listUnder(ctx context.Context, cc *container.Client, prefix stri
 	return s.listRanges(ctx, cc, ranges, nodes, emit)
 }
 
-func (s *Store) flatPager(cc *container.Client, prefix string) *blobPager {
+func (s *Store) flatPager(ctx context.Context, cc *container.Client, prefix string) *blobPager {
 	return cc.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{
 		Prefix:  &prefix,
-		Include: container.ListBlobsInclude{Metadata: s.cfg.IncludeMetadata},
+		Include: container.ListBlobsInclude{Metadata: s.cfg.IncludeMetadata, Tags: s.includeTags(ctx)},
 	})
 }
 
@@ -309,7 +309,7 @@ func (s *Store) listRanges(ctx context.Context, cc *container.Client, ranges []k
 func (s *Store) listPages(ctx context.Context, cc *container.Client, r keyRange,
 	nodes pageFunc, emit func([]*store.Node) error) error {
 
-	pager := s.flatPager(cc, r.prefix)
+	pager := s.flatPager(ctx, cc, r.prefix)
 	after := r.after
 	for pager.More() {
 		if err := ctx.Err(); err != nil {

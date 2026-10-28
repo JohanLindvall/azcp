@@ -267,11 +267,11 @@ check "-a preserves symlink targets containing Unicode and controls" \
   "$(readlink "$ATTR/back/attrs/encoded-link")" $'../target\n雪'
 
 # The same tree fetched without -a: --copy-metadata is what lets a blob that
-# records a symbolic link come back as one instead of as an empty file.
+# records a symbolic link come back as one instead of as a target-text file.
 mkdir -p "$ATTR/plain"
 "$AZCP" -r --copy-metadata "$AZ/attrs" "$ATTR/plain" >/dev/null
 [ -L "$ATTR/plain/attrs/link.txt" ] && ok "--copy-metadata downloads a recorded symlink as one" \
-                                    || bad "a recorded symlink flattened to an empty file"
+                                    || bad "a recorded symlink flattened to a target-text file"
 
 # --- content encoding -------------------------------------------------------
 printf 'compressed payload\n' | gzip -9 > "$WORK/page.gz"
@@ -389,6 +389,36 @@ cat "$SRC/big.bin" | "$AZCP" --compress=zstd /dev/stdin "$AZ/piped/" >/dev/null
 # --- metadata ---------------------------------------------------------------
 "$AZCP" --metadata "batch=nightly,source=e2e" "$SRC/file.txt" "$AZ/meta.txt" >/dev/null
 ok "--metadata is accepted on upload"
+
+# --- blob index tags --------------------------------------------------------
+"$AZCP" --blob-tags 'Project=alpha,project=lower,empty=' "$SRC/file.txt" "$AZ/tags/small" >/dev/null
+"$AZCP" --blob-tags 'Project=alpha' --resume "$SRC/big.bin" "$AZ/tags/large" >/dev/null
+"$AZCP" --blob-tags 'Project=alpha' --compress "$SRC/file.txt" "$AZ/tags/compressed" >/dev/null
+"$AZCP" --copy-tags "$AZ/tags/small" "$AZ/tags/copied" >/dev/null
+"$AZCP" --copy-tags --blob-tags Project=beta "$AZ/tags/small" "$AZ/tags/overridden" >/dev/null
+listing=$("$AZCP" --ls --output=json --select 'tags.Project=alpha' "$AZ/tags/" 2>/dev/null)
+if python3 -c 'import json,sys; rows=[json.loads(x) for x in sys.stdin]; assert len(rows)==4' <<<"$listing"; then
+  ok "index tags survive ordinary, resumed, compressed and blob-to-blob uploads"
+else
+  bad "index tags were lost during a transfer"
+fi
+listing=$("$AZCP" --ls --output=json --select 'tags.Project=beta tags.project=lower tags.empty=' "$AZ/tags/" 2>/dev/null)
+if python3 -c 'import json,sys; rows=[json.loads(x) for x in sys.stdin]; assert len(rows)==1 and rows[0]["name"]=="overridden"' <<<"$listing"; then
+  ok "tag overrides preserve other tags, key case and empty values"
+else
+  bad "tag overrides changed unrelated tags"
+fi
+"$AZCP" --attributes-only --blob-tags= "$SRC/file.txt" "$AZ/tags/copied" >/dev/null
+listing=$("$AZCP" --ls --output=json --select 'tags.Project:*' "$AZ/tags/copied" 2>/dev/null)
+check "attributes-only can clear index tags" "$listing" ""
+"$AZCP" "$AZ/tags/copied" "$WORK/tags-content" >/dev/null
+cmp -s "$SRC/file.txt" "$WORK/tags-content" && ok "clearing tags leaves blob data intact" || bad "clearing tags changed data"
+mkdir -p "$WORK/tag-filter-copy"
+"$AZCP" --select 'tags.Project=beta' "$AZ/tags/" "$WORK/tag-filter-copy/" >/dev/null
+check "CLI copy selects index tags" "$(ls "$WORK/tag-filter-copy")" overridden
+"$AZCP" --rm --yes --select 'tags.Project=beta' "$AZ/tags/" >/dev/null 2>&1
+listing=$("$AZCP" --ls --output=json --select 'tags.Project=beta' "$AZ/tags/" 2>/dev/null)
+check "CLI removal selects index tags" "$listing" ""
 
 # --- attributes-only ---------------------------------------------------------
 echo "original blob" > "$WORK/attronly.txt"

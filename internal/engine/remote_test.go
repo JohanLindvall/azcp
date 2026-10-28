@@ -148,3 +148,32 @@ func TestIncompleteDownloadWithoutResumeOverridesNoClobber(t *testing.T) {
 		t.Fatalf("completion record remains: %v", err)
 	}
 }
+
+func TestMalformedAzCopySymlinkDoesNotReplaceDestination(t *testing.T) {
+	for _, tc := range []struct {
+		name, data string
+		size       int64
+	}{
+		{"empty", "", 0}, {"nul", "bad\x00target", 10}, {"short", "short", 10}, {"oversize", "", 65537},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Length", fmt.Sprint(len(tc.data)))
+				_, _ = w.Write([]byte(tc.data))
+			}))
+			defer srv.Close()
+			dir := t.TempDir()
+			dst := filepath.Join(dir, "dest")
+			write(t, dst, "keep")
+			src := srv.URL + "/devstoreaccount1/c/link"
+			e := newEngine(t, "--auth=anonymous", "--retries=1", "-a", src, dst)
+			task := &task{src: &store.Node{URL: mustURL(t, src), Kind: store.KindFile, Size: tc.size, Metadata: map[string]string{"is_symlink": "true"}}, dst: mustURL(t, dst), removeFirst: true, backup: dst + "~"}
+			if err := e.transfer(t.Context(), task, nil); err == nil {
+				t.Fatal("malformed link accepted")
+			}
+			if read(t, dst) != "keep" || exists(dst+"~") {
+				t.Fatal("failed link read changed the destination")
+			}
+		})
+	}
+}
