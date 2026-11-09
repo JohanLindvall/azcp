@@ -3,10 +3,10 @@ module github.com/JohanLindvall/azcp
 go 1.26.0
 
 require (
-	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.3
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.24.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.15.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity/cache v0.4.0
-	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.8.2
+	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.8.3
 	github.com/gdamore/tcell/v2 v2.13.10
 	github.com/klauspost/compress v1.20.3
 	github.com/rivo/uniseg v0.4.7
@@ -32,9 +32,9 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.33 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
-	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
-	golang.org/x/net v0.59.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 )
