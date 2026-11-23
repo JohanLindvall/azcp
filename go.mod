@@ -8,7 +8,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity/cache v0.4.0
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.8.2
 	github.com/gdamore/tcell/v2 v2.13.10
-	github.com/klauspost/compress v1.20.3
+	github.com/klauspost/compress v1.20.5
 	github.com/rivo/uniseg v0.4.7
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
